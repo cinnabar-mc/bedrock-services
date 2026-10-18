@@ -62,6 +62,17 @@ fn token(value: &str, user: bool) -> Value {
             else { json!({}) }})
 }
 
+/// Rejects expired dates even when they precede the platform's SystemTime range.
+#[test]
+fn ancient_token_expiry_returns_an_error() {
+    for expiry in ["0001-01-01T00:00:00Z", "1600-12-31T23:59:59.999999999Z"] {
+        let mut response = token("synthetic", false);
+        response["NotAfter"] = json!(expiry);
+        let response: TokenResponse = serde_json::from_value(response).unwrap();
+        assert!(response.token(UNIX_EPOCH).is_err());
+    }
+}
+
 /// Checks proof-key continuity, request signatures and the whole local authentication chain.
 #[tokio::test]
 async fn device_flow_caches_credentials_and_fences_stale_rejections() {

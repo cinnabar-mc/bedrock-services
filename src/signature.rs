@@ -198,6 +198,8 @@ mod tests {
                     .unwrap();
             }
         }
-        assert!(filetime(UNIX_EPOCH - Duration::from_secs(11_644_473_601)).is_err());
+        if let Some(before_filetime) = UNIX_EPOCH.checked_sub(Duration::from_secs(11_644_473_601)) {
+            assert!(filetime(before_filetime).is_err());
+        }
     }
 }
