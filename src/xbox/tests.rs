@@ -209,7 +209,13 @@ async fn device_flow_caches_credentials_and_fences_stale_rejections() {
 }
 
 /// Validates a signature independently from the production request/digest helpers.
-fn verify_signature(target: &str, header: &str, body: &[u8], key: &Value, extra_headers: &[&str]) {
+pub(crate) fn verify_signature(
+    target: &str,
+    header: &str,
+    body: &[u8],
+    key: &Value,
+    extra_headers: &[&str],
+) {
     use base64::engine::general_purpose::STANDARD;
     use p256::ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
     use sha2::{Digest, Sha256};

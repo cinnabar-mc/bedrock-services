@@ -44,6 +44,21 @@ copies; this is not a guarantee that all credential copies are erased. Secure
 storage belongs to the caller; `credentials().refresh_token()` exposes the current
 rotated refresh token explicitly.
 
+`Account::checkpoint()` exports the current refresh credential and P-256 proof key
+as a bounded, zeroizing `Checkpoint` without Debug or implicit serialization.
+Store its explicitly exposed `as_bytes()` through your secure storage layer;
+`Checkpoint::from_bytes()` takes ownership of zeroizing bytes for
+`MicrosoftAuth::restore_account()`. The format checks the complete Xbox policy
+and OAuth scope. It does not provide encryption, integrity protection or account
+generation fencing: the caller must serialize refresh and persistence, reject
+stale revisions and prevent signed-out accounts from being restored.
+
+Restoring preserves proof and refresh ownership, then reacquires access and
+derived credentials. Response-clock anchors do not survive restart, so access,
+device, SISU, XSTS and title-policy caches are deliberately omitted. This requires
+network requests after restart; persistent reuse of derived credentials remains
+open work.
+
 ```rust,no_run
 use bedrock_services::minecraft::{Minecraft, Config};
 
@@ -129,7 +144,7 @@ unrelated authorization failures do not silently discard it. Social read APIs do
 not publish presence, send invitations, modify multiplayer sessions or subscribe
 to realtime updates.
 
-Persistent proof-key/session caching, account sign-up, presence publication,
+Persistent derived-token caching, account sign-up, presence publication,
 friends-world joining/hosting, invitations, realtime social updates,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account
