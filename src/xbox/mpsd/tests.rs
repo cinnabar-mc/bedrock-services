@@ -352,6 +352,9 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
     let mut attempt = directory
         .join_attempt(Uuid::from_u128(5), binding, MemberData::default())
         .unwrap();
+    assert!(!attempt.needs_reconciliation());
+    drop(directory.join(&mut attempt));
+    assert!(!attempt.needs_reconciliation());
     assert!(matches!(
         directory.join(&mut attempt).await.unwrap(),
         JoinOutcome::Precondition { remaining: 2, .. }
@@ -476,6 +479,7 @@ async fn canceled_writes_require_reconciliation_and_canceled_joins_cannot_replay
         .join_attempt(Uuid::from_u128(5), binding, MemberData::default())
         .unwrap();
     cancel_after_application(directory.join(&mut attempt), &applied, 4).await;
+    assert!(attempt.needs_reconciliation());
     assert!(matches!(
         directory.join(&mut attempt).await,
         Err(Error::JoinFinished)
