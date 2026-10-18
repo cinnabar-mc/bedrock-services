@@ -64,6 +64,9 @@ After a caller validates a same-account rotation under its storage lease,
 `replace_credentials()` retains the proof and game-session IDs and discards derived
 authorizations. Credentials expose access, refresh and expiry only through explicit
 persistence getters. These APIs supply no account-generation or storage coordination.
+Use `Minecraft::xbox_authorization()` to recheck the XUID after adopting external
+OAuth credentials, before publishing them to a saved account. This reuses the same
+proof-key and game-session owner.
 
 ```rust,no_run
 use bedrock_services::minecraft::{Minecraft, Config};
@@ -81,7 +84,9 @@ let credential = services.multiplayer_token(connection_key).await?;
 ```
 
 The caller supplies its generated game/protocol version and a persistent device
-UUID. The Minecraft owner keeps one fresh game-session UUID across service exchanges
+UUID. `Config::desktop` accepts a UUID in its standard hyphenated representation,
+or `DeviceId::compact(uuid)` to preserve an existing lowercase, unhyphenated ID.
+The Minecraft owner keeps one fresh game-session UUID across service exchanges
 and multiplayer mints. It reuses current credentials, starts a fresh service session
 when replacement is due, and invalidates an unauthorized mint's exact issuance
 before retrying once. Service metadata comes from a bounded HTTPS response; decoding
