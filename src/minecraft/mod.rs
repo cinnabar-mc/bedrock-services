@@ -143,6 +143,11 @@ impl Minecraft {
         self.xbox.social()
     }
 
+    /// Borrows one-shot title presence writes using the same account, proof and XSTS cache.
+    pub fn title_presence(&mut self) -> xbox::presence::TitlePresence<'_> {
+        self.xbox.title_presence()
+    }
+
     /// Borrows session-directory operations on this account without starting RTA or hosting tasks.
     pub fn mpsd(&mut self) -> xbox::mpsd::Directory<'_> {
         self.xbox.mpsd()

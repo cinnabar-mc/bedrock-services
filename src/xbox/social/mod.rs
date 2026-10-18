@@ -10,14 +10,13 @@ pub use types::{
     SessionReference, TitlePresence, User, UserPresence,
 };
 
-use super::{Account, XBOX_RELYING_PARTY};
+use super::{Account, DEFAULT_LANGUAGE, XBOX_RELYING_PARTY};
 use crate::{Error, http::Response};
 use reqwest::{Method, StatusCode, header::HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use url::Url;
 
-const DEFAULT_LANGUAGE: &str = "en-US, en";
 const DECORATIONS: &str = "bio,detail,multiplayerSummary,preferredColor,presenceDetail";
 
 /// Largest explicit user batch accepted by this SDK, matching the Presence query limit.
@@ -290,7 +289,7 @@ impl Service {
     fn base(self) -> &'static str {
         match self {
             Self::People => "https://peoplehub.xboxlive.com",
-            Self::Presence => "https://userpresence.xboxlive.com",
+            Self::Presence => super::presence::ENDPOINT,
             Self::Activities => super::mpsd::ENDPOINT,
         }
     }
@@ -299,7 +298,7 @@ impl Service {
     fn contract(self) -> &'static str {
         match self {
             Self::People => "7",
-            Self::Presence => "3",
+            Self::Presence => super::presence::CONTRACT,
             Self::Activities => super::mpsd::CONTRACT,
         }
     }
