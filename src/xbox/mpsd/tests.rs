@@ -141,6 +141,64 @@ fn snapshot(change: u64) -> Value {
         "properties":{"system":{"joinRestriction":"FutureRestriction"},"custom":{"nonces":{"321":"synthetic-admission"}}}})
 }
 
+#[test]
+fn binding_requires_the_local_active_member_and_exact_connection_and_subscription() {
+    let account = account("127.0.0.1:1".parse().unwrap());
+    let connection = Uuid::from_u128(41);
+    let subscription = Uuid::from_u128(42);
+    let binding = Binding::new(connection, subscription).unwrap();
+    let mut description = snapshot(1);
+    description["members"]["me"]["properties"]["system"] = json!({
+        "active":true, "connection":connection,
+        "subscription":{"id":subscription.to_string().to_uppercase()}
+    });
+    let mut session = Session {
+        reference: Reference::new(Uuid::from_u128(7), "MinecraftLobby".into(), "world".into())
+            .unwrap(),
+        owner: "123".into(),
+        proof: *account.key.verifying_key(),
+        description: serde_json::from_value(description).unwrap(),
+        etag: None,
+        closed: false,
+        uncertain: false,
+    };
+    assert!(session.is_bound(binding));
+    assert!(!session.is_bound(Binding::new(Uuid::from_u128(43), subscription).unwrap()));
+    assert!(!session.is_bound(Binding::new(connection, Uuid::from_u128(44)).unwrap()));
+    session.uncertain = true;
+    assert!(!session.is_bound(binding));
+    session.uncertain = false;
+    session
+        .description
+        .members
+        .get_mut("me")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .properties
+        .as_mut()
+        .unwrap()
+        .system
+        .as_mut()
+        .unwrap()["active"] = json!(false);
+    assert!(!session.is_bound(binding));
+    session
+        .description
+        .members
+        .get_mut("me")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .properties
+        .as_mut()
+        .unwrap()
+        .system
+        .as_mut()
+        .unwrap()["active"] = json!(true);
+    session.owner = "456".into();
+    assert!(!session.is_bound(binding));
+}
+
 /// Exercises actual signed lifecycle, isolated account ownership, partial writes and complete-cache refresh.
 #[tokio::test]
 async fn lifecycle_preserves_validators_membership_identity_and_uncertain_write_fences() {
