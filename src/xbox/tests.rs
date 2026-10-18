@@ -69,12 +69,17 @@ async fn device_flow_caches_credentials_and_fences_stale_rejections() {
     let mut proof = None;
     let (address, server) = fixture(move |target, header, body| {
         step += 1;
+        if target == "/oauth-token" {
+            let form = url::form_urlencoded::parse(body).collect::<HashMap<_, _>>();
+            assert_eq!(form.get("scope").map(|value| value.as_ref()), Some(crate::oauth::SCOPE));
+        }
         match step {
             1 => {
                 assert_eq!(target, "/device-code");
+                assert!(header.to_lowercase().contains("accept: application/json"));
                 assert!(std::str::from_utf8(body).unwrap().contains("response_type=device_code"));
                 (200, json!({"device_code": "private-device", "user_code": "PUBLIC", "verification_uri": "https://login.live.com/device",
-                    "expires_in": 900, "interval": 5}))
+                    "expires_in": 900, "interval": 0}))
             }
             2 => { assert_eq!(target, "/oauth-token"); (400, json!({"error": "slow_down"})) }
             3 => { assert_eq!(target, "/oauth-token"); (200, json!({"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})) }
@@ -119,6 +124,10 @@ async fn device_flow_caches_credentials_and_fences_stale_rejections() {
     };
     let now = SystemTime::now();
     let mut attempt = auth.start(now).await.unwrap();
+    assert_eq!(
+        attempt.next_poll().duration_since(now).unwrap(),
+        Duration::from_secs(5)
+    );
     assert_eq!(attempt.user_code(), "PUBLIC");
     assert!(matches!(
         auth.poll(&mut attempt, now).await.unwrap(),

@@ -38,7 +38,7 @@ func main() {
 	x, y := elliptic.P256().ScalarBaseMult(d.Bytes())
 	key := &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, D: d}
 	timestamp := time.Unix(fixture.Seconds, fixture.Nanos)
-	var result []string
+	result := make([]string, 0, len(fixture.Requests))
 	for _, input := range fixture.Requests {
 		req, err := http.NewRequest(http.MethodPost, input.URL, nil)
 		if err != nil {
@@ -48,7 +48,12 @@ func main() {
 		req.Header.Set("X-Extra", "first")
 		req.Header.Add("X-Extra", "second")
 		policy := nsal.SignaturePolicy{Version: 1, MaxBodyBytes: input.Limit, ExtraHeaders: input.Headers}
-		sig, err := policy.Generate(req, []byte(input.Body), key, timestamp)
+		sig, err := policy.Generate(
+			req,
+			[]byte(input.Body),
+			key,
+			timestamp,
+		)
 		if err != nil {
 			panic(err)
 		}

@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
-const SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
+pub(crate) const SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 /// Microsoft credentials bound to the client ID that acquired them.
@@ -152,6 +152,7 @@ impl MicrosoftAuth {
             .http
             .client
             .post(&self.http.endpoints.device_code)
+            .header("accept", "application/json")
             .form(&[
                 ("client_id", self.config.client_id.as_str()),
                 ("scope", SCOPE),
@@ -173,7 +174,8 @@ impl MicrosoftAuth {
         {
             return Err(Error::Invalid("device-code response"));
         }
-        let interval = Duration::from_secs(value.interval.unwrap_or(5).max(1));
+        let interval =
+            Duration::from_secs(value.interval.filter(|seconds| *seconds != 0).unwrap_or(5));
         Ok(DeviceAuthorization {
             code: Zeroizing::new(value.device_code),
             user_code: value.user_code,
@@ -213,6 +215,7 @@ impl MicrosoftAuth {
                 ("client_id", self.config.client_id.as_str()),
                 ("grant_type", DEVICE_GRANT),
                 ("device_code", attempt.code.as_str()),
+                ("scope", SCOPE),
             ])
             .build()?;
         let response = self.http.send(request).await?;

@@ -74,12 +74,16 @@ impl Endpoint {
         let matches = match self.host_type.as_str() {
             "fqdn" => host == self.host,
             "wildcard" if self.host.starts_with('*') => wildcard(&self.host, host),
-            "cidr" => self
-                .host
-                .parse::<ipnet::IpNet>()
-                .ok()
-                .zip(host.parse::<std::net::IpAddr>().ok())
-                .is_some_and(|(network, ip)| network.contains(&ip)),
+            "cidr" => {
+                let ip = match url.host() {
+                    Some(url::Host::Ipv4(ip)) => std::net::IpAddr::V4(ip),
+                    Some(url::Host::Ipv6(ip)) => std::net::IpAddr::V6(ip),
+                    _ => return false,
+                };
+                self.host
+                    .parse::<ipnet::IpNet>()
+                    .is_ok_and(|network| network.contains(&ip))
+            }
             _ => false,
         };
         matches
@@ -107,4 +111,33 @@ fn wildcard(pattern: &str, mut host: &str) -> bool {
         host = &host[index + part.len()..];
     }
     host.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_cidr_policy_checks_the_address_port_and_decoded_path() {
+        let data: TitleData = serde_json::from_str(r#"{
+            "EndPoints": [{"Protocol":"https", "Host":"2001:db8::/32", "HostType":"cidr",
+                "Port":443, "Path":"/v1/grant", "RelyingParty":"rp://fixture", "SignaturePolicyIndex":-1}],
+            "SignaturePolicies":[]
+        }"#).unwrap();
+        let url = Url::parse("https://[2001:db8::42]/v1%2Fgrant").unwrap();
+        let (party, policy) = data.resolve(&url).expect("matching IPv6 network");
+        assert_eq!(party, "rp://fixture");
+        assert_eq!(policy.version, SignaturePolicy::default().version);
+        for url in [
+            "https://[2001:db8::42]:8443/v1%2Fgrant",
+            "https://[2001:db9::42]/v1%2Fgrant",
+            "https://[2001:db8::42]/wrong",
+            "https://example.test/v1%2Fgrant",
+        ] {
+            assert!(
+                data.resolve(&Url::parse(url).unwrap()).is_none(),
+                "unexpected match: {url}"
+            );
+        }
+    }
 }
