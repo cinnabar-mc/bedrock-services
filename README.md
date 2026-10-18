@@ -239,6 +239,11 @@ title; application activity IDs and title policy stay with the caller. Repeat
 present and a caller-selected fallback otherwise. The API owns no scheduling,
 background task or automatic retry, including for throttled service responses.
 
+`update_with_dispatch` invokes a caller callback after final signing, immediately
+before HTTP. Retain that local dispatch state across cancellation; it establishes
+possible remote mutation, not receipt or success. Acquisition and preparation
+errors do not invoke it, and ordinary `update` uses the same path with no callback.
+
 Call `remove` explicitly on shutdown, even after a failed or canceled update:
 the earlier write may have applied. Removal sends once without consulting a local
 success flag. Dropping the borrowed view performs no network cleanup. Callers own

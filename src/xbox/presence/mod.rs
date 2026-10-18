@@ -53,8 +53,24 @@ impl TitlePresence<'_> {
     /// # Errors
     /// Returns redacted acquisition, transport or service-status errors, without retrying.
     pub async fn update(&mut self, update: &TitleUpdate<'_>) -> Result<UpdateResult, Error> {
+        self.update_with_dispatch(update, || {}).await
+    }
+
+    /// Publishes one update and reports conservative dispatch after final signing, before HTTP.
+    /// The callback runs once only after acquisition and request preparation succeed. It does
+    /// not prove remote receipt or success; later failure or cancellation may leave presence.
+    /// Retain caller-owned dispatch state across cancellation to track that uncertainty.
+    /// Use an infallible local state update; an unpolled future never invokes the callback.
+    ///
+    /// # Errors
+    /// Returns the same redacted acquisition, transport or service-status errors as [`Self::update`].
+    pub async fn update_with_dispatch(
+        &mut self,
+        update: &TitleUpdate<'_>,
+        dispatched: impl FnOnce(),
+    ) -> Result<UpdateResult, Error> {
         let bytes = update.encode()?;
-        let response = self.send(Method::POST, Some(bytes)).await?;
+        let response = self.send(Method::POST, Some(bytes), dispatched).await?;
         require_success(&response)?;
         Ok(UpdateResult {
             heartbeat_after: heartbeat_after(&response),
@@ -68,11 +84,16 @@ impl TitlePresence<'_> {
     /// Returns redacted acquisition, transport or service-status errors, without retrying.
     /// A failed or canceled removal may have applied; the caller owns reconciliation.
     pub async fn remove(&mut self) -> Result<(), Error> {
-        require_success(&self.send(Method::DELETE, None).await?)
+        require_success(&self.send(Method::DELETE, None, || {}).await?)
     }
 
     /// Acquires policy once, binds the path to its XUID, then signs the final request once.
-    async fn send(&mut self, method: Method, body: Option<Vec<u8>>) -> Result<Response, Error> {
+    async fn send(
+        &mut self,
+        method: Method,
+        body: Option<Vec<u8>>,
+        dispatched: impl FnOnce(),
+    ) -> Result<Response, Error> {
         let mut url = Url::parse(ENDPOINT).map_err(|_| Error::Invalid("presence endpoint"))?;
         #[cfg(test)]
         if let Some(base) = &self.fixture_base {
@@ -108,7 +129,9 @@ impl TitlePresence<'_> {
             request = request.body(body);
         }
         let request = request.build()?;
-        self.account.send_service(request, token).await
+        self.account
+            .send_service_with_dispatch(request, token, dispatched)
+            .await
     }
 }
 
