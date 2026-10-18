@@ -255,6 +255,19 @@ impl MicrosoftAuth {
         }
         Account::new(self.http, self.config, credentials)
     }
+
+    /// Restores the current refresh credential and proof key from protected storage.
+    ///
+    /// The caller must check its account generation and latest stored revision before
+    /// restoring. No access or derived tokens are reused across process-clock anchors;
+    /// the first authorization reacquires them without replacing the saved proof key.
+    ///
+    /// # Errors
+    /// Returns a redacted error for malformed state, an invalid proof key, or any
+    /// authentication-policy mismatch. This method sends no network requests.
+    pub fn restore_account(self, checkpoint: crate::xbox::Checkpoint) -> Result<Account, Error> {
+        Account::restore(self.http, self.config, checkpoint)
+    }
 }
 
 #[derive(Deserialize)]

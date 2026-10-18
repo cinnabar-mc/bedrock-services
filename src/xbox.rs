@@ -18,6 +18,9 @@ use zeroize::Zeroizing;
 const XBOX_RELYING_PARTY: &str = "http://xboxlive.com";
 const MAX_RELYING_PARTIES: usize = 64;
 
+mod checkpoint;
+pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
+
 /// Authentication policy, distinct from the Bedrock session's platform metadata.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -162,7 +165,12 @@ impl Account {
     pub(crate) fn new(http: Http, config: Config, credentials: Credentials) -> Result<Self, Error> {
         let key = SigningKey::try_generate_from_rng(&mut SysRng)
             .map_err(|_| Error::Invalid("proof-key entropy unavailable"))?;
-        Ok(Self {
+        Ok(Self::with_key(http, config, credentials, key))
+    }
+
+    /// Initializes empty derived state around one fresh or restored proof-key owner.
+    fn with_key(http: Http, config: Config, credentials: Credentials, key: SigningKey) -> Self {
+        Self {
             http,
             config,
             credentials,
@@ -172,7 +180,7 @@ impl Account {
             title_data: None,
             current_title_data: None,
             authorizations: HashMap::new(),
-        })
+        }
     }
 
     /// Borrows the account's current Microsoft credentials for secure persistence.
