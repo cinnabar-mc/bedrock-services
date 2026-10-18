@@ -500,3 +500,197 @@ async fn pure_handoff_reconnects_on_fresh_transport_without_old_events_or_automa
     .await
     .unwrap();
 }
+
+/// Activates an actual desired resource before testing a transport-only close transition.
+async fn activate_for_peer_close(client: &mut RtaSocket, server: &mut Server) -> SubscriptionId {
+    let (subscription, request) = client
+        .subscribe(
+            client.connection().social_resource(),
+            Instant::now() + Duration::from_secs(30),
+        )
+        .unwrap();
+    let (event, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(client.drive(), async {
+            let frame = read_json(server).await;
+            server
+                .send(Message::text(
+                    json!([1,frame[1],0,19,{"version":1}]).to_string(),
+                ))
+                .await
+                .unwrap();
+        })
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(event, Ok(Event::Subscribed { request: received, subscription: id, .. })
+        if received == request && id == subscription)
+    );
+    subscription
+}
+
+/// Peer Close acknowledges the physical stream without destroying reconnectable desired handles.
+#[tokio::test]
+async fn peer_close_drains_once_discards_queued_output_and_preserves_explicit_reconnect() {
+    let (mut account, mut first) = request().await;
+    let (mut client, mut server) = pair(&mut first, None).await;
+    let active = activate_for_peer_close(&mut client, &mut server).await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (admitted, admitted_request) = client
+        .subscribe(client.connection().social_resource(), deadline)
+        .unwrap();
+    let (queued, queued_request) = client
+        .subscribe(client.connection().social_resource(), deadline)
+        .unwrap();
+    client
+        .socket
+        .as_mut()
+        .unwrap()
+        .get_mut()
+        .get_mut()
+        .limit_writes(0);
+    server.send(Message::close(None, "")).await.unwrap();
+
+    let mut failures = Vec::new();
+    let mut disconnected = 0;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), client.drive())
+            .await
+            .unwrap()
+        {
+            Ok(Event::Failed { request, cause, .. }) => failures.push((request, cause)),
+            Ok(Event::Disconnected) => {
+                disconnected += 1;
+                break;
+            }
+            _ => panic!("unexpected peer-close outcome"),
+        }
+    }
+    assert_eq!(failures.len(), 2);
+    assert!(failures.contains(&(admitted_request, super::super::Failure::Disconnected)));
+    assert!(failures.contains(&(queued_request, super::super::Failure::Disconnected)));
+    assert_eq!(disconnected, 1);
+    assert!(client.close_deadline.is_some());
+    poll_fn(|cx| {
+        assert!(client.poll_drive(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    client
+        .socket
+        .as_mut()
+        .unwrap()
+        .get_mut()
+        .get_mut()
+        .resume_writes();
+
+    let application = async {
+        assert!(matches!(client.drive().await, Err(SocketError::Closed)));
+        assert!(matches!(client.drive().await, Err(SocketError::Closed)));
+    };
+    let service = async {
+        // The library owns the one admitted frame; the later edge-queued frame must be discarded.
+        let frame = read_json(&mut server).await;
+        assert_eq!(frame[1], admitted_request.sequence);
+        let acknowledgement = server.next().await.unwrap().unwrap();
+        assert!(acknowledgement.is_close());
+        assert!(!acknowledgement.is_text());
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(application, service);
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        client.connection().subscriptions().collect::<Vec<_>>(),
+        vec![active, admitted, queued],
+        "a peer transport close must retain desired handles for explicit reconnect"
+    );
+    let mut state = client.into_connection();
+    let mut replacement = account
+        .rta_connection(state.generation(), upgrade_headers().unwrap())
+        .await
+        .unwrap();
+    let (socket, mut replacement_server) = test_support::transport(&replacement, None).await;
+    state.reconnect(&mut replacement).unwrap();
+    let mut replacement_client = RtaSocket::from_socket(socket, state, Options::default());
+    assert!(replacement_client.outgoing.is_empty());
+    let restored = replacement_client
+        .resubscribe(active, Instant::now() + Duration::from_secs(30))
+        .unwrap();
+    let application = async {
+        assert!(matches!(replacement_client.drive().await,
+            Ok(Event::Subscribed { request, subscription, initial })
+            if request == restored && subscription == active && initial["version"] == 2));
+        replacement_client.close();
+        closed(&mut replacement_client).await;
+        assert_eq!(replacement_client.connection().subscriptions().count(), 0);
+    };
+    let service = async {
+        let frame = read_json(&mut replacement_server).await;
+        assert_eq!(frame[1], restored.sequence);
+        replacement_server
+            .send(Message::text(
+                json!([1,frame[1],0,29,{"version":2}]).to_string(),
+            ))
+            .await
+            .unwrap();
+        let close = replacement_server.next().await.unwrap().unwrap();
+        assert!(
+            close.is_close(),
+            "only the explicitly restored resource may be sent"
+        );
+        replacement_server.close().await.unwrap();
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(application, service);
+    })
+    .await
+    .unwrap();
+}
+
+/// An unflushable peer Close acknowledgement is bounded and expiry retains disconnected desired state.
+#[tokio::test]
+async fn peer_close_ack_deadline_drops_io_once_and_preserves_desired_handles() {
+    let (_, mut request) = request().await;
+    let (mut client, mut server) = pair(&mut request, None).await;
+    let active = activate_for_peer_close(&mut client, &mut server).await;
+    client
+        .socket
+        .as_mut()
+        .unwrap()
+        .get_mut()
+        .get_mut()
+        .limit_writes(0);
+    server.send(Message::close(None, "")).await.unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(10), client.drive())
+            .await
+            .unwrap(),
+        Ok(Event::Disconnected)
+    ));
+    poll_fn(|cx| {
+        assert!(client.poll_drive(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let close_deadline = client
+        .close_deadline
+        .expect("peer close must have a finite deadline");
+    client.tick(close_deadline);
+    assert!(matches!(client.drive().await, Err(SocketError::TimedOut)));
+    assert!(matches!(client.drive().await, Err(SocketError::TimedOut)));
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(10), server.next())
+            .await
+            .unwrap(),
+        None | Some(Err(_))
+    ));
+    assert_eq!(
+        client.connection().subscriptions().collect::<Vec<_>>(),
+        vec![active],
+        "a close-ack deadline must preserve reconnectable desired state"
+    );
+    assert!(!client.connection().is_connected());
+}
