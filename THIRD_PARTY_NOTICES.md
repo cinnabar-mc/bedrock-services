@@ -1,7 +1,7 @@
 # Third-party notices
 
 Xbox request signing, authentication, Real-Time Activity subscriptions,
-Multiplayer Session Directory, invitation inbox, title presence and PlayFab behavior
+Multiplayer Session Directory, invitation inbox, achievements, title presence and PlayFab behavior
 are adapted from
 [df-mc/go-xsapi](https://github.com/df-mc/go-xsapi) and
 [df-mc/go-playfab](https://github.com/df-mc/go-playfab), under the following license.
@@ -30,7 +30,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Minecraft service discovery, credential, Realms and Player Messaging behavior are adapted from
+Minecraft service discovery, credential, Realms, Player Messaging, persona,
+gallery and Xbox statistics behavior are adapted from
 [HashimTheArab/gophertunnel](https://github.com/HashimTheArab/gophertunnel),
 under the following license.
 

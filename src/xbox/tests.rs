@@ -29,6 +29,23 @@ pub(crate) async fn fixture_headers(
     + 'static,
     count: usize,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    fixture_bytes(
+        move |target, header, body| {
+            let (status, headers, body) = handler(target, header, body);
+            (status, headers, serde_json::to_vec(&body).unwrap())
+        },
+        count,
+    )
+    .await
+}
+
+/// Serves original bounded binary or JSON responses through the same concrete HTTP reader.
+pub(crate) async fn fixture_bytes(
+    mut handler: impl FnMut(&str, &str, &[u8]) -> (u16, Vec<(&'static str, &'static str)>, Vec<u8>)
+    + Send
+    + 'static,
+    count: usize,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
@@ -61,7 +78,6 @@ pub(crate) async fn fixture_headers(
                 .unwrap();
             let (status, response_headers, body) =
                 handler(target, header, &bytes[header_end..header_end + length]);
-            let body = serde_json::to_vec(&body).unwrap();
             let extra = response_headers
                 .into_iter()
                 .map(|(name, value)| format!("{name}: {value}\r\n"))

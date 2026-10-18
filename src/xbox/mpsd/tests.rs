@@ -21,6 +21,7 @@ mod publication;
 const SIGNED_HEADERS: &[&str] = &[
     "User-Agent",
     "Accept",
+    "Accept-Language",
     "Host",
     "Content-Type",
     "Content-Length",
