@@ -22,13 +22,14 @@ pub struct JoinAttempt {
     condition: HeaderValue,
     attempts: u8,
     ready: bool,
+    may_have_applied: bool,
 }
 
 impl JoinAttempt {
     /// Reports an admitted write whose membership must be reconciled before replay or abandonment.
-    /// Cancellation before dispatch leaves this false; an explicit retryable 412 also clears it.
+    /// Cancellation before dispatch leaves this false; any observed 412 clears it even when sealed.
     pub fn needs_reconciliation(&self) -> bool {
-        !self.ready && self.attempts > 0
+        self.may_have_applied
     }
 }
 
@@ -74,6 +75,7 @@ impl Directory<'_> {
             condition: HeaderValue::from_static("*"),
             attempts: 0,
             ready: true,
+            may_have_applied: false,
         })
     }
 
@@ -109,8 +111,10 @@ impl Directory<'_> {
         // Commit ambiguity before the first network poll, retaining the same bytes on explicit 412 retries.
         attempt.attempts += 1;
         attempt.ready = false;
+        attempt.may_have_applied = true;
         let response = self.account.send_service(request, token).await?;
         if response.status == StatusCode::PRECONDITION_FAILED {
+            attempt.may_have_applied = false;
             attempt.condition =
                 types::etag(&response.headers)?.unwrap_or_else(|| HeaderValue::from_static("*"));
             if attempt.attempts == MAX_JOIN_ATTEMPTS {
