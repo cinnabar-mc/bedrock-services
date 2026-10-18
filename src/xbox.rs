@@ -15,7 +15,7 @@ use std::{
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use zeroize::Zeroizing;
 
-const XBOX_RELYING_PARTY: &str = "http://xboxlive.com";
+pub(crate) const XBOX_RELYING_PARTY: &str = "http://xboxlive.com";
 const MAX_RELYING_PARTIES: usize = 64;
 
 mod checkpoint;

@@ -25,10 +25,28 @@ fn service_token(label: &str) -> Value {
 /// Drives discovery and actual HTTP through Xbox, title NSAL, PlayFab and key-bound mint.
 #[tokio::test]
 async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
+    service_chain(
+        Uuid::from_u128(1).into(),
+        "00000000-0000-0000-0000-000000000001",
+    )
+    .await;
+}
+
+/// Preserves a compact migrated device ID through service renewal and credential adoption.
+#[tokio::test]
+async fn service_chain_preserves_compact_device_identity() {
+    service_chain(
+        DeviceId::compact(Uuid::from_u128(0xfa540d62_7071_506d_92c1_e6888b3099e6)),
+        "fa540d627071506d92c1e6888b3099e6",
+    )
+    .await;
+}
+
+/// Exercises the actual service chain for a caller-selected persistent identity representation.
+async fn service_chain(device_id: DeviceId, expected_device_id: &'static str) {
     let key = p384::ecdsa::SigningKey::from_slice(&[1; 48]).unwrap();
     let der = key.verifying_key().to_public_key_der().unwrap();
     let expected_der = der.as_bytes().to_vec();
-    let device_id = Uuid::from_u128(1);
     let version = "1.26.50";
     let protocol = 2193;
     let mut step = 0;
@@ -62,8 +80,10 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
             4 | 29 => { assert_eq!(target,"/sisu");
                 let body: Value = serde_json::from_slice(body).unwrap();
                 assert_eq!(body["AccessToken"], if step == 4 {"t=access"} else {"t=external-access"});
+                let mut authorization = token("xbox",true);
+                if step == 29 { authorization["DisplayClaims"]["xui"][0]["xid"] = json!("456"); }
                 (200,json!({"TitleToken":token("title",false),
-                "UserToken":token("user",true),"AuthorizationToken":token("xbox",true)})) }
+                "UserToken":token("user",true),"AuthorizationToken":authorization})) }
             5 | 30 => {
                 assert_eq!(target,"/nsal-current");
                 assert!(headers.contains("authorization: xbl3.0 x=synthetic;xbox"));
@@ -99,7 +119,7 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                 let body: Value = serde_json::from_slice(body).unwrap();
                 assert_eq!(body["user"]["token"],"ticket");
                 assert_eq!(body["user"]["tokenType"],"PlayFab");
-                assert_eq!(body["device"]["id"],device_id.to_string());
+                assert_eq!(body["device"]["id"],expected_device_id);
                 assert_eq!(body["device"]["networkProtocolVersion"],protocol);
                 assert_eq!(body["device"]["hardwareMemoryTier"],5);
                 assert_eq!(body["device"]["platform"],"Windows10");
@@ -191,6 +211,12 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
     let start = UNIX_EPOCH + Duration::from_secs(1_893_456_000);
     minecraft.http.set_fixture_time(start);
     let original = minecraft.authorize().await.unwrap();
+    let identity = minecraft.xbox_authorization().await.unwrap();
+    assert_eq!(identity.xuid(), "123");
+    assert!(Arc::ptr_eq(
+        &identity,
+        &minecraft.xbox_authorization().await.unwrap()
+    ));
     assert!(Arc::ptr_eq(
         &original,
         &minecraft.authorize().await.unwrap()
@@ -319,6 +345,9 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
             .unwrap(),
         )
         .unwrap();
+    let adopted_identity = minecraft.xbox_authorization().await.unwrap();
+    assert_eq!(adopted_identity.xuid(), "456");
+    assert!(!Arc::ptr_eq(&identity, &adopted_identity));
     let after_import = minecraft.authorize().await.unwrap();
     assert!(!Arc::ptr_eq(&replacement, &after_import));
     assert_eq!(minecraft.session_id(), session_id);
