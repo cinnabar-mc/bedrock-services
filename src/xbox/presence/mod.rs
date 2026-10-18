@@ -55,9 +55,7 @@ impl TitlePresence<'_> {
     pub async fn update(&mut self, update: &TitleUpdate<'_>) -> Result<UpdateResult, Error> {
         let bytes = update.encode()?;
         let response = self.send(Method::POST, Some(bytes)).await?;
-        if response.status != StatusCode::CREATED {
-            response.success()?;
-        }
+        require_success(&response)?;
         Ok(UpdateResult {
             heartbeat_after: heartbeat_after(&response),
         })
@@ -70,7 +68,7 @@ impl TitlePresence<'_> {
     /// Returns redacted acquisition, transport or service-status errors, without retrying.
     /// A failed or canceled removal may have applied; the caller owns reconciliation.
     pub async fn remove(&mut self) -> Result<(), Error> {
-        self.send(Method::DELETE, None).await?.success()
+        require_success(&self.send(Method::DELETE, None).await?)
     }
 
     /// Acquires policy once, binds the path to its XUID, then signs the final request once.
@@ -111,6 +109,15 @@ impl TitlePresence<'_> {
         }
         let request = request.build()?;
         self.account.send_service(request, token).await
+    }
+}
+
+/// Accepts Presence's update/removal statuses without broadening other service contracts.
+fn require_success(response: &Response) -> Result<(), Error> {
+    if response.status == StatusCode::CREATED {
+        Ok(())
+    } else {
+        response.success()
     }
 }
 
