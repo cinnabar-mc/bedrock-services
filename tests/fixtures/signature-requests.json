@@ -1,0 +1,10 @@
+{
+  "key_scalar": 1,
+  "time_unix_seconds": 1700000000,
+  "subsecond_nanos": 123456700,
+  "requests": [
+    {"url": "https://example.test/a%2Fb?b=2&a=%2F", "body": "original-body", "limit": 0, "headers": []},
+    {"url": "https://example.test/%E2%98%83?q=x+z", "body": "prefix-and-unsigned-suffix", "limit": 6, "headers": ["X-Extra"]},
+    {"url": "https://example.test/?", "body": "", "limit": 8192, "headers": ["X-Absent", "Authorization"]}
+  ]
+}
