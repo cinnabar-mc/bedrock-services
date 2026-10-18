@@ -133,12 +133,13 @@ impl Account {
         }
         let key = SigningKey::from_slice(contents.proof)
             .map_err(|_| Error::Invalid("account checkpoint proof key"))?;
-        let credentials = Credentials::from_tokens(
+        let mut credentials = Credentials::from_tokens(
             config.client_id.clone(),
             contents.access.to_owned(),
             contents.refresh.to_owned(),
             contents.expires,
         )?;
+        credentials.suspend_access();
         let mut account = Self::with_key(http, config, credentials, key);
         account.restored = contents.derived.map(View::into_owned);
         Ok(account)

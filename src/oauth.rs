@@ -20,6 +20,7 @@ pub struct Credentials {
     pub(crate) access: Zeroizing<String>,
     refresh: Zeroizing<String>,
     expires: SystemTime,
+    access_admitted: bool,
 }
 
 impl Credentials {
@@ -38,6 +39,7 @@ impl Credentials {
             access: Zeroizing::new(access),
             refresh: Zeroizing::new(refresh),
             expires,
+            access_admitted: true,
         })
     }
 
@@ -49,6 +51,7 @@ impl Credentials {
 
     /// Explicitly borrows the current access credential for protected persistence.
     /// This value is sensitive and must never appear in logs or ordinary configuration.
+    /// Borrowing saved material does not admit a dormant restored token for service use.
     pub fn access_token(&self) -> &str {
         &self.access
     }
@@ -58,13 +61,14 @@ impl Credentials {
         self.expires
     }
 
-    /// Compares all acquisition material before preserving an account's derived state.
+    /// Compares acquisition material without allowing an identical import to change admission.
     pub(crate) fn same_material(&self, other: &Self) -> bool {
         let Self {
             client_id,
             access,
             refresh,
             expires,
+            access_admitted: _,
         } = self;
         client_id == &other.client_id
             && access == &other.access
@@ -72,9 +76,20 @@ impl Credentials {
             && expires == &other.expires
     }
 
-    /// Checks the access token against a conservative renewal margin.
+    /// Keeps restored access operationally dormant while retaining its protected material.
+    pub(crate) fn suspend_access(&mut self) {
+        self.access_admitted = false;
+    }
+
+    /// Admits restored access only after its account qualifies fresh service time.
+    pub(crate) fn admit_access(&mut self) {
+        self.access_admitted = true;
+    }
+
+    /// Checks operational admission and the original conservative renewal deadline.
     pub(crate) fn valid(&self, now: SystemTime) -> bool {
-        !self.access.is_empty()
+        self.access_admitted
+            && !self.access.is_empty()
             && self
                 .expires
                 .duration_since(now)
@@ -112,6 +127,7 @@ impl Credentials {
         let replacement = token.credentials(self.client_id.clone(), http.now())?;
         self.access = replacement.access;
         self.expires = replacement.expires;
+        self.access_admitted = replacement.access_admitted;
         if !replacement.refresh.is_empty() {
             self.refresh = replacement.refresh;
         }

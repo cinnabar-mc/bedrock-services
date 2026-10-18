@@ -41,10 +41,15 @@ struct AuthorizationView<'a> {
 impl Derived {
     /// Activates eligible entries only against the restored owner's fresh service UTC.
     pub(in crate::xbox) fn install(mut self, account: &mut Account) {
-        let now = account.http.now();
-        if now < self.observed {
+        if account
+            .http
+            .response_time()
+            .is_none_or(|sample| sample < self.observed)
+        {
             return;
         }
+        let now = account.http.now();
+        account.credentials.admit_access();
         account.device = self.device.filter(|token| token.valid(now));
         account.session = self
             .session

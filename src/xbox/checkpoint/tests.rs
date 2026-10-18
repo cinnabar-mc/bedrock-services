@@ -326,16 +326,30 @@ async fn calibrated_restart_reuses_issuances_without_resurrecting_rejection_or_e
         );
     }
     let original_expiry = issued.token.expires;
+    let original_access_expiry = account.credentials().expires_at();
     let mut step = 0;
     let (address, server) = fixture_headers(
         move |target, _, body| {
             step += 1;
             match step {
-                1 | 2 => {
+                1 | 3 => {
                     assert_eq!(target, "/nsal");
                     (200, vec![("Date", CACHE_DATE)], cache_policy())
                 }
-                3 => {
+                2 => {
+                    assert_eq!(target, "/sisu");
+                    let request: Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(request["AccessToken"], "t=access");
+                    (
+                        200,
+                        vec![("Date", CACHE_DATE)],
+                        json!({
+                            "TitleToken": token("title", false), "UserToken": token("user", false),
+                            "AuthorizationToken": token("renewed-default", true)
+                        }),
+                    )
+                }
+                4 => {
                     assert_eq!(target, "/xsts");
                     let request: Value = serde_json::from_slice(body).unwrap();
                     assert_eq!(request["Properties"]["DeviceToken"], "device");
@@ -343,7 +357,7 @@ async fn calibrated_restart_reuses_issuances_without_resurrecting_rejection_or_e
                     assert_eq!(request["Properties"]["UserTokens"], json!(["user"]));
                     (200, vec![("Date", CACHE_DATE)], token("replacement", true))
                 }
-                4 => {
+                5 => {
                     assert_eq!(target, "/nsal");
                     (
                         200,
@@ -351,14 +365,14 @@ async fn calibrated_restart_reuses_issuances_without_resurrecting_rejection_or_e
                         cache_policy(),
                     )
                 }
-                5 => {
+                6 => {
                     assert_eq!(target, "/device-token");
                     (401, vec![], json!({}))
                 }
                 _ => panic!("unexpected restart or eviction request"),
             }
         },
-        5,
+        6,
     )
     .await;
     let restore = |checkpoint| {
@@ -382,6 +396,12 @@ async fn calibrated_restart_reuses_issuances_without_resurrecting_rejection_or_e
         issued.header_value().unwrap()
     );
     assert_eq!(reused.token.expires, original_expiry);
+    assert_eq!(restored.credentials().expires_at(), original_access_expiry);
+    let default = restored.authorize(XBOX_RELYING_PARTY).await.unwrap();
+    assert!(restored.reject(&default));
+    // Rebuilding SISU may use admitted access, preserving its original deadline without OAuth refresh.
+    restored.authorize(XBOX_RELYING_PARTY).await.unwrap();
+    assert_eq!(restored.credentials().expires_at(), original_access_expiry);
     assert_eq!(restored.key.verifying_key().to_sec1_point(false), proof);
     assert!(!restored.reject(&issued));
     assert!(restored.reject(&reused));
@@ -485,6 +505,18 @@ async fn restored_cache_requires_date_on_the_successful_decoded_policy_response(
         let saved = Checkpoint::from_bytes(Zeroizing::new(checkpoint.as_bytes().to_vec())).unwrap();
         let mut restored =
             Account::restore(Http::fixture(address), Config::default(), saved).unwrap();
+        // Identical leased material must retain restored access dormancy.
+        restored
+            .replace_credentials(
+                Credentials::from_tokens(
+                    Config::default().client_id,
+                    account.credentials().access_token().into(),
+                    account.credentials().refresh_token().into(),
+                    account.credentials().expires_at(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
         if case < 2 {
             assert!(restored.authorize("rp://fixture").await.is_err());
             assert_eq!(

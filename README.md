@@ -56,7 +56,10 @@ stale revisions and prevent signed-out accounts from being restored.
 Version-two checkpoints can also retain the exact OAuth material and Xbox device,
 SISU and XSTS issuances with their original absolute expiries. A restored cache is
 dormant until a fresh successful public title-policy request supplies a valid
-HTTP Date. Missing time, clock rollback or expired entries cause reacquisition;
+HTTP Date. Saved OAuth access remains operationally dormant under the same admission:
+failed time qualification forces refresh before SISU, even when its original bytes
+and expiry are retained for persistence. Importing identical material cannot change
+this state. Missing time, clock rollback or expired entries cause reacquisition;
 response-clock anchors and title policies are never restored. Cancellation keeps
 the dormant snapshot for a later attempt. Older version-one checkpoints remain
 readable, and optional cache bytes are omitted if they cannot fit the existing
