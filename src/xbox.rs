@@ -190,6 +190,27 @@ impl Account {
         &self.credentials
     }
 
+    /// Adopts a same-account credential rotation without replacing its proof key.
+    ///
+    /// The caller must check its account generation and serialize this operation
+    /// with refresh and protected storage. Client-ID equality does not establish
+    /// account identity. Derived authorizations are discarded before their next use.
+    ///
+    /// # Errors
+    /// Rejects a different client ID without changing the current account state.
+    pub fn replace_credentials(&mut self, credentials: Credentials) -> Result<(), Error> {
+        if credentials.client_id != self.config.client_id {
+            return Err(Error::Invalid("credential client ID"));
+        }
+        self.credentials = credentials;
+        self.device = None;
+        self.session = None;
+        self.title_data = None;
+        self.current_title_data = None;
+        self.authorizations.clear();
+        Ok(())
+    }
+
     /// Resolves concrete service traffic against the authenticated title before generic policy.
     pub(crate) async fn authorize_service(
         &mut self,

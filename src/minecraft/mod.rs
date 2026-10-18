@@ -86,6 +86,34 @@ impl Minecraft {
         self.xbox.credentials()
     }
 
+    /// Captures the current refresh credential and proof key without consuming this session.
+    /// Protected storage, account generation and refresh serialization remain caller-owned.
+    ///
+    /// # Errors
+    /// Returns the account checkpoint's bounded encoding or missing-refresh error.
+    pub fn checkpoint(&self) -> Result<xbox::Checkpoint, Error> {
+        self.xbox.checkpoint()
+    }
+
+    /// Adopts a same-account OAuth rotation while retaining proof and game-session identity.
+    ///
+    /// The caller must enforce account generation and serialize refresh/persistence.
+    /// Derived Xbox, PlayFab and Minecraft credentials are reacquired on demand;
+    /// immutable credentials already borrowed by callers are not revoked remotely.
+    ///
+    /// # Errors
+    /// Rejects a different client ID without changing any retained credentials.
+    pub fn replace_credentials(
+        &mut self,
+        credentials: crate::oauth::Credentials,
+    ) -> Result<(), Error> {
+        self.xbox.replace_credentials(credentials)?;
+        self.playfab = None;
+        self.entities.clear();
+        self.authorization = None;
+        Ok(())
+    }
+
     /// Releases the service wrapper and returns its account, including rotated OAuth state.
     pub fn into_account(self) -> xbox::Account {
         self.xbox

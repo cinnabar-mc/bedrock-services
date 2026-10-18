@@ -59,6 +59,12 @@ device, SISU, XSTS and title-policy caches are deliberately omitted. This requir
 network requests after restart; persistent reuse of derived credentials remains
 open work.
 
+A running `Minecraft` owner can export `checkpoint()` without being consumed.
+After a caller validates a same-account rotation under its storage lease,
+`replace_credentials()` retains the proof and game-session IDs and discards derived
+authorizations. Credentials expose access, refresh and expiry only through explicit
+persistence getters. These APIs supply no account-generation or storage coordination.
+
 ```rust,no_run
 use bedrock_services::minecraft::{Minecraft, Config};
 
