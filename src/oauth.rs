@@ -58,6 +58,20 @@ impl Credentials {
         self.expires
     }
 
+    /// Compares all acquisition material before preserving an account's derived state.
+    pub(crate) fn same_material(&self, other: &Self) -> bool {
+        let Self {
+            client_id,
+            access,
+            refresh,
+            expires,
+        } = self;
+        client_id == &other.client_id
+            && access == &other.access
+            && refresh == &other.refresh
+            && expires == &other.expires
+    }
+
     /// Checks the access token against a conservative renewal margin.
     pub(crate) fn valid(&self, now: SystemTime) -> bool {
         !self.access.is_empty()
@@ -270,8 +284,9 @@ impl MicrosoftAuth {
     /// Restores the current refresh credential and proof key from protected storage.
     ///
     /// The caller must check its account generation and latest stored revision before
-    /// restoring. No access or derived tokens are reused across process-clock anchors;
-    /// the first authorization reacquires them without replacing the saved proof key.
+    /// restoring. Optional derived entries retain their original absolute expiries
+    /// and remain dormant until fresh public title policy supplies a valid response
+    /// Date. Missing or unusable cached state is reacquired with the saved proof key.
     ///
     /// # Errors
     /// Returns a redacted error for malformed state, an invalid proof key, or any

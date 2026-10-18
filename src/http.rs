@@ -116,6 +116,11 @@ impl Http {
         }
     }
 
+    /// Borrows the original response UTC sample without persisting its monotonic anchor.
+    pub(crate) fn response_time(&self) -> Option<SystemTime> {
+        self.clock.map(|(server, _)| server)
+    }
+
     /// Bounds both declared and streamed bodies, retaining only redacted failures.
     pub async fn send(&mut self, request: Request) -> Result<Response, Error> {
         let mut response = self.client.execute(request).await?;
