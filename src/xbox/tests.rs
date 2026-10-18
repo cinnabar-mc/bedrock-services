@@ -12,6 +12,23 @@ pub(crate) async fn fixture(
     mut handler: impl FnMut(&str, &str, &[u8]) -> (u16, Value) + Send + 'static,
     count: usize,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    fixture_headers(
+        move |target, headers, body| {
+            let (status, body) = handler(target, headers, body);
+            (status, Vec::new(), body)
+        },
+        count,
+    )
+    .await
+}
+
+/// Serves synthetic exchanges with explicit challenge headers using the same bounded reader.
+pub(crate) async fn fixture_headers(
+    mut handler: impl FnMut(&str, &str, &[u8]) -> (u16, Vec<(&'static str, &'static str)>, Value)
+    + Send
+    + 'static,
+    count: usize,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
@@ -42,10 +59,15 @@ pub(crate) async fn fixture(
                 .split_whitespace()
                 .nth(1)
                 .unwrap();
-            let (status, body) = handler(target, header, &bytes[header_end..header_end + length]);
+            let (status, response_headers, body) =
+                handler(target, header, &bytes[header_end..header_end + length]);
             let body = serde_json::to_vec(&body).unwrap();
+            let extra = response_headers
+                .into_iter()
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect::<String>();
             let header = format!(
-                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n",
                 body.len()
             );
             stream.write_all(header.as_bytes()).await.unwrap();
