@@ -509,9 +509,7 @@ fn install(session: &mut Session, response: Response) -> Result<(), Error> {
     }
     let etag = types::etag(&response.headers)?;
     session.description = description;
-    if etag.is_some() {
-        session.etag = etag;
-    }
+    session.etag = etag;
     session.uncertain = false;
     Ok(())
 }

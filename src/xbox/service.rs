@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 impl Account {
     /// Signs the final concrete request with the exact acquired issuance, then sends it once.
-    /// Callers own destination and body validation; all policy headers must already be present.
+    /// Callers own destination/body and service headers; the HTTP edge fills absent transport defaults.
     pub(super) async fn send_service(
         &mut self,
         mut request: Request,
@@ -21,6 +21,7 @@ impl Account {
         request
             .headers_mut()
             .insert(reqwest::header::AUTHORIZATION, token.header_value()?);
+        self.http.prepare_signature(&mut request)?;
         policy.sign(&mut request, &self.key, self.http.now())?;
         let response = self.http.send(request).await?;
         if token_expired(&response) {
