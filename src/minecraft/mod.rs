@@ -19,6 +19,10 @@ use url::Url;
 /// Minecraft service and public authorization-provider metadata request policy.
 pub const USER_AGENT: &str = "libhttpclient/1.0.0.0";
 
+/// Release Minecraft service identity for multiplayer activity and session queries.
+pub const SERVICE_CONFIG_ID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x4fc1_0100_5f7a_4470_899b_2808_3576_0c07);
+
 /// Owns the concrete service chain without background tasks or shared mutable locks.
 /// Async methods use the caller's runtime. Successfully acquired stages survive
 /// cancellation; dropping this owner releases its account and service credentials.
