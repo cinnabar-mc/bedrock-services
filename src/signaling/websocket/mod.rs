@@ -545,7 +545,7 @@ impl MessagingSocket {
             }
         }
         // A ready read/write may exhaust the per-poll budget without registering an I/O waker.
-        if exhausted || (!self.write_active && !self.outgoing.is_empty()) {
+        if exhausted || (!self.write_active && !self.control_flush && !self.outgoing.is_empty()) {
             cx.waker().wake_by_ref();
         }
         Poll::Pending
