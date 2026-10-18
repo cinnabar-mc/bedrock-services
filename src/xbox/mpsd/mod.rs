@@ -261,8 +261,15 @@ impl Directory<'_> {
     pub async fn leave_bound(
         &mut self,
         session: &mut Session,
-        _binding: Binding,
+        binding: Binding,
     ) -> Result<Update, Error> {
+        self.check(session, true)?;
+        if !session.is_bound(binding) {
+            return Err(Error::Invalid("session cleanup binding"));
+        }
+        if session.etag.is_none() {
+            return Err(Error::Invalid("session cleanup validator"));
+        }
         self.leave(session).await
     }
 
