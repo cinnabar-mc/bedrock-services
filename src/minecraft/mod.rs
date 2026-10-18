@@ -2,6 +2,7 @@
 
 mod config;
 mod entity;
+mod signaling;
 mod token;
 
 pub use config::{Config, DeviceId};
@@ -26,6 +27,7 @@ pub struct Minecraft {
     config: Config,
     session_id: uuid::Uuid,
     environment: Option<Environment>,
+    signaling_environment: Option<serde_json::Value>,
     realms_environment: Option<serde_json::Value>,
     realms_state: realms::State,
     playfab: Option<Arc<playfab::Session>>,
@@ -47,6 +49,8 @@ struct Discovery {
 #[derive(Deserialize)]
 struct Environments {
     auth: Retail,
+    #[serde(default, rename = "signaling-afd")]
+    signaling_afd: Option<serde_json::Value>,
     #[serde(default)]
     realms_frontend_bedrock_legacy: Option<serde_json::Value>,
 }
@@ -72,6 +76,7 @@ impl Minecraft {
             http: Http::new(USER_AGENT)?,
             config,
             environment: None,
+            signaling_environment: None,
             realms_environment: None,
             realms_state: realms::State::default(),
             session_id: uuid::Uuid::new_v4(),
@@ -303,6 +308,7 @@ impl Minecraft {
         let environment = discovery.service_environments.auth.prod;
         validate_service_url(&environment.service_uri)?;
         playfab::login_url(&environment.play_fab_title_id)?;
+        self.signaling_environment = discovery.service_environments.signaling_afd;
         self.realms_environment = discovery
             .service_environments
             .realms_frontend_bedrock_legacy;
