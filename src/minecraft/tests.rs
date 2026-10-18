@@ -74,7 +74,7 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                 assert_eq!(body["CreateAccount"],true);
                 assert_eq!(body["XboxToken"],"XBL3.0 x=synthetic;playfab");
                 (200,json!({"data":{"SessionTicket":"ticket","PlayFabId":"player",
-                    "EntityToken":{"EntityToken":"entity","TokenExpiration":"2099-01-01T00:00:00Z",
+                    "EntityToken":{"EntityToken":"entity","TokenExpiration":"2030-01-01T01:00:00Z",
                     "Entity":{"Id":"title-player","Type":"title_player_account"}}}}))
             }
             8 | 10 => {
@@ -116,9 +116,54 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                 if step == 13 { result["validUntil"]=json!("malformed"); }
                 (200,json!({"result":result}))
             }
+            15 | 16 | 19 | 20..=24 => {
+                assert_eq!(target,"/Authentication/GetEntityToken");
+                assert!(!headers.contains("authorization:"));
+                let source = match step { 15 => "entity",16 => "master",19 => "entity2",_ => "master2" };
+                assert!(headers.contains(&format!("x-entitytoken: {source}")));
+                let body: Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(body,json!({"Entity":{"Id":"player","Type":"master_player_account"}}));
+                let mut result=json!({"EntityToken":if step == 15 {"master"} else {"master2"},
+                    "TokenExpiration":match step {15 => "2030-01-01T01:00:00Z",19 => "2030-01-01T03:00:00Z",_ => "2030-01-01T02:00:00Z"},
+                    "Entity":{"Id":"player","Type":"master_player_account"}});
+                if step >= 20 { result["EntityToken"]=json!("SECRET"); }
+                match step {
+                    20 => result["Entity"]["Id"]=json!("different-player"),
+                    21 => result["Entity"]["Type"]=json!("title_player_account"),
+                    22 => result["TokenExpiration"]=json!("2030-01-01T00:00:00Z"),
+                    23 => { result.as_object_mut().unwrap().remove("TokenExpiration"); },
+                    24 => result["TokenExpiration"]=json!("malformed"),
+                    _ => {},
+                }
+                (200,json!({"data":result}))
+            }
+            17 => {
+                assert_eq!(target,"/Authentication/GetEntityToken");
+                assert!(headers.contains("x-entitytoken: master2"));
+                (401,json!({"diagnostic":"SECRET"}))
+            }
+            18 => {
+                assert_eq!(target,"/Client/LoginWithXbox");
+                (200,json!({"data":{"SessionTicket":"ticket2","PlayFabId":"player",
+                    "EntityToken":{"EntityToken":"entity2","TokenExpiration":"2030-01-02T00:00:00Z",
+                    "Entity":{"Id":"title-player","Type":"title_player_account"}}}}))
+            }
+            25 | 26 => {
+                assert_eq!(target,"/Authentication/GetEntityToken");
+                let (source, id, kind, credential) = if step == 25 {
+                    ("entity2","title-player","title_player_account","entity3")
+                } else {
+                    ("entity3","player","master_player_account","master3")
+                };
+                assert!(headers.contains(&format!("x-entitytoken: {source}")));
+                let body: Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(body,json!({"Entity":{"Id":id,"Type":kind}}));
+                (200,json!({"data":{"EntityToken":credential,"TokenExpiration":"2030-01-03T00:00:00Z",
+                    "Entity":{"Id":id,"Type":kind}}}))
+            }
             _ => panic!("unexpected service request {step}: {target}"),
         }
-    },14).await;
+    },26).await;
     let xbox_config = xbox::Config::default();
     let credentials = Credentials::from_tokens(
         xbox_config.client_id.clone(),
@@ -131,6 +176,8 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
     let mut minecraft =
         Minecraft::new(account, Config::desktop(version, protocol, device_id)).unwrap();
     minecraft.http = Http::fixture_agent(address, USER_AGENT);
+    let start = UNIX_EPOCH + Duration::from_secs(1_893_456_000);
+    minecraft.http.set_fixture_time(start);
     let original = minecraft.authorize().await.unwrap();
     assert!(Arc::ptr_eq(
         &original,
@@ -163,6 +210,77 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
             .expect("invalid multiplayer expiry must be rejected");
         assert!(!format!("{error:?} {error}").contains("SECRET"));
     }
+    let title = minecraft
+        .entity(playfab::EntityKind::TitlePlayerAccount)
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&title, &playfab.entity));
+    let master = minecraft
+        .entity(playfab::EntityKind::MasterPlayerAccount)
+        .await
+        .unwrap();
+    assert_eq!(master.id(), "player");
+    assert!(master.header_value().unwrap().is_sensitive());
+    assert!(Arc::ptr_eq(
+        &master,
+        &minecraft
+            .entity(playfab::EntityKind::MasterPlayerAccount)
+            .await
+            .unwrap()
+    ));
+    minecraft
+        .http
+        .set_fixture_time(start + Duration::from_secs(50 * 60));
+    let renewed = minecraft
+        .entity(playfab::EntityKind::MasterPlayerAccount)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&master, &renewed));
+    // Simulate a service rejecting the current exchange source before its hard expiry.
+    minecraft
+        .http
+        .set_fixture_time(start + Duration::from_secs(110 * 60));
+    let recovered = minecraft
+        .entity(playfab::EntityKind::MasterPlayerAccount)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&renewed, &recovered));
+    assert!(Arc::ptr_eq(
+        &replacement,
+        &minecraft.authorize().await.unwrap()
+    ));
+    minecraft
+        .http
+        .set_fixture_time(start + Duration::from_secs(170 * 60));
+    for _ in 0..5 {
+        let error = minecraft
+            .entity(playfab::EntityKind::MasterPlayerAccount)
+            .await
+            .err()
+            .expect("mismatched or invalid entity credential must be rejected");
+        assert!(!format!("{error:?} {error}").contains("SECRET"));
+    }
+    let title2 = minecraft
+        .entity(playfab::EntityKind::TitlePlayerAccount)
+        .await
+        .unwrap();
+    minecraft
+        .http
+        .set_fixture_time(start + Duration::from_secs(23 * 3600 + 50 * 60));
+    let title3 = minecraft
+        .entity(playfab::EntityKind::TitlePlayerAccount)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&title2, &title3));
+    minecraft
+        .http
+        .set_fixture_time(start + Duration::from_secs(24 * 3600 + 10 * 60));
+    let master3 = minecraft
+        .entity(playfab::EntityKind::MasterPlayerAccount)
+        .await
+        .unwrap();
+    assert_eq!(master3.id(), "player");
+    assert_eq!(master3.header_value().unwrap(), "master3");
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()

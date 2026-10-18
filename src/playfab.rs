@@ -2,6 +2,7 @@
 
 use crate::{Error, http::Http, xbox::Account};
 use serde::Deserialize;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use url::Url;
@@ -13,7 +14,7 @@ const REUSE: Duration = Duration::from_secs(24 * 60 * 60 - 15 * 60);
 pub struct Session {
     pub(crate) ticket: Zeroizing<String>,
     player_id: String,
-    entity: Entity,
+    pub(crate) entity: Arc<Entity>,
     reusable_until: SystemTime,
 }
 
@@ -23,6 +24,26 @@ pub struct Entity {
     kind: String,
     token: Zeroizing<String>,
     expires: OffsetDateTime,
+}
+
+/// Player identity used by a concrete PlayFab service.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum EntityKind {
+    /// Player identity scoped to the discovered game title.
+    TitlePlayerAccount,
+    /// Player identity shared across the publisher's titles.
+    MasterPlayerAccount,
+}
+
+impl EntityKind {
+    /// Returns the PlayFab entity type used in exchange requests.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TitlePlayerAccount => "title_player_account",
+            Self::MasterPlayerAccount => "master_player_account",
+        }
+    }
 }
 
 impl Session {
@@ -56,6 +77,11 @@ impl Entity {
     /// Reports whether the credential has reached its refresh margin.
     pub fn valid(&self, now: SystemTime) -> bool {
         OffsetDateTime::from(now) < self.expires - time::Duration::minutes(15)
+    }
+
+    /// Allows exchange during the renewal margin, but never after hard expiry.
+    pub(crate) fn unexpired(&self, now: SystemTime) -> bool {
+        OffsetDateTime::from(now) < self.expires
     }
 
     /// Returns the sensitive credential for a concrete PlayFab service request.
@@ -97,6 +123,27 @@ struct EntityKey {
     kind: String,
 }
 
+impl EntityResponse {
+    /// Parses credential metadata before it can enter a reusable account cache.
+    fn into_entity(self, now: SystemTime) -> Result<Entity, Error> {
+        let expires = OffsetDateTime::parse(&self.token_expiration, &Rfc3339)
+            .map_err(|_| Error::Invalid("PlayFab entity expiry"))?;
+        if self.entity_token.is_empty()
+            || self.entity.id.is_empty()
+            || self.entity.kind.is_empty()
+            || expires <= OffsetDateTime::from(now)
+        {
+            return Err(Error::Invalid("PlayFab entity credential"));
+        }
+        Ok(Entity {
+            id: self.entity.id,
+            kind: self.entity.kind,
+            token: Zeroizing::new(self.entity_token),
+            expires,
+        })
+    }
+}
+
 /// Derives the title host from validated discovery data rather than a second title table.
 pub(crate) fn login_url(title: &str) -> Result<Url, Error> {
     if title.is_empty() || title.len() > 16 || !title.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -115,12 +162,7 @@ pub(crate) async fn login(
     xbox: &mut Account,
     title: &str,
 ) -> Result<Session, Error> {
-    let url = login_url(title)?;
-    #[cfg(test)]
-    let url = match &http.endpoints.playfab {
-        Some(url) => Url::parse(url).unwrap(),
-        None => url,
-    };
+    let url = login_endpoint(http, title)?;
     let authorization = xbox.authorize_service(&url).await?;
     let header = authorization.header_value()?;
     let body = serde_json::json!({"TitleId": title, "CreateAccount": true,
@@ -136,26 +178,58 @@ pub(crate) async fn login(
     }
     response.success()?;
     let login = response.json::<ResultBody>()?.data;
-    let expires = OffsetDateTime::parse(&login.entity_token.token_expiration, &Rfc3339)
-        .map_err(|_| Error::Invalid("PlayFab entity expiry"))?;
+    let entity = login.entity_token.into_entity(http.now())?;
     if login.session_ticket.is_empty()
         || login.player_id.is_empty()
-        || login.entity_token.entity_token.is_empty()
-        || login.entity_token.entity.id.is_empty()
-        || login.entity_token.entity.kind != "title_player_account"
-        || expires <= OffsetDateTime::from(http.now())
+        || entity.kind != EntityKind::TitlePlayerAccount.as_str()
     {
         return Err(Error::Invalid("PlayFab login credential"));
     }
     Ok(Session {
         ticket: Zeroizing::new(login.session_ticket),
         player_id: login.player_id,
-        entity: Entity {
-            id: login.entity_token.entity.id,
-            kind: login.entity_token.entity.kind,
-            token: Zeroizing::new(login.entity_token.entity_token),
-            expires,
-        },
+        entity: Arc::new(entity),
         reusable_until: http.now().checked_add(REUSE).ok_or(Error::TimeRange)?,
     })
+}
+
+/// Resolves the validated title host, with a loopback override confined to tests.
+fn login_endpoint(_http: &Http, title: &str) -> Result<Url, Error> {
+    let url = login_url(title)?;
+    #[cfg(test)]
+    if let Some(url) = &_http.endpoints.playfab {
+        return Url::parse(url).map_err(|_| Error::Invalid("PlayFab fixture URL"));
+    }
+    Ok(url)
+}
+
+/// Exchanges one retained credential for exactly the requested player identity.
+pub(crate) async fn exchange(
+    http: &mut Http,
+    title: &str,
+    source: &Entity,
+    kind: EntityKind,
+    id: &str,
+) -> Result<Entity, Error> {
+    let mut url = login_endpoint(http, title)?;
+    url.set_path("/Authentication/GetEntityToken");
+    let body = serde_json::json!({"Entity":{"Id":id,"Type":kind.as_str()}});
+    let mut request = http.post_json(url.as_str(), &body)?;
+    request
+        .headers_mut()
+        .insert("x-entitytoken", source.header_value()?);
+    let response = http.send(request).await?;
+    response.success()?;
+    #[derive(Deserialize)]
+    struct ResultBody {
+        data: EntityResponse,
+    }
+    let entity = response
+        .json::<ResultBody>()?
+        .data
+        .into_entity(http.now())?;
+    if entity.id != id || entity.kind != kind.as_str() || !entity.valid(http.now()) {
+        return Err(Error::Invalid("PlayFab exchanged identity or expiry"));
+    }
+    Ok(entity)
 }
