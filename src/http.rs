@@ -3,13 +3,14 @@
 use crate::Error;
 use reqwest::{
     Client, Method, Request, RequestBuilder, StatusCode,
-    header::{HeaderMap, HeaderValue},
+    header::{ACCEPT, HOST, HeaderMap, HeaderValue},
 };
 use serde::de::DeserializeOwned;
 use std::time::{Duration, Instant, SystemTime};
 use zeroize::Zeroizing;
 
 pub(crate) const RESPONSE_LIMIT: usize = 1024 * 1024;
+const DEFAULT_ACCEPT: &str = "*/*";
 
 pub(crate) struct Endpoints {
     pub device_code: String,
@@ -63,6 +64,10 @@ impl Http {
         let client = Client::builder()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
+            .no_gzip()
+            .no_brotli()
+            .no_zstd()
+            .no_deflate()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .build()?;
@@ -79,6 +84,26 @@ impl Http {
         self.client
             .request(method, url)
             .header("user-agent", self.user_agent.clone())
+    }
+
+    /// Materializes this client's absent transport defaults before advertised-policy signing.
+    /// Explicit service headers are preserved; compression defaults are disabled on the client.
+    pub fn prepare_signature(&self, request: &mut Request) -> Result<(), Error> {
+        if !request.headers().contains_key(HOST) {
+            let url = request.url();
+            if !url.has_host() {
+                return Err(Error::Invalid("signed request host"));
+            }
+            let host =
+                HeaderValue::from_str(&url[url::Position::BeforeHost..url::Position::AfterPort])
+                    .map_err(|_| Error::Invalid("signed request host"))?;
+            request.headers_mut().insert(HOST, host);
+        }
+        request
+            .headers_mut()
+            .entry(ACCEPT)
+            .or_insert(HeaderValue::from_static(DEFAULT_ACCEPT));
+        Ok(())
     }
 
     /// Advances the last server Date with monotonic elapsed time at the HTTP edge.
@@ -131,7 +156,7 @@ impl Http {
         body.push(b'\n');
         Ok(self
             .request(Method::POST, url)
-            .header("accept", "*/*")
+            .header("accept", DEFAULT_ACCEPT)
             .header("content-type", "application/json")
             .header("content-length", body.len())
             .body(body)
@@ -158,6 +183,10 @@ impl Http {
             client: Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
+                .no_gzip()
+                .no_brotli()
+                .no_zstd()
+                .no_deflate()
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap(),

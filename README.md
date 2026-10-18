@@ -33,8 +33,8 @@ Returned authorizations are immutable and shareable. Acquisition uses a separate
 plain HTTP client with HTTPS, finite deadlines, disabled redirects and bounded
 responses. There are no account background tasks or locks held across HTTP.
 
-The default authentication policy matches Cinnabar's existing Android Minecraft
-configuration. It is independent of the game's platform metadata. Request signing
+The crate provides a default Android Minecraft authentication policy, independent
+of the game's platform metadata. Request signing
 accepts caller time and a borrowed P-256 key; Bedrock session P-384 keys belong to
 the session layer. The HTTP edge corrects signed request time from server Date.
 
@@ -209,8 +209,37 @@ unrelated authorization failures do not silently discard it. Social read APIs do
 not publish presence, send invitations, modify multiplayer sessions or subscribe
 to realtime updates.
 
+`Account::mpsd()` and `Minecraft::mpsd()` borrow the session directory through the
+same account/proof/XSTS owner. `xbox::mpsd::Reference` validates a complete locator
+and converts existing social session observations without duplicating activity
+search. `publish` creates one membership with `If-None-Match: *`; activity
+publication and invitations are separate explicit calls. Retain the returned
+`Session` if a later operation fails, and reconcile or leave it explicitly.
+
+Session snapshots retain unknown system/title metadata without inventing join
+permission. Conditional refresh and partial writes retain exact ETags and known
+branch/change metadata; fresh responses replace the whole member map. Change
+numbers are compared only on the same branch; valid branch rotations reset their
+sequence within a running session. Session operations reject another proof/account
+owner. A canceled or failed write marks
+the owner as requiring synchronization before another mutation; successful leave
+or remote deletion closes it. Session Drop performs no remote I/O. Title-owned
+custom data can contain admission nonces and must not be logged; ordinary JSON and
+HTTP temporary buffers are not guaranteed erased on drop.
+
+A caller-supplied `Binding` contains the actual RTA connection and stable session
+subscription ID. The SDK does not create an RTA socket or background subscription;
+the application orders connection generations and explicitly rebinds/refreshes.
+A `JoinAttempt` keeps one stable membership body and IDs. `join` performs one PUT:
+only an explicit HTTP 412 permits another attempt, up to three, with a returned
+suggested delay. Other errors and canceled writes seal the intent because they
+may have applied remotely. The caller owns waiting, deadlines, reconciliation and
+cleanup. Response Content-Location is validated as a fixed-service session path
+and is never followed as a credential destination. Invitation creation returns a
+typed handle; notification receipt and application acceptance remain separate.
+
 Persistent derived-token caching, account sign-up, presence publication,
-friends-world joining/hosting, invitations, realtime social updates,
+friends-world application joining/hosting, invitation receipt, realtime social updates,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account
 integration, real-account acceptance and source-based vanilla parity are unverified.

@@ -21,6 +21,8 @@ const MAX_RELYING_PARTIES: usize = 64;
 mod checkpoint;
 pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
 
+pub mod mpsd;
+mod service;
 pub mod social;
 
 /// Authentication policy, distinct from the Bedrock session's platform metadata.
@@ -56,7 +58,7 @@ pub enum Device {
 }
 
 impl Default for Config {
-    /// Uses Cinnabar's current Android Minecraft authentication policy.
+    /// Provides a default Android Minecraft authentication policy.
     fn default() -> Self {
         Self {
             client_id: "0000000048183522".into(),
@@ -376,6 +378,7 @@ impl Account {
             "RelyingParty": XBOX_RELYING_PARTY, "Sandbox": self.config.sandbox,
             "SiteName": "user.auth.xboxlive.com", "UseModernGamertag": true});
         let mut request = self.http.post_json(&self.http.endpoints.sisu, &body)?;
+        self.http.prepare_signature(&mut request)?;
         let (_, policy) = self
             .title_data
             .as_ref()
