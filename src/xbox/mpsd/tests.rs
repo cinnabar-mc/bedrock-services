@@ -90,6 +90,18 @@ fn verify(target: &str, headers: &str, body: &[u8], point: &Value, signed_header
 /// Supplies five original authentication exchanges, then verifies each concrete directory request.
 async fn script(
     sign_transport_defaults: bool,
+    service: impl FnMut(usize, &str, &str, &[u8]) -> (u16, Vec<(&'static str, &'static str)>, Value)
+    + Send
+    + 'static,
+    count: usize,
+) -> (Account, std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    signed_service_script(CONTRACT, sign_transport_defaults, service, count).await
+}
+
+/// Reuses the concrete directory fixture's authentication/proof verifier for sibling Xbox reads.
+pub(in crate::xbox) async fn signed_service_script(
+    contract: &'static str,
+    sign_transport_defaults: bool,
     mut service: impl FnMut(usize, &str, &str, &[u8]) -> (u16, Vec<(&'static str, &'static str)>, Value)
     + Send
     + 'static,
@@ -114,7 +126,7 @@ async fn script(
             _ => {
                 verify(target,headers,body,proof.as_ref().unwrap(),&signed_headers);
                 assert_eq!(header(headers,"authorization"),"XBL3.0 x=synthetic;directory");
-                assert_eq!(header(headers,"x-xbl-contract-version"), CONTRACT);
+                assert_eq!(header(headers,"x-xbl-contract-version"), contract);
                 if !body.is_empty() { assert_eq!(body.last(),Some(&b'\n')); }
                 return service(step-5,target,headers,body);
             }
@@ -122,6 +134,48 @@ async fn script(
         (200,Vec::new(),value)
     }, count+5).await;
     (account(address), address, task)
+}
+
+/// Resolves real signed handle reads without joining or trusting a foreign response locator.
+#[tokio::test]
+async fn handle_preview_is_read_only_and_validates_the_complete_service_reference() {
+    let handle = Uuid::from_u128(73);
+    let (mut account, address, server) = script(true, move |step, path, headers, body| {
+        assert_eq!(path, format!("/handles/{handle}/session"));
+        assert!(headers.starts_with("GET "));
+        assert!(body.is_empty(), "preview must never join or change membership");
+        assert!(header(headers, "if-match").is_empty());
+        match step {
+            1 => (200, vec![("Content-Location", "/serviceconfigs/00000000-0000-0000-0000-000000000007/sessionTemplates/MinecraftLobby/sessions/Preview%20World"),
+                ("ETag", "\"preview\"")], snapshot(1)),
+            2 => {
+                let mut wrong = snapshot(1);
+                wrong["sessionRef"] = json!({"scid":Uuid::from_u128(7),"templateName":"MinecraftLobby","name":"Other"});
+                (200, vec![("Content-Location", "/serviceconfigs/00000000-0000-0000-0000-000000000007/sessionTemplates/MinecraftLobby/sessions/Preview%20World")], wrong)
+            }
+            3 => (200, vec![("Content-Location", "https://foreign.invalid/serviceconfigs/00000000-0000-0000-0000-000000000007/sessionTemplates/MinecraftLobby/sessions/SENSITIVE")], snapshot(1)),
+            4 => (200, vec![], snapshot(1)),
+            5 => (204, vec![], json!({})),
+            _ => unreachable!(),
+        }
+    }, 5).await;
+    let mut directory = account.mpsd();
+    directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+    assert!(matches!(
+        directory.read_handle(Uuid::nil()).await,
+        Err(Error::Invalid(_))
+    ));
+    let preview = directory.read_handle(handle).await.unwrap();
+    assert_eq!(preview.reference().service_config_id(), Uuid::from_u128(7));
+    assert_eq!(preview.reference().template_name(), "MinecraftLobby");
+    assert_eq!(preview.reference().name(), "Preview World");
+    assert_eq!(preview.description().change_number, Some(1));
+    assert!(!preview.is_closed());
+    for _ in 0..4 {
+        let error = directory.read_handle(handle).await.err().unwrap();
+        assert!(!format!("{error:?} {error}").contains("SENSITIVE"));
+    }
+    server.await.unwrap();
 }
 
 /// Creates an account with synthetic OAuth tokens and a fresh proof key, without I/O.

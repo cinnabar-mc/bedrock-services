@@ -127,6 +127,33 @@ impl Directory<'_> {
         self.session(reference.clone(), token.xuid(), response)
     }
 
+    /// Resolves an activity or invitation handle into a complete session preview.
+    /// No membership is created. The returned reference is checked against the
+    /// fixed directory origin; response metadata never becomes a request destination.
+    /// A successful preview is not permission to join or an admission nonce.
+    ///
+    /// # Errors
+    /// Rejects nil handles before acquisition, unsuccessful service responses,
+    /// malformed Content-Location and inconsistent or oversized session metadata.
+    pub async fn read_handle(&mut self, handle: uuid::Uuid) -> Result<Session, Error> {
+        if handle.is_nil() {
+            return Err(Error::Invalid("session handle"));
+        }
+        let url = self.destination(&["handles", &handle.to_string(), "session"])?;
+        let token = self.token(&url, None).await?;
+        let response = self
+            .send(Arc::clone(&token), Method::GET, url, None, None)
+            .await?;
+        require(&response, StatusCode::OK)?;
+        let location = response
+            .headers
+            .get(reqwest::header::CONTENT_LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(Error::Invalid("session Content-Location"))?;
+        let reference = join::location_reference(location)?;
+        self.session(reference, token.xuid(), response)
+    }
+
     /// Creates membership once with If-None-Match:*, returning its owner before activity publication.
     /// Call publish_activity separately, retaining this owner if that later operation fails.
     /// Dropping/canceling this future may leave a remote session: reconcile by the supplied reference.
@@ -600,4 +627,4 @@ struct MembersPatch<'a> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
