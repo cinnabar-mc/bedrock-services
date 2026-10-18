@@ -456,13 +456,11 @@ async fn malformed_rejected_join_metadata_does_not_make_the_write_ambiguous() {
 }
 
 /// Exercises real reads/refresh/conditional leave without needing the original RTA socket to be live.
-#[tokio::test]
-async fn bound_cleanup_preserves_replacement_membership_and_requires_an_exact_validator() {
-    for scenario in ["original", "replacement", "missing-validator"] {
-        let connection = Uuid::from_u128(41);
-        let subscription = Uuid::from_u128(42);
-        let binding = Binding::new(connection, subscription).unwrap();
-        let (mut account, address, server) = script(true, move |step, _, headers, body| {
+async fn bound_cleanup_scenario(scenario: &'static str) {
+    let connection = Uuid::from_u128(41);
+    let subscription = Uuid::from_u128(42);
+    let binding = Binding::new(connection, subscription).unwrap();
+    let (mut account, address, server) = script(true, move |step, _, headers, body| {
             let mut value = snapshot(step as u64);
             value["members"]["me"]["properties"]["system"] = json!({
                 "active":true, "connection":connection,
@@ -482,41 +480,55 @@ async fn bound_cleanup_preserves_replacement_membership_and_requires_an_exact_va
                 _ => panic!("unexpected bound cleanup request"),
             }
         }, 3).await;
-        let mut directory = account.mpsd();
-        directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
-        let reference =
-            Reference::new(Uuid::from_u128(7), "MinecraftLobby".into(), "Hosted".into()).unwrap();
-        let mut session = directory.read(&reference).await.unwrap();
-        assert!(session.is_bound(binding));
-        assert_eq!(directory.sync(&mut session).await.unwrap(), Update::Updated);
-        let result = directory.leave_bound(&mut session, binding).await;
-        match scenario {
-            "original" => {
-                assert_eq!(result.unwrap(), Update::Closed);
-                server.await.unwrap();
-            }
-            "replacement" => {
-                assert!(
-                    matches!(result, Err(Error::Invalid("session cleanup binding"))),
-                    "cleanup must never delete an observed replacement membership"
-                );
-                assert!(!session.is_closed());
-                assert!(!session.needs_sync());
-                server.abort();
-                let _ = server.await;
-            }
-            _ => {
-                assert!(
-                    matches!(result, Err(Error::Invalid("session cleanup validator"))),
-                    "wildcard cleanup cannot protect an unobserved replacement"
-                );
-                assert!(!session.is_closed());
-                assert!(!session.needs_sync());
-                server.abort();
-                let _ = server.await;
-            }
+    let mut directory = account.mpsd();
+    directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+    let reference =
+        Reference::new(Uuid::from_u128(7), "MinecraftLobby".into(), "Hosted".into()).unwrap();
+    let mut session = directory.read(&reference).await.unwrap();
+    assert!(session.is_bound(binding));
+    assert_eq!(directory.sync(&mut session).await.unwrap(), Update::Updated);
+    let result = directory.leave_bound(&mut session, binding).await;
+    match scenario {
+        "original" => {
+            assert_eq!(result.unwrap(), Update::Closed);
+            server.await.unwrap();
+        }
+        "replacement" => {
+            assert!(
+                matches!(result, Err(Error::Invalid("session cleanup binding"))),
+                "cleanup must never delete an observed replacement membership"
+            );
+            assert!(!session.is_closed());
+            assert!(!session.needs_sync());
+            server.abort();
+            let _ = server.await;
+        }
+        _ => {
+            assert!(
+                matches!(result, Err(Error::Invalid("session cleanup validator"))),
+                "wildcard cleanup cannot protect an unobserved replacement"
+            );
+            assert!(!session.is_closed());
+            assert!(!session.needs_sync());
+            server.abort();
+            let _ = server.await;
         }
     }
+}
+
+#[tokio::test]
+async fn bound_cleanup_leaves_original_membership_without_a_live_socket() {
+    bound_cleanup_scenario("original").await;
+}
+
+#[tokio::test]
+async fn bound_cleanup_preserves_an_observed_replacement_membership() {
+    bound_cleanup_scenario("replacement").await;
+}
+
+#[tokio::test]
+async fn bound_cleanup_rejects_a_missing_validator_before_destructive_io() {
+    bound_cleanup_scenario("missing-validator").await;
 }
 
 /// Drops a live HTTP future once the fixture has applied its request but before consuming its reply.
