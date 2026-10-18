@@ -1,11 +1,12 @@
 use super::*;
 use crate::{
     oauth::Credentials,
-    xbox::tests::{fixture, token},
+    xbox::tests::{fixture_headers, token},
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Generates original service metadata without a real account or private signing key.
@@ -52,17 +53,17 @@ async fn service_chain(device_id: DeviceId, expected_device_id: &'static str) {
     let mut step = 0;
     let mut session_id = None;
     let mut proof = None;
-    let (address, server) = fixture(move |target, header, body| {
+    let (address, server) = fixture_headers(move |target, header, body| {
         step += 1;
         let headers = header.to_ascii_lowercase();
         let host = header.lines().filter_map(|line| line.split_once(':'))
             .find(|(name, _)| name.eq_ignore_ascii_case("host")).unwrap().1.trim();
-        match step {
+        let response = match step {
             1 => {
                 assert_eq!(target, format!("/api/v1.0/discovery/MinecraftPE/builds/{version}"));
                 assert!(headers.contains(&format!("user-agent: {USER_AGENT}")));
                 (200,json!({"result":{"serviceEnvironments":{
-                    "auth":{"prod":{"serviceUri":format!("http://{host}/prefix"),"playFabTitleId":"AB12"},
+                    "auth":{"prod":{"serviceUri":format!("http://{host}/prefix"),"playFabTitleId":"AB12","issuer":"https://issuer.example/tenant/"},
                         "unrelated":{"unrecognized":"ignored"}},
                     "unrelated":{"prod":{"unrecognized":"ignored"}}
                 }}}))
@@ -193,7 +194,8 @@ async fn service_chain(device_id: DeviceId, expected_device_id: &'static str) {
                     "Entity":{"Id":id,"Type":kind}}}))
             }
             _ => panic!("unexpected service request {step}: {target}"),
-        }
+        };
+        (response.0, if step == 11 { vec![("date", "Tue, 01 Jan 2030 00:00:00 GMT")] } else { Vec::new() }, response.1)
     },34).await;
     let xbox_config = xbox::Config::default();
     let credentials = Credentials::from_tokens(
@@ -236,6 +238,19 @@ async fn service_chain(device_id: DeviceId, expected_device_id: &'static str) {
         .unwrap();
     assert_eq!(minted.as_str(), "synthetic-multiplayer");
     assert_eq!(minted.public_key_der(), der.as_bytes());
+    assert_eq!(
+        minecraft.authorization_issuer().unwrap(),
+        "https://issuer.example/tenant/"
+    );
+    let hard_expiry = OffsetDateTime::parse(
+        "2099-01-01T00:00:00Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+    assert_eq!(minted.expires_at(), SystemTime::from(hard_expiry));
+    assert!(minted.valid(minecraft.service_time()));
+    assert!(minecraft.service_time() >= start);
+    assert!(!minted.valid(minted.expires_at()));
     let replacement = minecraft.authorize().await.unwrap();
     assert!(!Arc::ptr_eq(&original, &replacement));
     assert!(!minecraft.reject(&original));

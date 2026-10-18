@@ -65,6 +65,8 @@ struct Retail {
 struct Environment {
     service_uri: String,
     play_fab_title_id: String,
+    #[serde(default)]
+    issuer: String,
 }
 
 impl Minecraft {
@@ -159,6 +161,25 @@ impl Minecraft {
     /// Returns the game-session identifier shared by credential exchange and every mint.
     pub fn session_id(&self) -> uuid::Uuid {
         self.session_id
+    }
+
+    /// Borrows the discovered authorization issuer for caller-owned multiplayer verification.
+    /// Discovery must already have completed; the returned value is not derived from token claims.
+    pub fn authorization_issuer(&self) -> Result<&str, Error> {
+        let issuer = &self
+            .environment
+            .as_ref()
+            .ok_or(Error::Invalid("missing authorization discovery"))?
+            .issuer;
+        validate_service_url(issuer)?;
+        Ok(issuer)
+    }
+
+    /// Samples the last HTTPS service Date advanced by monotonic elapsed time.
+    /// The caller captures its monotonic observation before this call and retains that
+    /// pair across transport work rather than starting a fresh credential lifetime later.
+    pub fn service_time(&self) -> std::time::SystemTime {
+        self.http.now()
     }
 
     /// Borrows Realms services on the discovered retail endpoint using this account's XSTS cache.
