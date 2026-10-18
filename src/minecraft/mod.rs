@@ -143,6 +143,11 @@ impl Minecraft {
         self.xbox.social()
     }
 
+    /// Borrows explicit Xbox invitation inbox reads on the same account and proof.
+    pub fn notifications(&mut self) -> xbox::notifications::Notifications<'_> {
+        self.xbox.notifications()
+    }
+
     /// Borrows one-shot title presence writes using the same account, proof and XSTS cache.
     pub fn title_presence(&mut self) -> xbox::presence::TitlePresence<'_> {
         self.xbox.title_presence()

@@ -221,6 +221,15 @@ unrelated authorization failures do not silently discard it. Social read APIs do
 not publish presence, send invitations, modify multiplayer sessions or subscribe
 to realtime updates.
 
+`Account::notifications()` and `Minecraft::notifications()` borrow explicit Xbox
+game invitation inbox reads. `game_invites` addresses the authenticated account,
+preserves invitation actions, original expiries and per-platform title metadata,
+and counts malformed or unsupported neighboring items. The response retains its
+authenticated recipient and paired service UTC/monotonic observation for caller
+expiry checks. Refreshing never marks, dismisses or accepts a notification and
+does not subscribe to push updates. Invitation actors and handles are untrusted
+metadata; title policy and generation fencing belong to the caller.
+
 `Account::title_presence()` and `Minecraft::title_presence()` borrow one-shot title
 presence writes through the same account, proof, NSAL policy and XSTS cache.
 `update` publishes a typed state with optional bounded rich-presence ID, service
@@ -241,6 +250,12 @@ and converts existing social session observations without duplicating activity
 search. `publish` creates one membership with `If-None-Match: *`; activity
 publication and invitations are separate explicit calls. Retain the returned
 `Session` if a later operation fails, and reconcile or leave it explicitly.
+
+`read_handle` resolves an invitation or activity handle through a read-only GET
+and validates the returned complete reference against the fixed service origin.
+Neither that preview nor an inbox action creates membership or title admission.
+Retain the original handle, recipient, expiry and selected reference when later
+joining; validate the actual joined snapshot and own cleanup separately.
 
 For cancellation-sensitive hosting, retain a `PublishAttempt` before awaiting
 `publish_retained`. It fixes the original reference, RTA binding and account proof.
@@ -347,7 +362,7 @@ install initial snapshots before applying changes or rebinding MPSD sessions.
 to another caller driver. Sign-out retires the owner and its account generation.
 
 Persistent derived-token caching, account sign-up,
-friends-world application joining/hosting, invitation receipt, applied realtime social updates,
+friends-world application joining/hosting, live invitation push, applied realtime social updates,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account
 integration, real-account acceptance and source-based vanilla parity are unverified.
