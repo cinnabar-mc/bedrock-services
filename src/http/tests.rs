@@ -8,11 +8,7 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    task::JoinHandle,
-};
+use tokio::{io::AsyncWriteExt, net::TcpListener, task::JoinHandle};
 
 const FIXTURE_DATE: &str = "Wed, 01 Jan 2025 00:00:00 GMT";
 const LIMITS: [Option<usize>; 3] = [
@@ -41,17 +37,10 @@ async fn fixture(
         tokio::time::timeout(Duration::from_secs(10), async move {
             let (mut stream, _) = listener.accept().await?;
             phase.store(1, Ordering::Relaxed);
-            let mut request = Vec::new();
-            loop {
-                assert!(request.len() < RESPONSE_LIMIT);
-                assert_ne!(stream.read_buf(&mut request).await?, 0);
-                if request.windows(4).any(|part| part == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let (request, header_end, _) = crate::xbox::tests::read_request(&mut stream).await;
             phase.store(2, Ordering::Relaxed);
             assert!(
-                std::str::from_utf8(&request)
+                std::str::from_utf8(&request[..header_end])
                     .unwrap()
                     .starts_with(request_line)
             );
@@ -192,7 +181,7 @@ async fn response_body_limits_preserve_public_device_acquisition_bound() {
         };
         let completed = server.is_finished();
         eprintln!(
-            "device acquisition diagnostic: framing={framing:?}, result={failure}, fixture_phase={}, fixture_finished={completed}; phases: 0=accept pending,1=accepted,2=request headers,3=response headers,4=response body",
+            "device acquisition diagnostic: framing={framing:?}, result={failure}, fixture_phase={}, fixture_finished={completed}; phases: 0=accept pending,1=accepted,2=complete request,3=response headers,4=response body",
             phase.load(Ordering::Relaxed)
         );
         if !completed {
