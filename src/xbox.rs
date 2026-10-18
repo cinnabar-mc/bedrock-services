@@ -15,11 +15,13 @@ use std::{
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use zeroize::Zeroizing;
 
-const XBOX_RELYING_PARTY: &str = "http://xboxlive.com";
+pub(crate) const XBOX_RELYING_PARTY: &str = "http://xboxlive.com";
 const MAX_RELYING_PARTIES: usize = 64;
 
 mod checkpoint;
 pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
+
+pub mod social;
 
 /// Authentication policy, distinct from the Bedrock session's platform metadata.
 #[derive(Clone, Debug)]
@@ -232,13 +234,18 @@ impl Account {
         }
         self.ensure_title_data().await?;
         let party = self
-            .current_title_data
-            .as_ref()
-            .and_then(|data| data.resolve(url))
-            .or_else(|| self.title_data.as_ref().and_then(|data| data.resolve(url)))
+            .service_policy(url)
             .map(|(party, _)| party.to_owned())
             .ok_or(Error::Invalid("unmatched service endpoint"))?;
         self.authorize(&party).await
+    }
+
+    /// Resolves the loaded title tables in the same order for acquisition and signing.
+    fn service_policy(&self, url: &url::Url) -> Option<(&str, SignaturePolicy)> {
+        self.current_title_data
+            .as_ref()
+            .and_then(|data| data.resolve(url))
+            .or_else(|| self.title_data.as_ref().and_then(|data| data.resolve(url)))
     }
 
     /// Acquires or reuses a credential for one relying party. Cancellation drops

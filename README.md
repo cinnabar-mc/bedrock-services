@@ -5,7 +5,8 @@ device-code sign-in and refresh, Xbox proof keys, XASD/SISU acquisition, default
 NSAL policy and per-relying-party XSTS credentials. Minecraft services add
 version-specific discovery, title-scoped NSAL, PlayFab login and service credentials,
 multiplayer tokens minted for the caller's P-384 connection key, and account-borrowed
-Realms browsing and join resolution.
+Realms browsing and join resolution. Xbox social reads share that account's proof
+and authorization state.
 
 ```rust,no_run
 use bedrock_services::{oauth::{MicrosoftAuth, Poll}, xbox::Config};
@@ -63,6 +64,9 @@ After a caller validates a same-account rotation under its storage lease,
 `replace_credentials()` retains the proof and game-session IDs and discards derived
 authorizations. Credentials expose access, refresh and expiry only through explicit
 persistence getters. These APIs supply no account-generation or storage coordination.
+Use `Minecraft::xbox_authorization()` to recheck the XUID after adopting external
+OAuth credentials, before publishing them to a saved account. This reuses the same
+proof-key and game-session owner.
 
 ```rust,no_run
 use bedrock_services::minecraft::{Minecraft, Config};
@@ -80,7 +84,9 @@ let credential = services.multiplayer_token(connection_key).await?;
 ```
 
 The caller supplies its generated game/protocol version and a persistent device
-UUID. The Minecraft owner keeps one fresh game-session UUID across service exchanges
+UUID. `Config::desktop` accepts a UUID in its standard hyphenated representation,
+or `DeviceId::compact(uuid)` to preserve an existing lowercase, unhyphenated ID.
+The Minecraft owner keeps one fresh game-session UUID across service exchanges
 and multiplayer mints. It reuses current credentials, starts a fresh service session
 when replacement is due, and invalidates an unauthorized mint's exact issuance
 before retrying once. Service metadata comes from a bounded HTTPS response; decoding
@@ -189,7 +195,22 @@ and the number of TURN entries; account storage remains application-owned:
 cargo run --features signaling-tokio --example messaging -- <game-version> <protocol> <persistent-device-uuid> <network-id>
 ```
 
-Persistent derived-token caching, account sign-up, friends/presence,
+`Account::social()` and `Minecraft::social()` borrow PeopleHub profiles and
+relationship lists, full user/device/title presence, and multiplayer activity
+handles through `xbox::social::Social`. Read calls reuse the account's NSAL policy,
+proof key and per-relying-party authorization cache. Language preferences are
+explicit; basic lists omit decorations. Activity handles preserve their session
+references and title-defined metadata without inferring join permission from
+missing or unknown restrictions. Unknown presence states remain available.
+
+Each read sends one social request after credential acquisition. An explicit `token_expired`
+challenge invalidates the exact issuance for the next caller-driven attempt;
+unrelated authorization failures do not silently discard it. Social read APIs do
+not publish presence, send invitations, modify multiplayer sessions or subscribe
+to realtime updates.
+
+Persistent derived-token caching, account sign-up, presence publication,
+friends-world joining/hosting, invitations, realtime social updates,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account
 integration, real-account acceptance and source-based vanilla parity are unverified.

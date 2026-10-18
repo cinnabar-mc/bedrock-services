@@ -5,7 +5,7 @@ mod entity;
 mod signaling;
 mod token;
 
-pub use config::Config;
+pub use config::{Config, DeviceId};
 pub use token::{Authorization, Configuration, MultiplayerToken};
 
 use crate::{Error, http::Http, playfab, realms, xbox};
@@ -91,6 +91,13 @@ impl Minecraft {
         self.xbox.credentials()
     }
 
+    /// Acquires this account's Xbox identity without replacing its proof or game-session owner.
+    /// Callers must verify the returned XUID before associating rotated credentials
+    /// with a saved account. A matching OAuth client ID does not establish identity.
+    pub async fn xbox_authorization(&mut self) -> Result<Arc<xbox::Authorization>, Error> {
+        self.xbox.authorize(xbox::XBOX_RELYING_PARTY).await
+    }
+
     /// Captures the current refresh credential and proof key without consuming this session.
     /// Protected storage, account generation and refresh serialization remain caller-owned.
     ///
@@ -122,6 +129,11 @@ impl Minecraft {
     /// Releases the service wrapper and returns its account, including rotated OAuth state.
     pub fn into_account(self) -> xbox::Account {
         self.xbox
+    }
+
+    /// Borrows Xbox social services using the same account, proof and XSTS cache.
+    pub fn social(&mut self) -> xbox::social::Social<'_> {
+        self.xbox.social()
     }
 
     /// Returns the game-session identifier shared by credential exchange and every mint.

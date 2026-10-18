@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let protocol = args[1].parse()?;
-    let device = args[2].parse()?;
+    let device: uuid::Uuid = args[2].parse()?;
     let network = args[3].parse()?;
     let mut microsoft = MicrosoftAuth::new(xbox::Config::default())?;
     let mut attempt = microsoft.start(SystemTime::now()).await?;
