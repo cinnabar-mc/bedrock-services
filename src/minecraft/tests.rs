@@ -109,7 +109,7 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                     (200,json!({"result":{"signedToken":"synthetic-multiplayer","validUntil":"2099-01-01T00:00:00Z"}}))
                 }
             }
-            12 | 13 | 14 => {
+            12..=14 => {
                 assert_eq!(target,"/prefix/api/v1.0/multiplayer/session/start");
                 let mut result=json!({"signedToken":"SECRET"});
                 if step == 12 { result["validUntil"]=json!("0001-01-01T00:00:00Z"); }
