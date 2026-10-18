@@ -17,6 +17,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 const SIGNED_HEADERS: &[&str] = &[
     "User-Agent",
+    "Accept",
+    "Host",
     "Content-Type",
     "Content-Length",
     "X-Xbl-Contract-Version",
@@ -34,21 +36,29 @@ fn header<'a>(headers: &'a str, name: &str) -> &'a str {
 }
 
 /// Independently verifies the actual method, authorization, conditional headers and JSON bytes.
-fn verify(target: &str, headers: &str, body: &[u8], point: &Value) {
+fn verify(target: &str, headers: &str, body: &[u8], point: &Value, signed_headers: &[&str]) {
     let encoded = STANDARD.decode(header(headers, "signature")).unwrap();
     let method = headers.split_whitespace().next().unwrap();
+    let (path, query) = target
+        .split_once('?')
+        .map_or((target, None), |(path, query)| (path, Some(query)));
+    let mut canonical = percent_encoding::percent_decode_str(path).collect::<Vec<_>>();
+    if let Some(query) = query.filter(|query| !query.is_empty()) {
+        canonical.push(b'?');
+        canonical.extend_from_slice(query.as_bytes());
+    }
     let mut hash = Sha256::new();
     for field in [
         &encoded[..4],
         &encoded[4..12],
         method.as_bytes(),
-        target.as_bytes(),
+        canonical.as_slice(),
         header(headers, "authorization").as_bytes(),
     ] {
         hash.update(field);
         hash.update([0]);
     }
-    for name in SIGNED_HEADERS {
+    for name in signed_headers {
         hash.update(header(headers, name).as_bytes());
         hash.update([0]);
     }
@@ -76,11 +86,18 @@ fn verify(target: &str, headers: &str, body: &[u8], point: &Value) {
 
 /// Supplies five original authentication exchanges, then verifies each concrete directory request.
 async fn script(
+    sign_transport_defaults: bool,
     mut service: impl FnMut(usize, &str, &str, &[u8]) -> (u16, Vec<(&'static str, &'static str)>, Value)
     + Send
     + 'static,
     count: usize,
 ) -> (Account, std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    // Validator regressions isolate ETag behavior; the other chains also sign late transport defaults.
+    let signed_headers: Vec<_> = SIGNED_HEADERS
+        .iter()
+        .copied()
+        .filter(|name| sign_transport_defaults || !matches!(*name, "Accept" | "Host"))
+        .collect();
     let mut step = 0;
     let mut proof = None;
     let (address, task) = fixture_headers(move |target, headers, body| {
@@ -89,10 +106,10 @@ async fn script(
             1 => { assert_eq!(target,"/device-token"); let value: Value=serde_json::from_slice(body).unwrap(); proof=Some(value["Properties"]["ProofKey"].clone()); token("device",false) }
             2 => { assert_eq!(target,"/nsal"); json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1","HostType":"fqdn","RelyingParty":super::super::XBOX_RELYING_PARTY,"SignaturePolicyIndex":0}],"SignaturePolicies":[{"Version":1}]}) }
             3 => { assert_eq!(target,"/sisu"); json!({"TitleToken":token("title",false),"UserToken":token("user",false),"AuthorizationToken":token("xbox",true)}) }
-            4 => { assert_eq!(target,"/nsal-current"); json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1","HostType":"fqdn","RelyingParty":"rp://mpsd","SignaturePolicyIndex":0}],"SignaturePolicies":[{"Version":1,"ExtraHeaders":SIGNED_HEADERS}]}) }
+            4 => { assert_eq!(target,"/nsal-current"); json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1","HostType":"fqdn","RelyingParty":"rp://mpsd","SignaturePolicyIndex":0}],"SignaturePolicies":[{"Version":1,"ExtraHeaders":signed_headers}]}) }
             5 => { assert_eq!(target,"/xsts"); token("directory",true) }
             _ => {
-                verify(target,headers,body,proof.as_ref().unwrap());
+                verify(target,headers,body,proof.as_ref().unwrap(),&signed_headers);
                 assert_eq!(header(headers,"authorization"),"XBL3.0 x=synthetic;directory");
                 assert_eq!(header(headers,"x-xbl-contract-version"), CONTRACT);
                 if !body.is_empty() { assert_eq!(body.last(),Some(&b'\n')); }
@@ -130,7 +147,7 @@ async fn lifecycle_preserves_validators_membership_identity_and_uncertain_write_
     let reference = Reference::new(scid, "MinecraftLobby".into(), "Hosted World".into()).unwrap();
     let target =
         format!("/serviceconfigs/{scid}/sessionTemplates/MinecraftLobby/sessions/Hosted%20World");
-    let (mut account,address,server)=script(move |step,path,headers,body| {
+    let (mut account,address,server)=script(false, move |step,path,headers,body| {
         let value:Value=if body.is_empty(){Value::Null}else{serde_json::from_slice(body).unwrap()};
         if !matches!(step,2|3) { assert_eq!(path,target); }
         match step {
@@ -145,18 +162,19 @@ async fn lifecycle_preserves_validators_membership_identity_and_uncertain_write_
                 let mut result=snapshot(2);result["members"]=Value::Null; (200,vec![("ETag","\"v2\"")],result) }
             5 => { assert_eq!(header(headers,"if-none-match"),"\"v2\""); (304,vec![],Value::Null) }
             6 => { assert_eq!(header(headers,"if-match"),"\"v2\""); assert_eq!(value,json!({"members":{"me":{"properties":{"custom":{"ready":true}}}}})); (412,vec![("ETag","\"v3\"")],json!({"secret":"SENSITIVE"})) }
-            7 => { assert_eq!(header(headers,"if-none-match"),""); (200,vec![("ETag","\"v3\"")],snapshot(3)) }
-            8 => { assert_eq!(header(headers,"if-match"),"\"v3\""); assert_eq!(value["members"]["me"]["properties"]["system"]["connection"],Uuid::from_u128(4).to_string()); (200,vec![("ETag","\"v4\"")],snapshot(4)) }
+            7 => { assert_eq!(header(headers,"if-none-match"),""); (200,vec![],snapshot(3)) }
+            8 => { assert_eq!(header(headers,"if-match"),"*"); assert_eq!(value["members"]["me"]["properties"]["system"]["connection"],Uuid::from_u128(4).to_string()); (200,vec![("ETag","\"v4\"")],snapshot(4)) }
             9 => { assert_eq!(header(headers,"if-none-match"),"\"v4\""); (200,vec![("ETag","\"stale\"")],snapshot(2)) }
             10 => { assert_eq!(header(headers,"if-match"),"\"v4\""); assert_eq!(value,json!({"members":{"me":null}})); (204,vec![],Value::Null) }
             11 => (200,vec![("ETag","\"v10\"")],snapshot(10)),
             12 => { let mut value=snapshot(11); value["sessionRef"]=json!({"scid":scid,"templateName":"MinecraftLobby","name":"SENSITIVE-other-world"}); (200,vec![("ETag","\"wrong\"")],value) }
-            13 => { assert_eq!(header(headers,"if-none-match"),"\"v10\""); let mut value=snapshot(1);value["branch"]=json!(Uuid::from_u128(2));(200,vec![("ETag","\"rotated\"")],value) }
-            14 => { assert_eq!(header(headers,"if-none-match"),"\"rotated\""); let mut value=snapshot(0);value["branch"]=json!(Uuid::from_u128(2));(200,vec![("ETag","\"stale-branch\"")],value) }
-            15 => { assert_eq!(header(headers,"if-match"),"\"rotated\"");(204,vec![],Value::Null) }
+            13 => { assert_eq!(header(headers,"if-none-match"),"\"v10\""); let mut value=snapshot(1);value["branch"]=json!(Uuid::from_u128(2));(200,vec![],value) }
+            14 => { assert_eq!(header(headers,"if-match"),"*"); let mut value=snapshot(2);value["branch"]=json!(Uuid::from_u128(2));(200,vec![("ETag","\"rotated\"")],value) }
+            15 => { assert_eq!(header(headers,"if-none-match"),"\"rotated\""); let mut value=snapshot(0);value["branch"]=json!(Uuid::from_u128(2));(200,vec![("ETag","\"stale-branch\"")],value) }
+            16 => { assert_eq!(header(headers,"if-match"),"\"rotated\"");(204,vec![],Value::Null) }
             _=>panic!("unexpected lifecycle request"),
         }
-    },15).await;
+    },16).await;
     let mut directory = account.mpsd();
     directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
     let binding = Binding::new(Uuid::from_u128(2), Uuid::from_u128(3)).unwrap();
@@ -237,6 +255,13 @@ async fn lifecycle_preserves_validators_membership_identity_and_uncertain_write_
     assert_eq!(directory.sync(&mut fresh).await.unwrap(), Update::Updated);
     assert_eq!(fresh.description().change_number, Some(1));
     assert_eq!(fresh.description().branch, Some(Uuid::from_u128(2)));
+    assert_eq!(
+        directory
+            .set_properties(&mut fresh, &json!({"worldName":"After no validator"}))
+            .await
+            .unwrap(),
+        Update::Updated
+    );
     assert!(matches!(
         directory.sync(&mut fresh).await,
         Err(Error::Stale)
@@ -250,7 +275,7 @@ async fn lifecycle_preserves_validators_membership_identity_and_uncertain_write_
 #[tokio::test]
 async fn joins_bound_retries_and_never_follow_response_credential_destinations() {
     let mut first = None;
-    let (mut account,address,server)=script(move |step,path,headers,body| {
+    let (mut account,address,server)=script(true, move |step,path,headers,body| {
         assert!(path.starts_with("/handles/"));
         match step {
             1=>{assert_eq!(header(headers,"if-match"),"*");first=Some(body.to_vec());(412,vec![("ETag","\"join2\"")],json!({}))}
@@ -361,7 +386,7 @@ async fn canceled_writes_require_reconciliation_and_canceled_joins_cannot_replay
     };
     let applied = Arc::new(AtomicUsize::new(0));
     let signal = Arc::clone(&applied);
-    let (mut account,address,server)=script(move |step,_path,headers,body| {
+    let (mut account,address,server)=script(true, move |step,_path,headers,body| {
         match step {
             1=>(200,vec![("ETag","\"v1\"")],snapshot(1)),
             2=>{assert_eq!(header(headers,"if-match"),"\"v1\"");signal.store(2,Ordering::SeqCst);(200,vec![("ETag","\"v2\"")],snapshot(2))}

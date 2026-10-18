@@ -9,6 +9,16 @@ use p256::ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, UNIX_EPOCH};
 
+const SIGNED_HEADERS: &[&str] = &[
+    "User-Agent",
+    "Accept",
+    "Accept-Language",
+    "Cache-Control",
+    "Content-Type",
+    "Content-Length",
+    "X-Xbl-Contract-Version",
+];
+
 /// Verifies transmitted service requests independently of the production digest builder.
 fn verify(header: &str, target: &str, body: &[u8], point: &Value) {
     let value = |name: &str| {
@@ -37,14 +47,7 @@ fn verify(header: &str, target: &str, body: &[u8], point: &Value) {
         hash.update(field);
         hash.update([0]);
     }
-    for extra in [
-        "User-Agent",
-        "Accept-Language",
-        "Cache-Control",
-        "Content-Type",
-        "Content-Length",
-        "X-Xbl-Contract-Version",
-    ] {
+    for extra in SIGNED_HEADERS {
         hash.update(value(extra).as_bytes());
         hash.update([0]);
     }
@@ -102,7 +105,7 @@ async fn social_reads_share_account_policy_and_preserve_unknown_presence_and_ses
                 assert!(header.to_lowercase().contains("authorization: xbl3.0 x=synthetic;default"));
                 (200, json!({"EndPoints": [{"Protocol": "http", "Host": "127.0.0.1", "HostType": "fqdn",
                     "RelyingParty": "rp://social", "SignaturePolicyIndex": 0}], "SignaturePolicies": [{"Version": 1,
-                    "ExtraHeaders": ["User-Agent", "Accept-Language", "Cache-Control", "Content-Type", "Content-Length", "X-Xbl-Contract-Version"]}]}))
+                    "ExtraHeaders": SIGNED_HEADERS}]}))
             }
             5 | 11 => {
                 assert_eq!(target, "/xsts");
@@ -117,6 +120,7 @@ async fn social_reads_share_account_policy_and_preserve_unknown_presence_and_ses
                 match step {
                     6 => {
                         assert_eq!(target, format!("/users/me/people/friends/decoration/{DECORATIONS}"));
+                        assert!(header.to_lowercase().contains("accept: application/json\r\n"));
                         assert!(header.to_lowercase().contains(&format!("accept-language: fr-FR, {DEFAULT_LANGUAGE}").to_lowercase()));
                         assert!(header.to_lowercase().contains(&format!("x-xbl-contract-version: {}", Service::People.contract())));
                         (200, json!({"futureField": {}, "people": [{"xuid": "321", "gamertag": "Fixture", "presenceState": "FutureState",
@@ -133,6 +137,7 @@ async fn social_reads_share_account_policy_and_preserve_unknown_presence_and_ses
                     }
                     9 => {
                         assert_eq!(target, "/users/xuid(321)?level=all");
+                        assert!(header.to_lowercase().contains("accept: */*\r\n"));
                         assert!(header.to_lowercase().contains("cache-control: no-cache"));
                         assert!(header.to_lowercase().contains(&format!("x-xbl-contract-version: {}", Service::Presence.contract())));
                         // An ordinary authorization failure must not evict the cached issuance.
