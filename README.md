@@ -238,8 +238,54 @@ cleanup. Response Content-Location is validated as a fixed-service session path
 and is never followed as a credential destination. Invitation creation returns a
 typed handle; notification receipt and application acceptance remain separate.
 
+`Account::rta_connection()` and `Minecraft::rta_connection()` prepare one protected
+Xbox RTA upgrade through the existing account, proof and title-selected XSTS cache.
+Supply a nonzero account `Generation` and the caller transport's complete upgrade
+headers, including its generated WebSocket key, fixed Host and
+`rta.xboxlive.com.V2` subprotocol. Acquisition signs those final fields, returns
+only the fixed WSS destination and sensitive headers, and opens no socket. Send
+the returned headers unchanged over verified TLS, validate the upgrade and
+negotiated subprotocol, and follow no redirects. Reacquire on each new socket.
+Explicit rejected upgrades can invalidate only their exact issuance through
+`reject_rta`; stale failures cannot evict its replacement.
+
+After that upgrade succeeds, `ConnectionRequest::start()` creates one bounded
+pure `xbox::rta::Connection`. Send each returned `Outgoing` once as a complete
+text message; check `is_current` before admitting queued frames to the sink.
+Feed complete received messages in socket order with the request's `epoch` and
+caller monotonic time. Apply `Event::Subscribed`'s initial snapshot before the
+next message's changes. Early unknown events and late/duplicate responses are
+ignored. Service resync returns the active resources for explicit refresh.
+The owner stores no credentials, socket, runtime, clock, event queue or retry task.
+
+Canceling an admitted request or reaching its deadline retires the whole socket:
+a pending subscribe may already exist remotely, and a pending unsubscribe may
+already have applied. Close that socket, discard its queued frames and events,
+then explicitly reacquire and `reconnect`. Account XUID, proof key and generation
+must all match. Desired local handles survive; pending removals do not. Call
+`resubscribe` for each desired handle, install each new initial snapshot, then
+resume changes. Drive `expire(now)` at `next_deadline()`; socket/receive errors
+require `disconnect()` and the same explicit cleanup. Retire the whole owner and
+its generation on sign-out or account replacement. Dropping it performs no I/O.
+
+`Resource::session_directory()` uses the MPSD connection subscription. After its
+validated initial connection UUID arrives, `directory_binding` combines that UUID
+with the caller's stable per-session subscription UUID for existing MPSD writes.
+Bindings are usable only while their socket is current; reconnect requires an
+explicit directory rebind and refresh. Typed session changes preserve validated
+MPSD references, branches and change-number hints. `SessionChange::is_for` uses
+the same case-insensitive reference matching as MPSD. A shoulder tap requests
+refresh; it does not update a session snapshot or establish join permission.
+`social_resource()` subscribes to the authenticated user's friend-list resource;
+its change payload remains opaque for caller interpretation.
+
+The RTA request, resource URI and payload owners have no Debug or implicit
+serialization. Standard JSON/HTTP and caller socket buffers can retain temporary
+copies and are not guaranteed erased. A concrete RTA socket edge, application
+social/notification adapters and real-account acceptance remain open work.
+
 Persistent derived-token caching, account sign-up, presence publication,
-friends-world application joining/hosting, invitation receipt, realtime social updates,
+friends-world application joining/hosting, invitation receipt, applied realtime social updates,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account
 integration, real-account acceptance and source-based vanilla parity are unverified.
