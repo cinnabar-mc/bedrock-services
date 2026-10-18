@@ -59,7 +59,7 @@ impl Reference {
     }
 
     /// Matches the service's case-insensitive template/session identity.
-    pub(super) fn same(&self, other: &Self) -> bool {
+    pub(crate) fn same(&self, other: &Self) -> bool {
         self.scid == other.scid
             && self.template.eq_ignore_ascii_case(&other.template)
             && self.name.eq_ignore_ascii_case(&other.name)

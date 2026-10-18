@@ -22,6 +22,7 @@ mod checkpoint;
 pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
 
 pub mod mpsd;
+pub mod rta;
 mod service;
 pub mod social;
 
