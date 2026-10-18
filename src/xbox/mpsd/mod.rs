@@ -190,6 +190,27 @@ impl Directory<'_> {
         .await
     }
 
+    /// Replaces session custom properties only under the original active membership and validator.
+    /// Use this for title admission state that must not overwrite an observed replacement session.
+    ///
+    /// # Errors
+    /// Rejects dirty/closed owners, replaced bindings and absent validators before mutation I/O.
+    pub async fn set_properties_bound(
+        &mut self,
+        session: &mut Session,
+        binding: Binding,
+        custom: &Value,
+    ) -> Result<Update, Error> {
+        self.check(session, true)?;
+        if !session.is_bound(binding) {
+            return Err(Error::Invalid("session property binding"));
+        }
+        if session.etag.is_none() {
+            return Err(Error::Invalid("session property validator"));
+        }
+        self.set_properties(session, custom).await
+    }
+
     /// Replaces this account's mutable member custom properties; never modifies another member.
     ///
     /// # Errors

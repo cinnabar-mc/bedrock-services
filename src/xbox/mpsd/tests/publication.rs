@@ -23,6 +23,92 @@ fn bound_snapshot(binding: Binding) -> Value {
 }
 
 #[tokio::test]
+async fn bound_properties_require_the_original_member_and_a_concrete_validator() {
+    let binding = Binding::new(Uuid::from_u128(2), Uuid::from_u128(3)).unwrap();
+    let reference = Reference::new(Uuid::from_u128(7), "Lobby".into(), "original".into()).unwrap();
+    let (mut account, address, server) = script(
+        true,
+        move |step, _, headers, body| match step {
+            1 => {
+                assert!(headers.starts_with("GET "));
+                (200, vec![], bound_snapshot(binding))
+            }
+            2 => {
+                assert!(headers.starts_with("GET "));
+                let replacement = Binding::new(binding.connection, Uuid::from_u128(4)).unwrap();
+                (
+                    200,
+                    vec![("ETag", "\"replacement\"")],
+                    bound_snapshot(replacement),
+                )
+            }
+            3 => {
+                assert!(headers.starts_with("GET "));
+                (200, vec![("ETag", "\"original\"")], bound_snapshot(binding))
+            }
+            4 | 5 => {
+                assert!(headers.starts_with("PUT "));
+                assert_eq!(header(headers, "if-match"), "\"original\"");
+                assert_eq!(
+                    serde_json::from_slice::<Value>(body).unwrap(),
+                    json!({"properties":{"custom":{"nonce":"synthetic"}}})
+                );
+                if step == 4 {
+                    (200, vec![("ETag", "\"original\"")], bound_snapshot(binding))
+                } else {
+                    (412, vec![], Value::Null)
+                }
+            }
+            _ => panic!("a refused conditional property write reached HTTP"),
+        },
+        5,
+    )
+    .await;
+    let mut directory = account.mpsd();
+    directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+    let custom = json!({"nonce":"synthetic"});
+    let mut session = directory.read(&reference).await.unwrap();
+    assert!(matches!(
+        directory
+            .set_properties_bound(&mut session, binding, &custom)
+            .await,
+        Err(Error::Invalid("session property validator"))
+    ));
+    assert!(!session.needs_sync());
+    let mut session = directory.read(&reference).await.unwrap();
+    assert!(matches!(
+        directory
+            .set_properties_bound(&mut session, binding, &custom)
+            .await,
+        Err(Error::Invalid("session property binding"))
+    ));
+    assert!(!session.needs_sync());
+    let mut session = directory.read(&reference).await.unwrap();
+    assert_eq!(
+        directory
+            .set_properties_bound(&mut session, binding, &custom)
+            .await
+            .unwrap(),
+        Update::Updated
+    );
+    assert_eq!(
+        directory
+            .set_properties_bound(&mut session, binding, &custom)
+            .await
+            .unwrap(),
+        Update::PreconditionFailed
+    );
+    assert!(session.needs_sync());
+    assert!(matches!(
+        directory
+            .set_properties_bound(&mut session, binding, &custom)
+            .await,
+        Err(Error::SyncRequired)
+    ));
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn retained_publication_recovers_only_its_original_membership_after_canceled_dispatch() {
     let binding = Binding::new(Uuid::from_u128(2), Uuid::from_u128(3)).unwrap();
     let reference = Reference::new(Uuid::from_u128(7), "Lobby".into(), "original".into()).unwrap();

@@ -249,6 +249,8 @@ known rejection. A canceled or failed dispatch stays uncertain until
 `reconcile_publish` reads the exact original active membership and a concrete
 validator. A 404, replaced binding or invalid response preserves the recovery
 obligation. Callers own deadlines and guarded cleanup; the SDK starts no worker.
+`set_properties_bound` also requires that original active binding and a concrete
+validator for conditional title admission updates; a conflict requires refresh.
 
 Session snapshots retain unknown system/title metadata without inventing join
 permission. Conditional refresh and partial writes retain exact ETags and known
