@@ -234,11 +234,6 @@ impl Social<'_> {
         body: Option<Value>,
     ) -> Result<Response, Error> {
         let token = self.account.authorize_service(&url).await?;
-        let policy = self
-            .account
-            .service_policy(&url)
-            .map(|(_, policy)| policy)
-            .ok_or(Error::Invalid("unmatched social service endpoint"))?;
         let mut request = self
             .account
             .http
@@ -250,7 +245,6 @@ impl Social<'_> {
                 },
                 url.as_str(),
             )
-            .header("authorization", token.header_value()?)
             .header("x-xbl-contract-version", service.contract());
         match service {
             Service::People => {
@@ -275,12 +269,8 @@ impl Social<'_> {
                 .header("content-length", bytes.len())
                 .body(bytes);
         }
-        let mut request = request.build()?;
-        policy.sign(&mut request, &self.account.key, self.account.http.now())?;
-        let response = self.account.http.send(request).await?;
-        if token_expired(&response) {
-            self.account.reject(&token);
-        }
+        let request = request.build()?;
+        let response = self.account.send_service(request, token).await?;
         if response.status != StatusCode::CREATED || matches!(service, Service::People) {
             response.success()?;
         }
@@ -301,7 +291,7 @@ impl Service {
         match self {
             Self::People => "https://peoplehub.xboxlive.com",
             Self::Presence => "https://userpresence.xboxlive.com",
-            Self::Activities => "https://sessiondirectory.xboxlive.com",
+            Self::Activities => super::mpsd::ENDPOINT,
         }
     }
 
@@ -310,13 +300,13 @@ impl Service {
         match self {
             Self::People => "7",
             Self::Presence => "3",
-            Self::Activities => "107",
+            Self::Activities => super::mpsd::CONTRACT,
         }
     }
 }
 
 /// Accepts only bounded decimal Xbox identifiers before constructing a service path or body.
-fn validate_xuid(value: &str) -> Result<(), Error> {
+pub(super) fn validate_xuid(value: &str) -> Result<(), Error> {
     if value.is_empty()
         || value.len() > 20
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -336,33 +326,6 @@ fn validate_batch(values: &[&str]) -> Result<(), Error> {
         validate_xuid(value)?;
     }
     Ok(())
-}
-
-/// Invalidates credentials only for an explicit Xbox token_expired authentication challenge.
-fn token_expired(response: &Response) -> bool {
-    response.status == StatusCode::UNAUTHORIZED
-        && response
-            .headers
-            .get_all("www-authenticate")
-            .iter()
-            .any(|value| {
-                value.to_str().is_ok_and(|value| {
-                    value.split(',').any(|part| {
-                        let part = part.trim();
-                        let part = part
-                            .get(..6)
-                            .filter(|prefix| prefix.eq_ignore_ascii_case("token "))
-                            .map_or(part, |_| part[6..].trim());
-                        part.split_once('=').is_some_and(|(name, value)| {
-                            name.trim().eq_ignore_ascii_case("error")
-                                && value
-                                    .trim()
-                                    .trim_matches(['\"', '\''])
-                                    .eq_ignore_ascii_case("token_expired")
-                        })
-                    })
-                })
-            })
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 # Third-party notices
 
-Xbox request signing, authentication and PlayFab behavior are adapted from
+Xbox request signing, authentication, Multiplayer Session Directory and PlayFab
+behavior are adapted from
 [df-mc/go-xsapi](https://github.com/df-mc/go-xsapi) and
 [df-mc/go-playfab](https://github.com/df-mc/go-playfab), under the following license.
 

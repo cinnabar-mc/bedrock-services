@@ -21,6 +21,8 @@ const MAX_RELYING_PARTIES: usize = 64;
 mod checkpoint;
 pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
 
+pub mod mpsd;
+mod service;
 pub mod social;
 
 /// Authentication policy, distinct from the Bedrock session's platform metadata.
