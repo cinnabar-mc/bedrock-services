@@ -407,16 +407,17 @@ async fn calibrated_restart_reuses_issuances_without_resurrecting_rejection_or_e
         .unwrap();
 }
 
-/// Rejected, malformed, absent and rolled-back policy clocks never admit dormant credentials.
+/// Rejected, malformed, absent and rolled-back clocks also keep saved OAuth access dormant.
 #[tokio::test]
 async fn restored_cache_requires_date_on_the_successful_decoded_policy_response() {
     use crate::xbox::tests::fixture_headers;
     let (account, issued) = calibrated_account("original".into()).await;
     let checkpoint = account.checkpoint().unwrap();
     for case in 0..5 {
+        let proof = account.proof_key();
         let mut step = 0;
         let (address, server) = fixture_headers(
-            move |target, _, _| {
+            move |target, header, body| {
                 step += 1;
                 if step == 1 {
                     assert_eq!(target, "/nsal");
@@ -435,20 +436,57 @@ async fn restored_cache_requires_date_on_the_successful_decoded_policy_response(
                 }
                 if case < 2 {
                     assert_eq!(target, "/nsal");
-                    (200, vec![("Date", CACHE_DATE)], cache_policy())
-                } else {
-                    assert_eq!(target, "/device-token");
-                    (401, vec![], json!({}))
+                    return (200, vec![("Date", CACHE_DATE)], cache_policy());
+                }
+                match step {
+                    2 => {
+                        assert_eq!(target, "/device-token");
+                        let request: Value = serde_json::from_slice(body).unwrap();
+                        assert_eq!(request["Properties"]["ProofKey"], proof);
+                        verify_signature(target, header, body, &proof, &[]);
+                        // No fresh Date here can accidentally qualify the saved access.
+                        (200, vec![], token("fresh-device", false))
+                    }
+                    3 => {
+                        assert_eq!(target, "/oauth-token", "saved access must refresh after failed time admission");
+                        let form = url::form_urlencoded::parse(body).collect::<HashMap<_, _>>();
+                        assert_eq!(form["grant_type"], "refresh_token");
+                        assert_eq!(form["refresh_token"], "refresh");
+                        (200, vec![("Date", CACHE_DATE)], json!({
+                            "access_token": "fresh-access", "refresh_token": "rotated-refresh", "expires_in": 3600
+                        }))
+                    }
+                    4 => {
+                        assert_eq!(target, "/sisu");
+                        let request: Value = serde_json::from_slice(body).unwrap();
+                        assert_eq!(request["AccessToken"], "t=fresh-access");
+                        assert_eq!(request["ProofKey"], proof);
+                        assert_eq!(request["DeviceToken"], "fresh-device");
+                        verify_signature(target, header, body, &proof, &["User-Agent"]);
+                        (200, vec![("Date", CACHE_DATE)], json!({
+                            "TitleToken": token("fresh-title", false), "UserToken": token("fresh-user", false),
+                            "AuthorizationToken": token("fresh-default", true)
+                        }))
+                    }
+                    5 => {
+                        assert_eq!(target, "/xsts");
+                        let request: Value = serde_json::from_slice(body).unwrap();
+                        assert_eq!(request["Properties"]["TitleToken"], "fresh-title");
+                        assert_eq!(request["Properties"]["UserTokens"], json!(["fresh-user"]));
+                        verify_signature(target, header, body, &proof, &[]);
+                        (200, vec![("Date", CACHE_DATE)], token("fresh-issuance", true))
+                    }
+                    _ => panic!("unexpected unqualified-access continuation"),
                 }
             },
-            2,
+            if case < 2 { 2 } else { 5 },
         )
         .await;
         let saved = Checkpoint::from_bytes(Zeroizing::new(checkpoint.as_bytes().to_vec())).unwrap();
         let mut restored =
             Account::restore(Http::fixture(address), Config::default(), saved).unwrap();
-        assert!(restored.authorize("rp://fixture").await.is_err());
         if case < 2 {
+            assert!(restored.authorize("rp://fixture").await.is_err());
             assert_eq!(
                 restored
                     .authorize("rp://fixture")
@@ -457,6 +495,18 @@ async fn restored_cache_requires_date_on_the_successful_decoded_policy_response(
                     .header_value()
                     .unwrap(),
                 issued.header_value().unwrap()
+            );
+        } else {
+            let acquired = restored.authorize("rp://fixture").await.unwrap();
+            assert_ne!(
+                acquired.header_value().unwrap(),
+                issued.header_value().unwrap()
+            );
+            assert_eq!(restored.credentials().access_token(), "fresh-access");
+            assert_eq!(restored.credentials().refresh_token(), "rotated-refresh");
+            assert_eq!(
+                restored.key.verifying_key().to_sec1_point(false),
+                account.key.verifying_key().to_sec1_point(false)
             );
         }
         tokio::time::timeout(Duration::from_secs(5), server)
