@@ -141,6 +141,21 @@ impl Minecraft {
         self.xbox.mpsd()
     }
 
+    /// Prepares one protected RTA upgrade using this account's proof and XSTS cache.
+    /// The caller owns its account generation, WebSocket, deadlines and reconnect policy.
+    pub async fn rta_connection(
+        &mut self,
+        generation: xbox::rta::Generation,
+        upgrade_headers: reqwest::header::HeaderMap,
+    ) -> Result<xbox::rta::ConnectionRequest, xbox::rta::Error> {
+        self.xbox.rta_connection(generation, upgrade_headers).await
+    }
+
+    /// Rejects only the exact RTA upgrade credential; delayed failures cannot evict replacements.
+    pub fn reject_rta(&mut self, request: &xbox::rta::ConnectionRequest) -> bool {
+        self.xbox.reject_rta(request)
+    }
+
     /// Returns the game-session identifier shared by credential exchange and every mint.
     pub fn session_id(&self) -> uuid::Uuid {
         self.session_id
