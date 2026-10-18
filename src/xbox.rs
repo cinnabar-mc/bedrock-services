@@ -16,6 +16,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use zeroize::Zeroizing;
 
 pub(crate) const XBOX_RELYING_PARTY: &str = "http://xboxlive.com";
+const DEFAULT_LANGUAGE: &str = "en-US, en";
 const MAX_RELYING_PARTIES: usize = 64;
 const MAX_RELYING_PARTY_BYTES: usize = 4096;
 
@@ -23,6 +24,7 @@ mod checkpoint;
 pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
 
 pub mod mpsd;
+pub mod presence;
 pub mod rta;
 mod service;
 pub mod social;

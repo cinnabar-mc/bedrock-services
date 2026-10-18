@@ -1,7 +1,7 @@
 # Third-party notices
 
 Xbox request signing, authentication, Real-Time Activity subscriptions,
-Multiplayer Session Directory and PlayFab behavior are adapted from
+Multiplayer Session Directory, title presence and PlayFab behavior are adapted from
 [df-mc/go-xsapi](https://github.com/df-mc/go-xsapi) and
 [df-mc/go-playfab](https://github.com/df-mc/go-playfab), under the following license.
 ICE credential wire formats are adapted from

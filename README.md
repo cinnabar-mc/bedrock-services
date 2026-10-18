@@ -221,6 +221,20 @@ unrelated authorization failures do not silently discard it. Social read APIs do
 not publish presence, send invitations, modify multiplayer sessions or subscribe
 to realtime updates.
 
+`Account::title_presence()` and `Minecraft::title_presence()` borrow one-shot title
+presence writes through the same account, proof, NSAL policy and XSTS cache.
+`update` publishes a typed state with optional bounded rich-presence ID, service
+configuration and substitution parameters. It always addresses the authenticated
+title; application activity IDs and title policy stay with the caller. Repeat
+`update` explicitly for a heartbeat, using `UpdateResult::heartbeat_after` when
+present and a caller-selected fallback otherwise. The API owns no scheduling,
+background task or automatic retry, including for throttled service responses.
+
+Call `remove` explicitly on shutdown, even after a failed or canceled update:
+the earlier write may have applied. Removal sends once without consulting a local
+success flag. Dropping the borrowed view performs no network cleanup. Callers own
+their account-generation checks, refresh persistence and operation deadlines.
+
 `Account::mpsd()` and `Minecraft::mpsd()` borrow the session directory through the
 same account/proof/XSTS owner. `xbox::mpsd::Reference` validates a complete locator
 and converts existing social session observations without duplicating activity
@@ -322,7 +336,7 @@ install initial snapshots before applying changes or rebinding MPSD sessions.
 `into_connection` drops I/O/queued work and transfers disconnected pure state
 to another caller driver. Sign-out retires the owner and its account generation.
 
-Persistent derived-token caching, account sign-up, presence publication,
+Persistent derived-token caching, account sign-up,
 friends-world application joining/hosting, invitation receipt, applied realtime social updates,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account
