@@ -11,6 +11,9 @@ mod credentials;
 mod messaging;
 mod wire;
 
+#[cfg(feature = "signaling-tokio")]
+pub mod websocket;
+
 pub use connection::ConnectionRequest;
 pub use credentials::{IceServer, TurnCredentials};
 pub use messaging::{Event, Messaging, ReceivedSignal};

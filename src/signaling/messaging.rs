@@ -102,6 +102,12 @@ impl Messaging {
             .filter(|credentials| credentials.valid(now))
     }
 
+    /// Returns the pending count for terminal-event reservation in the optional socket owner.
+    #[cfg(feature = "signaling-tokio")]
+    pub(super) fn pending_requests(&self) -> usize {
+        self.pending.len()
+    }
+
     /// Returns the earliest request deadline or cached credential expiry for the caller's timer.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.pending

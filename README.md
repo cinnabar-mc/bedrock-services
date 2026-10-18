@@ -152,12 +152,42 @@ contain no remote diagnostics. Cancel requests explicitly, drive `expire(now)` a
 `next_deadline()` and close the state when its socket closes. All time is supplied
 by the caller; the state owns no output queue, tasks, sockets or automatic retries.
 
-This slice does not open the WebSocket or adapt messaging to NetherNet. The next
-integration must drive bounded socket I/O with redirects disabled, schedule pings,
-close/cancel on write failure and own reconnects. Reuse valid TURN credentials
-through `credentials(now)`; otherwise request them with `request_credentials`.
-SDP identities, request bytes and ICE credentials are sensitive and have no Debug
-implementation. Explicit exports and transport buffers are the caller's responsibility.
+The optional `signaling-tokio` feature adds `signaling::websocket::MessagingSocket`.
+It opens only the acquired WSS destination using verified Rustls, follows no
+redirects, and owns the socket, bounded wire/event queues and partial writes.
+Call `drive().await` continuously to progress messages, application pings,
+deadlines and control/close frames. It creates no runtime, tasks or automatic
+reconnect loop. Canceling a drive future retains pending wire writes on the owner;
+canceling a request retracts only frames that have not entered the socket sink.
+Drop or `abort()` for immediate shutdown, or call `close()` and keep driving to
+drain pending completions and finish the bounded close handshake.
+
+Request admission returns `Error::Limit` without publishing a handle or frame when
+a queue is full; retry local admission after driving. A reserved callback-response
+slot prevents receipt/control replies from being silently lost under backpressure.
+The driver accepts bounded JSON in text or binary messages, sends text, consumes
+JSON-RPC callback replies internally and returns application
+`Event`s, preserving explicit `acknowledge` after transport acceptance. Reuse current
+TURN credentials through `credentials()`; reconnect starts a fresh cache. Upgrade
+failures retain only numeric HTTP status or static causes. On `UpgradeStatus(401)`,
+pass the retained `ConnectionRequest` to `Minecraft::reject_messaging` before
+explicitly reacquiring and reconnecting.
+
+The runtime edge uses `tokio-websockets` and an explicit AWS-LC Rustls provider
+with WebPKI roots. Neither the SDK nor the selected WebSocket implementation logs
+raw upgrades or frames. Explicit exports, temporary HTTP/JSON and socket/TLS buffers
+can still retain credential copies and are not guaranteed erased on drop. Opaque
+SDP identities and ICE credentials must never be logged. The SDK does not import a
+NetherNet codec or decide whether an incoming signal is safe to acknowledge.
+
+The interactive example uses caller-supplied game/protocol policy and persistent
+device identity, then acquires configuration, opens the socket, obtains TURN
+credentials and closes it. It displays only the device code intended for sign-in
+and the number of TURN entries; account storage remains application-owned:
+
+```sh
+cargo run --features signaling-tokio --example messaging -- <game-version> <protocol> <persistent-device-uuid> <network-id>
+```
 
 Persistent derived-token caching, account sign-up, friends/presence,
 shared acquisition flights, transient service retries and
@@ -170,8 +200,8 @@ integration, real-account acceptance and source-based vanilla parity are unverif
 cd tools/go-oracle
 go build -o ../../target/go-signature-oracle .
 cd ../..
-BEDROCK_SERVICES_GO_ORACLE="$PWD/target/go-signature-oracle" cargo test
-cargo clippy --all-targets -- -D warnings
+BEDROCK_SERVICES_GO_ORACLE="$PWD/target/go-signature-oracle" cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 The Go oracle checks signing boundaries on original synthetic requests. Local
