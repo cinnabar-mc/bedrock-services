@@ -30,9 +30,6 @@ async fn pair_with_initial(
     let tcp = TcpStream::connect(listener.local_addr().unwrap())
         .await
         .unwrap();
-    socket2::SockRef::from(&tcp)
-        .set_send_buffer_size(1024)
-        .unwrap();
     let (server, _) = listener.accept().await.unwrap();
     let url = url::Url::parse("wss://messaging.invalid/prefix/ws/v1.0/messaging/connect").unwrap();
     let builder =
@@ -157,7 +154,7 @@ impl Wake for WakeCount {
 async fn pending_control_flush_does_not_self_wake_queued_output() {
     let (mut client, mut server) =
         pair_with_initial(Some(Message::ping(b"control".to_vec()))).await;
-    client.socket.as_mut().unwrap().get_mut().block_writes();
+    client.socket.as_mut().unwrap().get_mut().limit_writes(0);
     poll_fn(|cx| {
         assert!(client.poll_drive(cx).is_pending());
         if client.control_flush {
@@ -262,16 +259,27 @@ async fn backpressure_admission_and_canceled_drive_do_not_lose_or_duplicate_fram
             .send_signal(peer, Uuid::from_u128(101), "replacement", false, deadline)
             .unwrap(),
     );
-    // Poll exactly once, then cancel the future while its owner retains the partially flushed frame.
+    client.socket.as_mut().unwrap().get_mut().limit_writes(64);
+    poll_fn(|cx| {
+        assert!(client.poll_drive(cx).is_pending());
+        if client.socket.as_ref().unwrap().get_ref().write_budget() == Some(0) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    // Cancel a fresh drive future while its owner retains the partially flushed frame.
     let mut drive = Box::pin(client.drive());
     let pending = poll_fn(|cx| Poll::Ready(drive.as_mut().poll(cx).is_pending())).await;
     drop(drive);
     assert!(pending);
     assert!(
         client.write_active,
-        "small TCP send buffer must exercise an owned pending write"
+        "exhausted write budget must leave an owned pending frame"
     );
     assert!(client.cancel(first));
+    client.socket.as_mut().unwrap().get_mut().resume_writes();
     let expected: HashSet<_> = admitted.into_iter().filter(|id| *id != first).collect();
     let service = async {
         server
