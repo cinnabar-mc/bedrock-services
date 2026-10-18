@@ -359,6 +359,7 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
         directory.join(&mut attempt).await.unwrap(),
         JoinOutcome::Precondition { remaining: 2, .. }
     ));
+    assert!(!attempt.needs_reconciliation());
     assert!(matches!(
         directory.join(&mut attempt).await.unwrap(),
         JoinOutcome::Precondition { remaining: 1, .. }
