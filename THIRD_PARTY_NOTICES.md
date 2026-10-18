@@ -55,7 +55,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-The optional Tokio socket edge uses [tokio-websockets](https://github.com/Gelbpunkt/tokio-websockets),
+The optional Tokio socket edges use [tokio-websockets](https://github.com/Gelbpunkt/tokio-websockets),
 under the following license.
 
 MIT License

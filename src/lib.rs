@@ -14,6 +14,8 @@ pub mod playfab;
 pub mod realms;
 pub mod signaling;
 pub mod signature;
+#[cfg(any(feature = "signaling-tokio", feature = "rta-tokio"))]
+mod websocket_io;
 pub mod xbox;
 
 pub use error::Error;
