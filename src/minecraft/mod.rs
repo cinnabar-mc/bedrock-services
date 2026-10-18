@@ -364,7 +364,17 @@ impl Minecraft {
     }
 
     /// Loads one version-specific environment and validates it before sending credentials.
-    async fn discover(&mut self) -> Result<(), Error> {
+    /// Acquires public version-matched service discovery without authorizing or minting credentials.
+    ///
+    /// Reuses this account session's successfully acquired environment. A failed
+    /// or canceled request leaves discovery retryable on the same owner. Optional
+    /// service metadata is validated by its eventual consumer; use
+    /// [`Self::authorization_issuer`] afterward for a validated provider issuer.
+    /// This method performs no Xbox/PlayFab authorization or multiplayer mint.
+    ///
+    /// # Errors
+    /// Returns bounded HTTP/status/JSON or required service-route/title validation errors.
+    pub async fn discover(&mut self) -> Result<(), Error> {
         if self.environment.is_some() {
             return Ok(());
         }
