@@ -1,6 +1,7 @@
 //! Discovery, PlayFab login and Minecraft credentials owned by one account session.
 
 mod config;
+mod entity;
 mod token;
 
 pub use config::Config;
@@ -11,7 +12,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use p384::{ecdsa::VerifyingKey, pkcs8::EncodePublicKey};
 use reqwest::{Method, header::HeaderValue};
 use serde::Deserialize;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use url::Url;
 
 const USER_AGENT: &str = "libhttpclient/1.0.0.0";
@@ -26,6 +27,7 @@ pub struct Minecraft {
     session_id: uuid::Uuid,
     environment: Option<Environment>,
     playfab: Option<Arc<playfab::Session>>,
+    entities: HashMap<playfab::EntityKind, Arc<playfab::Entity>>,
     authorization: Option<Arc<Authorization>>,
 }
 
@@ -68,6 +70,7 @@ impl Minecraft {
             environment: None,
             session_id: uuid::Uuid::new_v4(),
             playfab: None,
+            entities: HashMap::new(),
             authorization: None,
         })
     }
@@ -103,6 +106,11 @@ impl Minecraft {
             .ok_or(Error::Invalid("missing discovery"))?
             .play_fab_title_id;
         let session = Arc::new(playfab::login(&mut self.http, &mut self.xbox, title).await?);
+        self.entities.clear();
+        self.entities.insert(
+            playfab::EntityKind::TitlePlayerAccount,
+            Arc::clone(&session.entity),
+        );
         self.playfab = Some(Arc::clone(&session));
         Ok(session)
     }
