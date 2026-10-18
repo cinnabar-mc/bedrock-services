@@ -11,6 +11,7 @@ pub mod minecraft;
 mod nsal;
 pub mod oauth;
 pub mod playfab;
+pub mod realms;
 pub mod signature;
 pub mod xbox;
 
