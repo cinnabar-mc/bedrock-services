@@ -265,6 +265,13 @@ pub struct Invitation {
     pub(super) reference: Option<social::SessionReference>,
 }
 
+impl Invitation {
+    /// Borrows the service-provided locator without inferring that its recipient has joined.
+    pub fn reference(&self) -> Option<&social::SessionReference> {
+        self.reference.as_ref()
+    }
+}
+
 /// Accepts bounded HTTP validators without exposing them through Debug or errors.
 pub(super) fn etag(headers: &reqwest::header::HeaderMap) -> Result<Option<HeaderValue>, Error> {
     headers
