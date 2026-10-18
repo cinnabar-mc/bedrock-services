@@ -5,7 +5,8 @@ device-code sign-in and refresh, Xbox proof keys, XASD/SISU acquisition, default
 NSAL policy and per-relying-party XSTS credentials. Minecraft services add
 version-specific discovery, title-scoped NSAL, PlayFab login and service credentials,
 multiplayer tokens minted for the caller's P-384 connection key, and account-borrowed
-Realms browsing and join resolution.
+Realms browsing and join resolution. Xbox social reads share that account's proof
+and authorization state.
 
 ```rust,no_run
 use bedrock_services::{oauth::{MicrosoftAuth, Poll}, xbox::Config};
@@ -114,7 +115,22 @@ These concrete HTTP clients use the caller's async runtime. Transport state mach
 belong to the separate networking libraries; service credentials do not create an
 internal runtime or per-account background tasks.
 
-Persistent proof-key/session caching, account sign-up, friends/presence,
+`Account::social()` and `Minecraft::social()` borrow PeopleHub profiles and
+relationship lists, full user/device/title presence, and multiplayer activity
+handles through `xbox::social::Social`. Read calls reuse the account's NSAL policy,
+proof key and per-relying-party authorization cache. Language preferences are
+explicit; basic lists omit decorations. Activity handles preserve their session
+references and title-defined metadata without inferring join permission from
+missing or unknown restrictions. Unknown presence states remain available.
+
+Each read sends one social request after credential acquisition. An explicit `token_expired`
+challenge invalidates the exact issuance for the next caller-driven attempt;
+unrelated authorization failures do not silently discard it. Social read APIs do
+not publish presence, send invitations, modify multiplayer sessions or subscribe
+to realtime updates.
+
+Persistent proof-key/session caching, account sign-up, presence publication,
+friends-world joining/hosting, invitations, realtime social updates,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account
 integration, real-account acceptance and source-based vanilla parity are unverified.

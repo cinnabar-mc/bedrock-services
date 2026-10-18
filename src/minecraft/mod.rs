@@ -91,6 +91,11 @@ impl Minecraft {
         self.xbox
     }
 
+    /// Borrows Xbox social services using the same account, proof and XSTS cache.
+    pub fn social(&mut self) -> xbox::social::Social<'_> {
+        self.xbox.social()
+    }
+
     /// Returns the game-session identifier shared by credential exchange and every mint.
     pub fn session_id(&self) -> uuid::Uuid {
         self.session_id
