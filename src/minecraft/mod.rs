@@ -16,7 +16,8 @@ use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc};
 use url::Url;
 
-const USER_AGENT: &str = "libhttpclient/1.0.0.0";
+/// Minecraft service and public authorization-provider metadata request policy.
+pub const USER_AGENT: &str = "libhttpclient/1.0.0.0";
 
 /// Owns the concrete service chain without background tasks or shared mutable locks.
 /// Async methods use the caller's runtime. Successfully acquired stages survive
