@@ -14,6 +14,9 @@ pub mod playfab;
 pub mod realms;
 pub mod signaling;
 pub mod signature;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support;
 #[cfg(any(feature = "signaling-tokio", feature = "rta-tokio"))]
 mod websocket_io;
 pub mod xbox;

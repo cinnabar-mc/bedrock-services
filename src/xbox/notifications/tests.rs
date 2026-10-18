@@ -5,7 +5,7 @@ use crate::{
     xbox::{
         Config,
         mpsd::tests::signed_service_script,
-        tests::{fixture_headers, token},
+        test_support::{fixture_headers, token},
     },
 };
 use serde_json::json;

@@ -9,6 +9,8 @@
 
 mod join;
 mod publish;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_support;
 mod types;
 
 pub use join::{JoinAttempt, JoinOutcome, MAX_JOIN_ATTEMPTS};
@@ -97,7 +99,7 @@ pub enum Update {
 /// Borrows one existing account's HTTP, proof and per-relying-party XSTS cache.
 pub struct Directory<'a> {
     account: &'a mut Account,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fixture_base: Option<Url>,
 }
 
@@ -106,7 +108,7 @@ impl Account {
     pub fn mpsd(&mut self) -> Directory<'_> {
         Directory {
             account: self,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             fixture_base: None,
         }
     }
@@ -437,7 +439,7 @@ impl Directory<'_> {
     /// Constructs only this service's fixed endpoint plus individually escaped components.
     fn destination(&self, path: &[&str]) -> Result<Url, Error> {
         let mut url = Url::parse(ENDPOINT).map_err(|_| Error::Invalid("directory endpoint"))?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(base) = &self.fixture_base {
             url = base.clone();
         }

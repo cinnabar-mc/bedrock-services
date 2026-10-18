@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     oauth::Credentials,
     realms::{Error as RealmsError, Join, NetworkProtocol, PingResult},
-    xbox::tests::token,
+    xbox::test_support::token,
 };
 use serde_json::{Value, json};
 use std::{

@@ -4,7 +4,7 @@ use crate::{
     oauth::Credentials,
     xbox::{
         Config,
-        tests::{fixture_headers, token},
+        test_support::{fixture_headers, token},
     },
 };
 use base64::{

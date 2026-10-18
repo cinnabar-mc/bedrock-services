@@ -3,7 +3,7 @@ use crate::{
     oauth::MicrosoftAuth,
     xbox::{
         XBOX_RELYING_PARTY,
-        tests::{fixture, token, verify_signature},
+        test_support::{fixture, token, verify_signature},
     },
 };
 use serde_json::{Value, json};
@@ -259,7 +259,7 @@ fn cache_policy() -> Value {
 
 /// Acquires original synthetic cache entries through signed HTTP with an explicit service Date.
 async fn calibrated_account(value: String) -> (Account, Arc<super::super::Authorization>) {
-    use crate::xbox::tests::fixture_headers;
+    use crate::xbox::test_support::fixture_headers;
     let mut proof = None;
     let (address, server) = fixture_headers(
         move |target, header, body| {
@@ -315,7 +315,7 @@ async fn calibrated_account(value: String) -> (Account, Arc<super::super::Author
 /// Reuses proof-bound issuances after fresh policy/time, persists eviction and keeps hard expiry.
 #[tokio::test]
 async fn calibrated_restart_reuses_issuances_without_resurrecting_rejection_or_expiry() {
-    use crate::xbox::tests::fixture_headers;
+    use crate::xbox::test_support::fixture_headers;
     let (account, issued) = calibrated_account("original".into()).await;
     let proof = account.key.verifying_key().to_sec1_point(false);
     let checkpoint = account.checkpoint().unwrap();
@@ -430,7 +430,7 @@ async fn calibrated_restart_reuses_issuances_without_resurrecting_rejection_or_e
 /// Rejected, malformed, absent and rolled-back clocks also keep saved OAuth access dormant.
 #[tokio::test]
 async fn restored_cache_requires_date_on_the_successful_decoded_policy_response() {
-    use crate::xbox::tests::fixture_headers;
+    use crate::xbox::test_support::fixture_headers;
     let (account, issued) = calibrated_account("original".into()).await;
     let checkpoint = account.checkpoint().unwrap();
     for case in 0..5 {
@@ -600,7 +600,7 @@ async fn changed_material_and_oversized_cache_preserve_only_authoritative_restar
 /// Cancellation before public policy completes retains dormant bytes for a later bounded attempt.
 #[tokio::test]
 async fn cancelled_policy_fetch_retains_the_original_dormant_checkpoint() {
-    use crate::xbox::tests::fixture_headers;
+    use crate::xbox::test_support::fixture_headers;
     use tokio::{io::AsyncReadExt, net::TcpListener, sync::oneshot};
     let (account, issued) = calibrated_account("original".into()).await;
     let checkpoint = account.checkpoint().unwrap();

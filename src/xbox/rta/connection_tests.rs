@@ -4,7 +4,7 @@ use crate::{
     oauth::Credentials,
     xbox::{
         Config,
-        tests::{fixture, token},
+        test_support::{fixture, token},
     },
 };
 use p256::ecdsa::{Signature, signature::hazmat::PrehashVerifier};

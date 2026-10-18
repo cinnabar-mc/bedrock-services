@@ -191,7 +191,7 @@ impl Http {
         Self::fixture_agent(address, "fixture-acquisition-agent")
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     /// Exercises an edge owner's explicit agent against a local HTTP fixture.
     pub fn fixture_agent(address: std::net::SocketAddr, user_agent: &str) -> Self {
         let base = format!("http://{address}");
@@ -216,6 +216,7 @@ impl Http {
                 nsal: format!("{base}/nsal"),
                 nsal_current: format!("{base}/nsal-current"),
                 discovery: base.clone(),
+                #[cfg(test)]
                 playfab: Some(format!("{base}/Client/LoginWithXbox")),
             },
             clock: None,
