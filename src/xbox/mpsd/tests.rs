@@ -455,6 +455,70 @@ async fn malformed_rejected_join_metadata_does_not_make_the_write_ambiguous() {
     server.await.unwrap();
 }
 
+/// Exercises real reads/refresh/conditional leave without needing the original RTA socket to be live.
+#[tokio::test]
+async fn bound_cleanup_preserves_replacement_membership_and_requires_an_exact_validator() {
+    for scenario in ["original", "replacement", "missing-validator"] {
+        let connection = Uuid::from_u128(41);
+        let subscription = Uuid::from_u128(42);
+        let binding = Binding::new(connection, subscription).unwrap();
+        let (mut account, address, server) = script(true, move |step, _, headers, body| {
+            let mut value = snapshot(step as u64);
+            value["members"]["me"]["properties"]["system"] = json!({
+                "active":true, "connection":connection,
+                "subscription":{"id":if scenario == "replacement" && step == 2 { Uuid::from_u128(43) } else { subscription }}
+            });
+            match step {
+                1 => (200, vec![("ETag", "\"v1\"")], value),
+                2 => {
+                    assert_eq!(header(headers, "if-none-match"), "\"v1\"");
+                    (200, if scenario == "missing-validator" { vec![] } else { vec![("ETag", "\"v2\"")] }, value)
+                }
+                3 => {
+                    assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), json!({"members":{"me":null}}));
+                    assert_eq!(header(headers, "if-match"), if scenario == "missing-validator" { "*" } else { "\"v2\"" });
+                    (204, vec![], Value::Null)
+                }
+                _ => panic!("unexpected bound cleanup request"),
+            }
+        }, 3).await;
+        let mut directory = account.mpsd();
+        directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+        let reference =
+            Reference::new(Uuid::from_u128(7), "MinecraftLobby".into(), "Hosted".into()).unwrap();
+        let mut session = directory.read(&reference).await.unwrap();
+        assert!(session.is_bound(binding));
+        assert_eq!(directory.sync(&mut session).await.unwrap(), Update::Updated);
+        let result = directory.leave_bound(&mut session, binding).await;
+        match scenario {
+            "original" => {
+                assert_eq!(result.unwrap(), Update::Closed);
+                server.await.unwrap();
+            }
+            "replacement" => {
+                assert!(
+                    matches!(result, Err(Error::Invalid("session cleanup binding"))),
+                    "cleanup must never delete an observed replacement membership"
+                );
+                assert!(!session.is_closed());
+                assert!(!session.needs_sync());
+                server.abort();
+                let _ = server.await;
+            }
+            _ => {
+                assert!(
+                    matches!(result, Err(Error::Invalid("session cleanup validator"))),
+                    "wildcard cleanup cannot protect an unobserved replacement"
+                );
+                assert!(!session.is_closed());
+                assert!(!session.needs_sync());
+                server.abort();
+                let _ = server.await;
+            }
+        }
+    }
+}
+
 /// Drops a live HTTP future once the fixture has applied its request but before consuming its reply.
 async fn cancel_after_application<F: std::future::Future>(
     future: F,

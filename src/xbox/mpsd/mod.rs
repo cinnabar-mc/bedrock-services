@@ -253,6 +253,19 @@ impl Directory<'_> {
             .await
     }
 
+    /// Removes this owner's membership only under its original binding and exact current validator.
+    /// The retained binding permits cleanup after its RTA socket ends; synchronize dirty owners first.
+    ///
+    /// # Errors
+    /// Returns lifecycle, ownership, missing-validator or service errors without deleting a replacement.
+    pub async fn leave_bound(
+        &mut self,
+        session: &mut Session,
+        _binding: Binding,
+    ) -> Result<Update, Error> {
+        self.leave(session).await
+    }
+
     /// Publishes the existing membership as this account's discoverable activity, once.
     /// Social::activities remains the single read/search API. Cancellation can leave an activity published.
     ///
