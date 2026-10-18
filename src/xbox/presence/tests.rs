@@ -160,11 +160,11 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
                             extra.push(("Retry-After", "1"));
                             (if step == 11 { 429 } else { 503 }, json!({"error":"SENSITIVE-response"}))
                         }
-                        13 | 14 => {
+                        13 | 14 | 17 => {
                             assert!(headers.starts_with("DELETE "));
                             assert!(body.is_empty());
                             assert_eq!(header(headers, "content-length"), "0");
-                            (if step == 13 { 200 } else { 201 }, Value::Null)
+                            (match step { 13 => 200, 14 => 201, _ => 202 }, Value::Null)
                         }
                         15 => (202, Value::Null),
                         16 => {
@@ -178,7 +178,7 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
             };
             (status, extra, response)
         },
-        16,
+        17,
     )
     .await;
     let config = Config::default();
@@ -215,13 +215,7 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
     }
     // Cleanup remains explicit even after an update error; no success flag suppresses it.
     presence.remove().await.unwrap();
-    assert!(matches!(
-        presence.remove().await,
-        Err(Error::Status {
-            status: StatusCode::CREATED,
-            ..
-        })
-    ));
+    presence.remove().await.unwrap();
     assert!(matches!(
         presence.update(&update).await,
         Err(Error::Status {
@@ -237,6 +231,13 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
             .heartbeat_after,
         None
     );
+    assert!(matches!(
+        presence.remove().await,
+        Err(Error::Status {
+            status: StatusCode::ACCEPTED,
+            ..
+        })
+    ));
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
