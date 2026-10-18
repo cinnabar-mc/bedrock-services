@@ -58,7 +58,7 @@ pub enum Device {
 }
 
 impl Default for Config {
-    /// Uses Cinnabar's current Android Minecraft authentication policy.
+    /// Provides a default Android Minecraft authentication policy.
     fn default() -> Self {
         Self {
             client_id: "0000000048183522".into(),
