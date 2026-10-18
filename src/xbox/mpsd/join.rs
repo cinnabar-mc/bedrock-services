@@ -24,6 +24,14 @@ pub struct JoinAttempt {
     ready: bool,
 }
 
+impl JoinAttempt {
+    /// Reports an admitted write whose membership must be reconciled before replay or abandonment.
+    /// Cancellation before dispatch leaves this false; an explicit retryable 412 also clears it.
+    pub fn needs_reconciliation(&self) -> bool {
+        !self.ready && self.attempts > 0
+    }
+}
+
 /// One attempt's concrete result; the caller owns retry waiting, deadlines and cancellation.
 #[non_exhaustive]
 pub enum JoinOutcome {
