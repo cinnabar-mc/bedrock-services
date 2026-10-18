@@ -385,6 +385,10 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
         directory.join(&mut raced).await.unwrap(),
         JoinOutcome::Exhausted
     ));
+    assert!(
+        !raced.needs_reconciliation(),
+        "explicitly exhausted 412 writes did not create membership"
+    );
     assert!(matches!(
         directory.join(&mut raced).await,
         Err(Error::JoinFinished)
@@ -416,6 +420,38 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
             .is_err()
     );
     assert!(Reference::new(Uuid::from_u128(1), "../credentials".into(), "world".into()).is_err());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_rejected_join_metadata_does_not_make_the_write_ambiguous() {
+    let (mut account, address, server) = script(
+        true,
+        |_, _, _, _| (412, vec![("ETag", "unquoted")], json!({})),
+        1,
+    )
+    .await;
+    let mut directory = account.mpsd();
+    directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+    let mut attempt = directory
+        .join_attempt(
+            Uuid::from_u128(5),
+            Binding::new(Uuid::from_u128(2), Uuid::from_u128(3)).unwrap(),
+            MemberData::default(),
+        )
+        .unwrap();
+    assert!(matches!(
+        directory.join(&mut attempt).await,
+        Err(Error::Invalid("session ETag"))
+    ));
+    assert!(
+        !attempt.needs_reconciliation(),
+        "the observed 412 rejected membership before metadata decoding"
+    );
+    assert!(matches!(
+        directory.join(&mut attempt).await,
+        Err(Error::JoinFinished)
+    ));
     server.await.unwrap();
 }
 
@@ -454,13 +490,14 @@ async fn canceled_writes_require_reconciliation_and_canceled_joins_cannot_replay
             1=>(200,vec![("ETag","\"v1\"")],snapshot(1)),
             2=>{assert_eq!(header(headers,"if-match"),"\"v1\"");signal.store(2,Ordering::SeqCst);(200,vec![("ETag","\"v2\"")],snapshot(2))}
             3=>{assert_eq!(header(headers,"if-none-match"),"");(200,vec![("ETag","\"v2\"")],snapshot(2))}
-            4=>{let value:Value=serde_json::from_slice(body).unwrap();assert_eq!(value["members"]["me"]["constants"]["system"]["xuid"],"123");signal.store(4,Ordering::SeqCst);
+            4|5=>(412,vec![("ETag","\"raced\"")],json!({})),
+            6=>{let value:Value=serde_json::from_slice(body).unwrap();assert_eq!(value["members"]["me"]["constants"]["system"]["xuid"],"123");signal.store(6,Ordering::SeqCst);
                 (200,vec![("Content-Location","/serviceconfigs/00000000-0000-0000-0000-000000000007/sessionTemplates/MinecraftLobby/sessions/Joined")],snapshot(1))}
-            5=>(200,vec![("ETag","\"joined\"")],snapshot(1)),
-            6|7=>{assert_eq!(serde_json::from_slice::<Value>(body).unwrap(),json!({"members":{"me":null}}));(204,vec![],Value::Null)}
+            7=>(200,vec![("ETag","\"joined\"")],snapshot(1)),
+            8|9=>{assert_eq!(serde_json::from_slice::<Value>(body).unwrap(),json!({"members":{"me":null}}));(204,vec![],Value::Null)}
             _=>panic!("unexpected cancellation request"),
         }
-    },7).await;
+    },9).await;
     let mut directory = account.mpsd();
     directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
     let reference =
@@ -479,7 +516,14 @@ async fn canceled_writes_require_reconciliation_and_canceled_joins_cannot_replay
     let mut attempt = directory
         .join_attempt(Uuid::from_u128(5), binding, MemberData::default())
         .unwrap();
-    cancel_after_application(directory.join(&mut attempt), &applied, 4).await;
+    for _ in 1..MAX_JOIN_ATTEMPTS {
+        assert!(matches!(
+            directory.join(&mut attempt).await.unwrap(),
+            JoinOutcome::Precondition { .. }
+        ));
+        assert!(!attempt.needs_reconciliation());
+    }
+    cancel_after_application(directory.join(&mut attempt), &applied, 6).await;
     assert!(attempt.needs_reconciliation());
     assert!(matches!(
         directory.join(&mut attempt).await,
