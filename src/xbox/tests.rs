@@ -8,7 +8,7 @@ use tokio::{
 };
 
 /// Serves a bounded sequence of synthetic HTTP exchanges on an ephemeral loopback port.
-async fn fixture(
+pub(crate) async fn fixture(
     mut handler: impl FnMut(&str, &str, &[u8]) -> (u16, Value) + Send + 'static,
     count: usize,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -56,7 +56,7 @@ async fn fixture(
 }
 
 /// Produces original credentials with deliberately distant expiry and no account data.
-fn token(value: &str, user: bool) -> Value {
+pub(crate) fn token(value: &str, user: bool) -> Value {
     json!({"Token": value, "NotAfter": "2099-01-01T00:00:00Z",
         "DisplayClaims": if user { json!({"xui": [{"uhs": "synthetic", "xid": "123", "gtg": "Fixture"}]}) }
             else { json!({}) }})

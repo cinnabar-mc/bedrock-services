@@ -6,7 +6,7 @@ use reqwest::{
     header::{HeaderMap, HeaderValue},
 };
 use serde::de::DeserializeOwned;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use zeroize::Zeroizing;
 
 pub(crate) const RESPONSE_LIMIT: usize = 1024 * 1024;
@@ -18,6 +18,10 @@ pub(crate) struct Endpoints {
     pub sisu: String,
     pub xsts: String,
     pub nsal: String,
+    pub nsal_current: String,
+    pub discovery: String,
+    #[cfg(test)]
+    pub playfab: Option<String>,
 }
 
 impl Default for Endpoints {
@@ -30,6 +34,10 @@ impl Default for Endpoints {
             sisu: "https://sisu.xboxlive.com/authorize".into(),
             xsts: "https://xsts.auth.xboxlive.com/xsts/authorize".into(),
             nsal: "https://title.mgt.xboxlive.com/titles/default/endpoints?type=1".into(),
+            nsal_current: "https://title.mgt.xboxlive.com/titles/current/endpoints".into(),
+            discovery: "https://client.discovery.minecraft-services.net".into(),
+            #[cfg(test)]
+            playfab: None,
         }
     }
 }
@@ -38,7 +46,7 @@ pub(crate) struct Http {
     client: Client,
     user_agent: HeaderValue,
     pub endpoints: Endpoints,
-    skew: Option<(bool, Duration)>,
+    clock: Option<(SystemTime, Instant)>,
 }
 
 pub(crate) struct Response {
@@ -62,7 +70,7 @@ impl Http {
             client,
             user_agent,
             endpoints: Endpoints::default(),
-            skew: None,
+            clock: None,
         })
     }
 
@@ -73,13 +81,13 @@ impl Http {
             .header("user-agent", self.user_agent.clone())
     }
 
-    /// Reads the edge clock and applies the last successfully parsed server Date.
+    /// Advances the last server Date with monotonic elapsed time at the HTTP edge.
     pub fn now(&self) -> SystemTime {
-        let local = SystemTime::now();
-        match self.skew {
-            Some((true, delta)) => local.checked_add(delta).unwrap_or(local),
-            Some((false, delta)) => local.checked_sub(delta).unwrap_or(local),
-            None => local,
+        match self.clock {
+            Some((server, received)) => server
+                .checked_add(received.elapsed())
+                .unwrap_or_else(SystemTime::now),
+            None => SystemTime::now(),
         }
     }
 
@@ -92,11 +100,7 @@ impl Http {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| httpdate::parse_http_date(value).ok())
         {
-            let local = SystemTime::now();
-            self.skew = Some(match date.duration_since(local) {
-                Ok(delta) => (true, delta),
-                Err(error) => (false, error.duration()),
-            });
+            self.clock = Some((date, Instant::now()));
         }
         if response
             .content_length()
@@ -137,6 +141,12 @@ impl Http {
     #[cfg(test)]
     /// Uses only the test's loopback endpoint without changing production TLS policy.
     pub fn fixture(address: std::net::SocketAddr) -> Self {
+        Self::fixture_agent(address, "fixture-acquisition-agent")
+    }
+
+    #[cfg(test)]
+    /// Exercises an edge owner's explicit agent against a local HTTP fixture.
+    pub fn fixture_agent(address: std::net::SocketAddr, user_agent: &str) -> Self {
         let base = format!("http://{address}");
         Self {
             client: Client::builder()
@@ -145,7 +155,7 @@ impl Http {
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap(),
-            user_agent: HeaderValue::from_static("fixture-acquisition-agent"),
+            user_agent: HeaderValue::from_str(user_agent).unwrap(),
             endpoints: Endpoints {
                 device_code: format!("{base}/device-code"),
                 oauth_token: format!("{base}/oauth-token"),
@@ -153,8 +163,11 @@ impl Http {
                 sisu: format!("{base}/sisu"),
                 xsts: format!("{base}/xsts"),
                 nsal: format!("{base}/nsal"),
+                nsal_current: format!("{base}/nsal-current"),
+                discovery: base.clone(),
+                playfab: Some(format!("{base}/Client/LoginWithXbox")),
             },
-            skew: None,
+            clock: None,
         }
     }
 }
