@@ -1,6 +1,13 @@
 use super::*;
 use crate::{oauth::MicrosoftAuth, xbox::Config};
-use std::{io, net::SocketAddr};
+use std::{
+    io,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -14,7 +21,7 @@ const LIMITS: [Option<usize>; 3] = [
     Some(crate::xbox::achievements::MAX_PAGE_BYTES),
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Framing {
     Declared(usize),
     Chunked,
@@ -25,12 +32,15 @@ async fn fixture(
     body: Vec<u8>,
     framing: Framing,
     request_line: &'static str,
-) -> (SocketAddr, JoinHandle<io::Result<()>>) {
+) -> (SocketAddr, JoinHandle<io::Result<()>>, Arc<AtomicU8>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let progress = Arc::new(AtomicU8::new(0));
+    let phase = Arc::clone(&progress);
     let task = tokio::spawn(async move {
         tokio::time::timeout(Duration::from_secs(10), async move {
             let (mut stream, _) = listener.accept().await?;
+            phase.store(1, Ordering::Relaxed);
             let mut request = Vec::new();
             loop {
                 assert!(request.len() < RESPONSE_LIMIT);
@@ -39,6 +49,7 @@ async fn fixture(
                     break;
                 }
             }
+            phase.store(2, Ordering::Relaxed);
             assert!(
                 std::str::from_utf8(&request)
                     .unwrap()
@@ -52,6 +63,7 @@ async fn fixture(
                 "HTTP/1.1 200 OK\r\nDate: {FIXTURE_DATE}\r\n{length}Connection: close\r\n\r\n"
             );
             stream.write_all(header.as_bytes()).await?;
+            phase.store(3, Ordering::Relaxed);
             match framing {
                 Framing::Declared(_) => stream.write_all(&body).await?,
                 Framing::Chunked => {
@@ -65,17 +77,18 @@ async fn fixture(
                     stream.write_all(b"0\r\n\r\n").await?;
                 }
             }
+            phase.store(4, Ordering::Relaxed);
             Ok(())
         })
         .await
         .expect("bounded HTTP fixture")
     });
-    (address, task)
+    (address, task, progress)
 }
 
 /// Observes the actual reader result before retiring a writer closed by a rejected response.
 async fn read(body: Vec<u8>, framing: Framing, limit: Option<usize>) -> Result<Response, Error> {
-    let (address, server) = fixture(body, framing, "GET /body HTTP/1.1\r\n").await;
+    let (address, server, _) = fixture(body, framing, "GET /body HTTP/1.1\r\n").await;
     let mut http = Http::fixture(address);
     let request = http
         .request(Method::GET, &format!("http://{address}/body"))
@@ -158,7 +171,7 @@ async fn response_body_limits_preserve_public_device_acquisition_bound() {
     assert!(body.len() > RESPONSE_LIMIT);
     assert!(body.len() < PROFILE_RESPONSE_LIMIT);
     for framing in [Framing::Declared(body.len()), Framing::Chunked] {
-        let (address, server) =
+        let (address, server, phase) =
             fixture(body.clone(), framing, "POST /device-code HTTP/1.1\r\n").await;
         let mut auth = MicrosoftAuth {
             http: Http::fixture(address),
@@ -168,8 +181,29 @@ async fn response_body_limits_preserve_public_device_acquisition_bound() {
             tokio::time::timeout(Duration::from_secs(10), auth.start(SystemTime::UNIX_EPOCH))
                 .await
                 .expect("bounded device-code acquisition");
-        server.abort();
-        let _ = server.await;
+        let failure = match &result {
+            Ok(_) => "unexpected success",
+            Err(Error::ResponseTooLarge) => "ResponseTooLarge",
+            Err(Error::Http(error)) if error.is_timeout() => "HTTP timeout",
+            Err(Error::Http(error)) if error.is_connect() => "HTTP connection failure",
+            Err(Error::Http(error)) if error.is_body() => "HTTP body failure",
+            Err(Error::Http(_)) => "other HTTP failure",
+            Err(_) => "other SDK failure",
+        };
+        let completed = server.is_finished();
+        eprintln!(
+            "device acquisition diagnostic: framing={framing:?}, result={failure}, fixture_phase={}, fixture_finished={completed}; phases: 0=accept pending,1=accepted,2=request headers,3=response headers,4=response body",
+            phase.load(Ordering::Relaxed)
+        );
+        if !completed {
+            server.abort();
+        }
+        match server.await {
+            Ok(Ok(())) => eprintln!("device acquisition fixture: completed"),
+            Ok(Err(error)) => eprintln!("device acquisition fixture: IO {:?}", error.kind()),
+            Err(error) if error.is_cancelled() => eprintln!("device acquisition fixture: aborted"),
+            Err(_) => eprintln!("device acquisition fixture: panicked"),
+        }
         assert!(matches!(result, Err(Error::ResponseTooLarge)));
     }
 }
