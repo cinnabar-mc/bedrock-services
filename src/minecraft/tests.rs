@@ -23,6 +23,94 @@ fn service_token(label: &str) -> Value {
         "treatmentContext":"fixture"}})
 }
 
+/// Creates one original SDK account whose HTTP routes remain confined to the existing local fixture.
+fn discovery_owner(address: std::net::SocketAddr) -> Minecraft {
+    let config = xbox::Config::default();
+    let credentials = Credentials::from_tokens(
+        config.client_id.clone(),
+        "synthetic-access".into(),
+        "synthetic-refresh".into(),
+        UNIX_EPOCH + Duration::from_secs(4_102_444_800),
+    )
+    .unwrap();
+    let account = xbox::Account::new(Http::fixture(address), config, credentials).unwrap();
+    let mut minecraft = Minecraft::new(
+        account,
+        Config::desktop("1.26.50", 2193, Uuid::from_u128(1)),
+    )
+    .unwrap();
+    minecraft.http = Http::fixture_agent(address, USER_AGENT);
+    minecraft
+}
+
+/// Discovery remains a public unauthenticated GET even for a cold, otherwise unused account.
+#[tokio::test]
+async fn explicit_discovery_reuses_one_request_without_authorization_or_multiplayer_mint() {
+    let (address, server) = fixture_headers(|target, headers, body| {
+        assert_eq!(target, "/api/v1.0/discovery/MinecraftPE/builds/1.26.50");
+        let headers = headers.to_ascii_lowercase();
+        assert!(headers.starts_with("get "));
+        for name in ["authorization:", "signature:", "session-id:"] { assert!(!headers.contains(name)); }
+        assert!(body.is_empty());
+        (200, Vec::new(), json!({"result":{"serviceEnvironments":{"auth":{"prod":{
+            "serviceUri":"https://synthetic-service.invalid/", "playFabTitleId":"AB12", "issuer":"https://synthetic-issuer.invalid/tenant/"
+        }}}}}))
+    }, 1).await;
+    let mut minecraft = discovery_owner(address);
+    let session = minecraft.session_id();
+    let checkpoint = minecraft.checkpoint().unwrap();
+    assert!(minecraft.authorization_issuer().is_err());
+    minecraft.discover().await.unwrap();
+    server.await.unwrap();
+    // The fixture listener is gone: any accidental warm request now fails instead of being hidden by a stub.
+    minecraft.discover().await.unwrap();
+    minecraft.discover().await.unwrap();
+    assert_eq!(
+        minecraft.authorization_issuer().unwrap(),
+        "https://synthetic-issuer.invalid/tenant/"
+    );
+    assert_eq!(minecraft.session_id(), session);
+    assert_eq!(
+        minecraft.checkpoint().unwrap().as_bytes(),
+        checkpoint.as_bytes()
+    );
+}
+
+/// Failed discovery never installs a poisoned cache entry or forces a replacement account owner.
+#[tokio::test]
+async fn explicit_discovery_failure_is_retryable_without_minting() {
+    let mut step = 0;
+    let (address, server) = fixture_headers(move |target, headers, body| {
+        step += 1;
+        assert_eq!(target, "/api/v1.0/discovery/MinecraftPE/builds/1.26.50");
+        assert!(headers.to_ascii_lowercase().starts_with("get "));
+        assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+        assert!(body.is_empty());
+        if step == 1 { return (503, Vec::new(), json!({"error":"synthetic unavailable"})); }
+        (200, Vec::new(), json!({"result":{"serviceEnvironments":{"auth":{"prod":{
+            "serviceUri":"https://synthetic-service.invalid/", "playFabTitleId":"AB12", "issuer":"https://synthetic-issuer.invalid/"
+        }}}}}))
+    }, 2).await;
+    let mut minecraft = discovery_owner(address);
+    let session = minecraft.session_id();
+    assert!(matches!(
+        minecraft.discover().await,
+        Err(Error::Status {
+            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            ..
+        })
+    ));
+    assert!(minecraft.authorization_issuer().is_err());
+    minecraft.discover().await.unwrap();
+    server.await.unwrap();
+    minecraft.discover().await.unwrap();
+    assert_eq!(
+        minecraft.authorization_issuer().unwrap(),
+        "https://synthetic-issuer.invalid/"
+    );
+    assert_eq!(minecraft.session_id(), session);
+}
+
 /// Drives discovery and actual HTTP through Xbox, title NSAL, PlayFab and key-bound mint.
 #[tokio::test]
 async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {

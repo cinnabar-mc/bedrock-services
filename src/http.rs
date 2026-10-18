@@ -10,6 +10,8 @@ use std::time::{Duration, Instant, SystemTime};
 use zeroize::Zeroizing;
 
 pub(crate) const RESPONSE_LIMIT: usize = 1024 * 1024;
+/// Shared response budget for rendered persona images and user statistics.
+pub(crate) const PROFILE_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 const DEFAULT_ACCEPT: &str = "*/*";
 
 pub(crate) struct Endpoints {
@@ -121,8 +123,17 @@ impl Http {
         self.clock.map(|(server, _)| server)
     }
 
-    /// Bounds both declared and streamed bodies, retaining only redacted failures.
+    /// Keeps acquisition and ordinary service reads within the default byte budget.
     pub async fn send(&mut self, request: Request) -> Result<Response, Error> {
+        self.send_with_limit(request, RESPONSE_LIMIT).await
+    }
+
+    /// Bounds declared and streamed bodies by the concrete service owner's budget.
+    pub(crate) async fn send_with_limit(
+        &mut self,
+        request: Request,
+        response_limit: usize,
+    ) -> Result<Response, Error> {
         let mut response = self.client.execute(request).await?;
         if let Some(date) = response
             .headers()
@@ -134,7 +145,7 @@ impl Http {
         }
         if response
             .content_length()
-            .is_some_and(|length| length > RESPONSE_LIMIT as u64)
+            .is_some_and(|length| length > response_limit as u64)
         {
             return Err(Error::ResponseTooLarge);
         }
@@ -142,7 +153,7 @@ impl Http {
         let headers = response.headers().clone();
         let mut body = Zeroizing::new(Vec::new());
         while let Some(chunk) = response.chunk().await? {
-            if chunk.len() > RESPONSE_LIMIT.saturating_sub(body.len()) {
+            if chunk.len() > response_limit.saturating_sub(body.len()) {
                 return Err(Error::ResponseTooLarge);
             }
             body.extend_from_slice(&chunk);
@@ -211,6 +222,9 @@ impl Http {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 impl Response {
     /// Rejects non-success authentication responses without retaining their text.

@@ -19,8 +19,31 @@ impl Account {
     /// The callback must retain uncertain mutation state; it does not prove remote receipt.
     pub(super) async fn send_service_with_dispatch(
         &mut self,
+        request: Request,
+        token: Arc<Authorization>,
+        dispatched: impl FnOnce(),
+    ) -> Result<Response, Error> {
+        self.send_service_bounded(request, token, crate::http::RESPONSE_LIMIT, dispatched)
+            .await
+    }
+
+    /// Selects a concrete read budget without changing final signing or issuance rejection.
+    pub(super) async fn send_service_with_limit(
+        &mut self,
+        request: Request,
+        token: Arc<Authorization>,
+        response_limit: usize,
+    ) -> Result<Response, Error> {
+        self.send_service_bounded(request, token, response_limit, || {})
+            .await
+    }
+
+    /// Owns the sole final policy, signature, dispatch and bounded response path.
+    async fn send_service_bounded(
+        &mut self,
         mut request: Request,
         token: Arc<Authorization>,
+        response_limit: usize,
         dispatched: impl FnOnce(),
     ) -> Result<Response, Error> {
         let (party, policy) = self
@@ -35,7 +58,7 @@ impl Account {
         self.http.prepare_signature(&mut request)?;
         policy.sign(&mut request, &self.key, self.http.now())?;
         dispatched();
-        let response = self.http.send(request).await?;
+        let response = self.http.send_with_limit(request, response_limit).await?;
         if token_expired(&response) {
             self.reject(&token);
         }

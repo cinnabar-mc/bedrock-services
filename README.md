@@ -221,6 +221,25 @@ unrelated authorization failures do not silently discard it. Social read APIs do
 not publish presence, send invitations, modify multiplayer sessions or subscribe
 to realtime updates.
 
+`Account::statistics()` and `Minecraft::statistics()` read explicit bounded user/
+SCID/statistic batches through that same signed Xbox owner. Raw numeric digits
+and missing values are preserved; retail selections and aggregation belong to the
+caller. `achievements()` reads the authenticated account's title progress, either
+one page or a complete collection with page, entry and aggregate-byte bounds.
+Repeated continuations fail instead of returning incomplete success. Malformed
+rows are counted, unknown progress/reward data stays uninterpreted, and missing
+or invalid scores are never synthesized as zero. Neither API downloads artwork.
+
+`Minecraft::profile()` borrows persona image bytes and showcase metadata from the
+optional discovered persona service, using the existing Minecraft credential.
+Missing/malformed persona discovery leaves auth-only services available. Image
+bytes must pass the caller's image decoder/cache admission; Content-Type alone
+does not prove valid artwork. Showcase metadata is not a local screenshot count,
+and response URLs are never followed with credentials. These independent reads
+do not start a worker, refresh loop, runtime, upload or delete operation. Account
+generation, per-facet deadlines/errors, image policy and menu projection remain
+caller-owned.
+
 `Account::notifications()` and `Minecraft::notifications()` borrow explicit Xbox
 game invitation inbox reads. `game_invites` addresses the authenticated account,
 preserves invitation actions, original expiries and per-platform title metadata,
@@ -238,6 +257,11 @@ title; application activity IDs and title policy stay with the caller. Repeat
 `update` explicitly for a heartbeat, using `UpdateResult::heartbeat_after` when
 present and a caller-selected fallback otherwise. The API owns no scheduling,
 background task or automatic retry, including for throttled service responses.
+
+`update_with_dispatch` invokes a caller callback after final signing, immediately
+before HTTP. Retain that local dispatch state across cancellation; it establishes
+possible remote mutation, not receipt or success. Acquisition and preparation
+errors do not invoke it, and ordinary `update` uses the same path with no callback.
 
 Call `remove` explicitly on shutdown, even after a failed or canceled update:
 the earlier write may have applied. Removal sends once without consulting a local

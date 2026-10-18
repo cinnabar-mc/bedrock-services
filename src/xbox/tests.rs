@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::time::UNIX_EPOCH;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
 };
 
 /// Serves a bounded sequence of synthetic HTTP exchanges on an ephemeral loopback port.
@@ -29,28 +29,51 @@ pub(crate) async fn fixture_headers(
     + 'static,
     count: usize,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    fixture_bytes(
+        move |target, header, body| {
+            let (status, headers, body) = handler(target, header, body);
+            (status, headers, serde_json::to_vec(&body).unwrap())
+        },
+        count,
+    )
+    .await
+}
+
+/// Consumes the complete Content-Length request before a fixture replies or closes its socket.
+pub(crate) async fn read_request(stream: &mut TcpStream) -> (Vec<u8>, usize, usize) {
+    let mut bytes = Vec::new();
+    let (header_end, length) = loop {
+        assert!(bytes.len() <= 1024 * 1024);
+        assert_ne!(stream.read_buf(&mut bytes).await.unwrap(), 0);
+        if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+            let header = std::str::from_utf8(&bytes[..end]).unwrap();
+            let length = header
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
+            break (end + 4, length);
+        }
+    };
+    while bytes.len() < header_end + length {
+        assert_ne!(stream.read_buf(&mut bytes).await.unwrap(), 0);
+    }
+    (bytes, header_end, length)
+}
+
+/// Serves original bounded binary or JSON responses through the same concrete HTTP reader.
+pub(crate) async fn fixture_bytes(
+    mut handler: impl FnMut(&str, &str, &[u8]) -> (u16, Vec<(&'static str, &'static str)>, Vec<u8>)
+    + Send
+    + 'static,
+    count: usize,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
         for _ in 0..count {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            let (header_end, length) = loop {
-                assert!(bytes.len() <= 1024 * 1024);
-                assert_ne!(stream.read_buf(&mut bytes).await.unwrap(), 0);
-                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let header = std::str::from_utf8(&bytes[..end]).unwrap();
-                    let length = header
-                        .lines()
-                        .filter_map(|line| line.split_once(':'))
-                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                        .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
-                    break (end + 4, length);
-                }
-            };
-            while bytes.len() < header_end + length {
-                assert_ne!(stream.read_buf(&mut bytes).await.unwrap(), 0);
-            }
+            let (bytes, header_end, length) = read_request(&mut stream).await;
             let header = std::str::from_utf8(&bytes[..header_end]).unwrap();
             let target = header
                 .lines()
@@ -61,7 +84,6 @@ pub(crate) async fn fixture_headers(
                 .unwrap();
             let (status, response_headers, body) =
                 handler(target, header, &bytes[header_end..header_end + length]);
-            let body = serde_json::to_vec(&body).unwrap();
             let extra = response_headers
                 .into_iter()
                 .map(|(name, value)| format!("{name}: {value}\r\n"))

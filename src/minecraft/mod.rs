@@ -2,6 +2,7 @@
 
 mod config;
 mod entity;
+pub mod profile;
 mod signaling;
 mod token;
 
@@ -34,6 +35,7 @@ pub struct Minecraft {
     environment: Option<Environment>,
     signaling_environment: Option<serde_json::Value>,
     realms_environment: Option<serde_json::Value>,
+    persona_environment: Option<serde_json::Value>,
     realms_state: realms::State,
     playfab: Option<Arc<playfab::Session>>,
     entities: HashMap<playfab::EntityKind, Arc<playfab::Entity>>,
@@ -58,6 +60,8 @@ struct Environments {
     signaling_afd: Option<serde_json::Value>,
     #[serde(default)]
     realms_frontend_bedrock_legacy: Option<serde_json::Value>,
+    #[serde(default)]
+    persona: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +89,7 @@ impl Minecraft {
             environment: None,
             signaling_environment: None,
             realms_environment: None,
+            persona_environment: None,
             realms_state: realms::State::default(),
             session_id: uuid::Uuid::new_v4(),
             playfab: None,
@@ -146,6 +151,21 @@ impl Minecraft {
     /// Borrows explicit Xbox invitation inbox reads on the same account and proof.
     pub fn notifications(&mut self) -> xbox::notifications::Notifications<'_> {
         self.xbox.notifications()
+    }
+
+    /// Borrows explicit statistics reads on the same Xbox account and proof.
+    pub fn statistics(&mut self) -> xbox::statistics::Statistics<'_> {
+        self.xbox.statistics()
+    }
+
+    /// Borrows title achievements on the same authenticated account and proof.
+    pub fn achievements(&mut self) -> xbox::achievements::Achievements<'_> {
+        self.xbox.achievements()
+    }
+
+    /// Borrows discovered persona/gallery reads without starting acquisition or background work.
+    pub fn profile(&mut self) -> profile::Profile<'_> {
+        profile::Profile { minecraft: self }
     }
 
     /// Borrows one-shot title presence writes using the same account, proof and XSTS cache.
@@ -344,7 +364,17 @@ impl Minecraft {
     }
 
     /// Loads one version-specific environment and validates it before sending credentials.
-    async fn discover(&mut self) -> Result<(), Error> {
+    /// Acquires public version-matched service discovery without authorizing or minting credentials.
+    ///
+    /// Reuses this account session's successfully acquired environment. A failed
+    /// or canceled request leaves discovery retryable on the same owner. Optional
+    /// service metadata is validated by its eventual consumer; use
+    /// [`Self::authorization_issuer`] afterward for a validated provider issuer.
+    /// This method performs no Xbox/PlayFab authorization or multiplayer mint.
+    ///
+    /// # Errors
+    /// Returns bounded HTTP/status/JSON or required service-route/title validation errors.
+    pub async fn discover(&mut self) -> Result<(), Error> {
         if self.environment.is_some() {
             return Ok(());
         }
@@ -374,6 +404,7 @@ impl Minecraft {
         self.realms_environment = discovery
             .service_environments
             .realms_frontend_bedrock_legacy;
+        self.persona_environment = discovery.service_environments.persona;
         self.environment = Some(environment);
         Ok(())
     }
