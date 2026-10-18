@@ -29,8 +29,7 @@ impl TitleData {
     /// Loads public endpoint policy through the plain acquisition client.
     pub async fn load(http: &mut Http) -> Result<Self, Error> {
         let request = http
-            .client
-            .get(&http.endpoints.nsal)
+            .request(reqwest::Method::GET, &http.endpoints.nsal)
             .header("x-xbl-contract-version", "1")
             .build()?;
         let response = http.send(request).await?;

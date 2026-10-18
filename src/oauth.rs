@@ -65,8 +65,7 @@ impl Credentials {
             return Err(Error::SignInRequired);
         }
         let request = http
-            .client
-            .post(&http.endpoints.oauth_token)
+            .request(reqwest::Method::POST, &http.endpoints.oauth_token)
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", self.refresh.as_str()),
@@ -150,8 +149,7 @@ impl MicrosoftAuth {
     pub async fn start(&mut self, now: SystemTime) -> Result<DeviceAuthorization, Error> {
         let request = self
             .http
-            .client
-            .post(&self.http.endpoints.device_code)
+            .request(reqwest::Method::POST, &self.http.endpoints.device_code)
             .header("accept", "application/json")
             .form(&[
                 ("client_id", self.config.client_id.as_str()),
@@ -209,8 +207,7 @@ impl MicrosoftAuth {
         attempt.next_poll = now.checked_add(attempt.interval).ok_or(Error::TimeRange)?;
         let request = self
             .http
-            .client
-            .post(&self.http.endpoints.oauth_token)
+            .request(reqwest::Method::POST, &self.http.endpoints.oauth_token)
             .form(&[
                 ("client_id", self.config.client_id.as_str()),
                 ("grant_type", DEVICE_GRANT),

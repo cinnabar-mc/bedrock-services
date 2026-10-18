@@ -1,7 +1,10 @@
 //! Bounded, unauthenticated HTTP acquisition and response-clock correction.
 
 use crate::Error;
-use reqwest::{Client, Request, StatusCode, header::HeaderMap};
+use reqwest::{
+    Client, Method, Request, RequestBuilder, StatusCode,
+    header::{HeaderMap, HeaderValue},
+};
 use serde::de::DeserializeOwned;
 use std::time::{Duration, SystemTime};
 use zeroize::Zeroizing;
@@ -32,7 +35,8 @@ impl Default for Endpoints {
 }
 
 pub(crate) struct Http {
-    pub client: Client,
+    client: Client,
+    user_agent: HeaderValue,
     pub endpoints: Endpoints,
     skew: Option<(bool, Duration)>,
 }
@@ -46,8 +50,9 @@ pub(crate) struct Response {
 impl Http {
     /// Builds the plain acquisition client; redirects cannot carry credentials away.
     pub fn new(user_agent: &str) -> Result<Self, Error> {
+        let user_agent = HeaderValue::from_str(user_agent)
+            .map_err(|_| Error::Invalid("acquisition user agent"))?;
         let client = Client::builder()
-            .user_agent(user_agent)
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))
@@ -55,9 +60,17 @@ impl Http {
             .build()?;
         Ok(Self {
             client,
+            user_agent,
             endpoints: Endpoints::default(),
             skew: None,
         })
+    }
+
+    /// Materializes the acquisition User-Agent before building or signing a request.
+    pub fn request(&self, method: Method, url: &str) -> RequestBuilder {
+        self.client
+            .request(method, url)
+            .header("user-agent", self.user_agent.clone())
     }
 
     /// Reads the edge clock and applies the last successfully parsed server Date.
@@ -113,9 +126,10 @@ impl Http {
         // The behavioral baseline encodes JSON requests with a trailing newline.
         body.push(b'\n');
         Ok(self
-            .client
-            .post(url)
+            .request(Method::POST, url)
+            .header("accept", "*/*")
             .header("content-type", "application/json")
+            .header("content-length", body.len())
             .body(body)
             .build()?)
     }
@@ -131,6 +145,7 @@ impl Http {
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap(),
+            user_agent: HeaderValue::from_static("fixture-acquisition-agent"),
             endpoints: Endpoints {
                 device_code: format!("{base}/device-code"),
                 oauth_token: format!("{base}/oauth-token"),

@@ -4,10 +4,7 @@ use crate::{Error, http::Http, nsal::TitleData, oauth::Credentials, signature::S
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{ecdsa::SigningKey, elliptic_curve::Generate};
 use rand::rngs::SysRng;
-use reqwest::{
-    Request,
-    header::{AUTHORIZATION, HeaderValue},
-};
+use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -249,23 +246,6 @@ impl Account {
             self.session = None;
         }
         true
-    }
-
-    /// Applies default NSAL authorization and proof signing to a buffered request.
-    /// The caller sends it with a separate service client that disables redirects.
-    pub async fn authorize_request(&mut self, request: &mut Request) -> Result<(), Error> {
-        self.ensure_title_data().await?;
-        let (party, policy) = self
-            .title_data
-            .as_ref()
-            .and_then(|data| data.resolve(request.url()))
-            .map(|(party, policy)| (party.to_owned(), policy))
-            .ok_or(Error::Invalid("unmatched NSAL endpoint"))?;
-        let token = self.authorize(&party).await?;
-        request
-            .headers_mut()
-            .insert(AUTHORIZATION, token.header_value()?);
-        policy.sign(request, &self.key, self.http.now())
     }
 
     /// Caches public default title policy for this account's lifetime.

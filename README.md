@@ -28,8 +28,6 @@ Account methods take exclusive mutable ownership during credential acquisition.
 Returned authorizations are immutable and shareable. Acquisition uses a separate
 plain HTTP client with HTTPS, finite deadlines, disabled redirects and bounded
 responses. There are no account background tasks or locks held across HTTP.
-`authorize_request` applies default NSAL authorization and signing to a buffered
-request; send it using a separate service client with redirects disabled.
 
 The default authentication policy matches Cinnabar's existing Android Minecraft
 configuration. It is independent of the game's platform metadata. Request signing

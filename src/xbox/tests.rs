@@ -87,7 +87,7 @@ async fn device_flow_caches_credentials_and_fences_stale_rejections() {
                 assert_eq!(target, "/device-token");
                 let value: Value = serde_json::from_slice(body).unwrap();
                 let key = value["Properties"]["ProofKey"].clone();
-                verify_signature(target, header, body, &key);
+                verify_signature(target, header, body, &key, &[]);
                 assert_eq!(value["Properties"]["DeviceType"], "Android");
                 proof = Some(key);
                 (200, token("device", false))
@@ -96,11 +96,11 @@ async fn device_flow_caches_credentials_and_fences_stale_rejections() {
                 assert_eq!(target, "/nsal");
                 assert!(!header.to_lowercase().contains("authorization:"));
                 (200, json!({"EndPoints": [{"Protocol": "http", "Host": "127.0.0.1", "HostType": "fqdn",
-                    "RelyingParty": XBOX_RELYING_PARTY, "SignaturePolicyIndex": 0}], "SignaturePolicies": [{"Version": 1}]}))
+                    "RelyingParty": XBOX_RELYING_PARTY, "SignaturePolicyIndex": 0}], "SignaturePolicies": [{"Version": 1, "ExtraHeaders": ["User-Agent"]}]}))
             }
             6 | 9 => {
                 assert_eq!(target, "/sisu");
-                verify_signature(target, header, body, proof.as_ref().unwrap());
+                verify_signature(target, header, body, proof.as_ref().unwrap(), &["User-Agent"]);
                 let value: Value = serde_json::from_slice(body).unwrap();
                 assert_eq!(&value["ProofKey"], proof.as_ref().unwrap());
                 assert_eq!(value["AccessToken"], "t=access");
@@ -109,7 +109,7 @@ async fn device_flow_caches_credentials_and_fences_stale_rejections() {
             }
             7 | 8 => {
                 assert_eq!(target, "/xsts");
-                verify_signature(target, header, body, proof.as_ref().unwrap());
+                verify_signature(target, header, body, proof.as_ref().unwrap(), &[]);
                 let value: Value = serde_json::from_slice(body).unwrap();
                 assert_eq!(value["RelyingParty"], "rp://fixture");
                 assert_eq!(value["Properties"]["UserTokens"], json!(["user"]));
@@ -176,7 +176,7 @@ async fn device_flow_caches_credentials_and_fences_stale_rejections() {
 }
 
 /// Validates a signature independently from the production request/digest helpers.
-fn verify_signature(target: &str, header: &str, body: &[u8], key: &Value) {
+fn verify_signature(target: &str, header: &str, body: &[u8], key: &Value, extra_headers: &[&str]) {
     use base64::engine::general_purpose::STANDARD;
     use p256::ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
     use sha2::{Digest, Sha256};
@@ -197,11 +197,23 @@ fn verify_signature(target: &str, header: &str, body: &[u8], key: &Value) {
         b"POST",
         target.as_bytes(),
         b"",
-        body,
     ] {
         hash.update(field);
         hash.update([0]);
     }
+    for extra in extra_headers {
+        let value = header
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case(extra))
+            .unwrap()
+            .1
+            .trim();
+        hash.update(value.as_bytes());
+        hash.update([0]);
+    }
+    hash.update(body);
+    hash.update([0]);
     let mut point = vec![4];
     point.extend(URL_SAFE_NO_PAD.decode(key["x"].as_str().unwrap()).unwrap());
     point.extend(URL_SAFE_NO_PAD.decode(key["y"].as_str().unwrap()).unwrap());

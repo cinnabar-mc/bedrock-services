@@ -36,6 +36,7 @@ impl Default for SignaturePolicy {
 impl SignaturePolicy {
     /// Signs the actual buffered request body and sets its Signature header.
     /// Streaming bodies are rejected rather than silently signing empty bytes.
+    /// The caller supplies signed headers explicitly, including transport defaults.
     pub fn sign(
         &self,
         request: &mut Request,
