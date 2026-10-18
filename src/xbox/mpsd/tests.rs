@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 use std::time::{Duration, UNIX_EPOCH};
 use uuid::Uuid;
 
+mod publication;
+
 const SIGNED_HEADERS: &[&str] = &[
     "User-Agent",
     "Accept",
