@@ -26,15 +26,22 @@ struct Endpoint {
 }
 
 impl TitleData {
-    /// Loads public endpoint policy through the plain acquisition client.
-    pub async fn load(http: &mut Http) -> Result<Self, Error> {
+    /// Loads public endpoint policy and reports a valid Date on this successful response.
+    pub async fn load(http: &mut Http) -> Result<(Self, bool), Error> {
         let request = http
             .request(reqwest::Method::GET, &http.endpoints.nsal)
             .header("x-xbl-contract-version", "1")
             .build()?;
         let response = http.send(request).await?;
         response.success()?;
-        response.json()
+        let data = response.json()?;
+        let calibrated = response
+            .headers
+            .get("date")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| httpdate::parse_http_date(value).ok())
+            .is_some();
+        Ok((data, calibrated))
     }
 
     /// Selects the first exact host or last wildcard/CIDR match in server order.

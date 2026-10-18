@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 
 pub(crate) const XBOX_RELYING_PARTY: &str = "http://xboxlive.com";
 const MAX_RELYING_PARTIES: usize = 64;
+const MAX_RELYING_PARTY_BYTES: usize = 4096;
 
 mod checkpoint;
 pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
@@ -158,6 +159,7 @@ pub struct Account {
     title_data: Option<TitleData>,
     current_title_data: Option<TitleData>,
     authorizations: HashMap<String, Arc<Authorization>>,
+    restored: Option<checkpoint::Derived>,
 }
 
 struct Session {
@@ -185,6 +187,7 @@ impl Account {
             title_data: None,
             current_title_data: None,
             authorizations: HashMap::new(),
+            restored: None,
         }
     }
 
@@ -197,7 +200,8 @@ impl Account {
     ///
     /// The caller must check its account generation and serialize this operation
     /// with refresh and protected storage. Client-ID equality does not establish
-    /// account identity. Derived authorizations are discarded before their next use.
+    /// account identity. Changed material discards derived authorizations before their next use;
+    /// importing the exact same credentials preserves the current ownership and cache.
     ///
     /// # Errors
     /// Rejects a different client ID without changing the current account state.
@@ -205,7 +209,11 @@ impl Account {
         if credentials.client_id != self.config.client_id {
             return Err(Error::Invalid("credential client ID"));
         }
+        if self.credentials.same_material(&credentials) {
+            return Ok(());
+        }
         self.credentials = credentials;
+        self.restored = None;
         self.device = None;
         self.session = None;
         self.title_data = None;
@@ -254,8 +262,11 @@ impl Account {
     /// Acquires or reuses a credential for one relying party. Cancellation drops
     /// the current HTTP operation; successfully installed earlier stages remain reusable.
     pub async fn authorize(&mut self, relying_party: &str) -> Result<Arc<Authorization>, Error> {
-        if relying_party.is_empty() || relying_party.len() > 4096 {
+        if relying_party.is_empty() || relying_party.len() > MAX_RELYING_PARTY_BYTES {
             return Err(Error::Invalid("relying party"));
+        }
+        if self.restored.is_some() {
+            self.ensure_title_data().await?;
         }
         let now = self.http.now();
         if let Some(token) = self
@@ -324,7 +335,13 @@ impl Account {
     /// Caches public default title policy for this account's lifetime.
     async fn ensure_title_data(&mut self) -> Result<(), Error> {
         if self.title_data.is_none() {
-            self.title_data = Some(TitleData::load(&mut self.http).await?);
+            let (data, calibrated) = TitleData::load(&mut self.http).await?;
+            self.title_data = Some(data);
+            if let Some(restored) = self.restored.take()
+                && calibrated
+            {
+                restored.install(self);
+            }
         }
         Ok(())
     }

@@ -53,11 +53,23 @@ and OAuth scope. It does not provide encryption, integrity protection or account
 generation fencing: the caller must serialize refresh and persistence, reject
 stale revisions and prevent signed-out accounts from being restored.
 
-Restoring preserves proof and refresh ownership, then reacquires access and
-derived credentials. Response-clock anchors do not survive restart, so access,
-device, SISU, XSTS and title-policy caches are deliberately omitted. This requires
-network requests after restart; persistent reuse of derived credentials remains
-open work.
+Version-two checkpoints can also retain the exact OAuth material and Xbox device,
+SISU and XSTS issuances with their original absolute expiries. A restored cache is
+dormant until a fresh successful public title-policy request supplies a valid
+HTTP Date. Saved OAuth access remains operationally dormant under the same admission:
+failed time qualification forces refresh before SISU, even when its original bytes
+and expiry are retained for persistence. Importing identical material cannot change
+this state. Missing time, clock rollback or expired entries cause reacquisition;
+response-clock anchors and title policies are never restored. Cancellation keeps
+the dormant snapshot for a later attempt. Older version-one checkpoints remain
+readable, and optional cache bytes are omitted if they cannot fit the existing
+64 KiB bound, preserving refresh and proof durability.
+
+At least one public policy request is required after restart. Minecraft and PlayFab
+credentials are not persisted. A caller must prevent restoration of stale
+checkpoints after rejection or account changes; this SDK does not reconcile
+snapshots across processes. `Account::replace_credentials()` preserves caches only
+when every OAuth field is identical. Changed material invalidates all Xbox stages.
 
 A running `Minecraft` owner can export `checkpoint()` without being consumed.
 After a caller validates a same-account rotation under its storage lease,
