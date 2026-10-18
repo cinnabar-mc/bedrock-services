@@ -653,44 +653,62 @@ async fn peer_close_drains_once_discards_queued_output_and_preserves_explicit_re
 /// An unflushable peer Close acknowledgement is bounded and expiry retains disconnected desired state.
 #[tokio::test]
 async fn peer_close_ack_deadline_drops_io_once_and_preserves_desired_handles() {
-    let (_, mut request) = request().await;
-    let (mut client, mut server) = pair(&mut request, None).await;
-    let active = activate_for_peer_close(&mut client, &mut server).await;
-    client
-        .socket
-        .as_mut()
-        .unwrap()
-        .get_mut()
-        .get_mut()
-        .limit_writes(0);
-    server.send(Message::close(None, "")).await.unwrap();
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(10), client.drive())
-            .await
-            .unwrap(),
-        Ok(Event::Disconnected)
-    ));
-    poll_fn(|cx| {
-        assert!(client.poll_drive(cx).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    let close_deadline = client
-        .close_deadline
-        .expect("peer close must have a finite deadline");
-    client.tick(close_deadline);
-    assert!(matches!(client.drive().await, Err(SocketError::TimedOut)));
-    assert!(matches!(client.drive().await, Err(SocketError::TimedOut)));
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(10), server.next())
-            .await
-            .unwrap(),
-        None | Some(Err(_))
-    ));
-    assert_eq!(
-        client.connection().subscriptions().collect::<Vec<_>>(),
-        vec![active],
-        "a close-ack deadline must preserve reconnectable desired state"
-    );
-    assert!(!client.connection().is_connected());
+    for permanently_close in [false, true] {
+        let (_, mut request) = request().await;
+        let (mut client, mut server) = pair(&mut request, None).await;
+        let active = activate_for_peer_close(&mut client, &mut server).await;
+        client
+            .socket
+            .as_mut()
+            .unwrap()
+            .get_mut()
+            .get_mut()
+            .limit_writes(0);
+        server.send(Message::close(None, "")).await.unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(10), client.drive())
+                .await
+                .unwrap(),
+            Ok(Event::Disconnected)
+        ));
+        if permanently_close {
+            client.close();
+        }
+        poll_fn(|cx| {
+            assert!(client.poll_drive(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let close_deadline = client
+            .close_deadline
+            .expect("peer close must have a finite deadline");
+        client.tick(close_deadline);
+        assert!(matches!(client.drive().await, Err(SocketError::TimedOut)));
+        assert!(matches!(client.drive().await, Err(SocketError::TimedOut)));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(10), server.next())
+                .await
+                .unwrap(),
+            None | Some(Err(_))
+        ));
+        assert_eq!(
+            client.connection().subscriptions().collect::<Vec<_>>(),
+            if permanently_close {
+                Vec::new()
+            } else {
+                vec![active]
+            },
+            "peer closure must retain desired handles until the caller permanently closes"
+        );
+        assert!(!client.connection().is_connected());
+        let reconnect = client.connection().check_reconnect(&request);
+        assert!(
+            if permanently_close {
+                matches!(reconnect, Err(Error::Closed))
+            } else {
+                matches!(reconnect, Err(Error::State))
+            },
+            "the caller's permanent close must apply during an existing close acknowledgement"
+        );
+    }
 }

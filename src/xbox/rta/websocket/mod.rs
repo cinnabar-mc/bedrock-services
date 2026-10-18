@@ -284,11 +284,19 @@ impl RtaSocket {
 
     /// Stops admission permanently and begins a bounded close handshake; continue driving.
     pub fn close(&mut self) {
-        if self.socket.is_none() {
-            self.events.extend(self.state.close());
-            return;
-        }
-        if self.close_deadline.is_some() {
+        self.events.extend(self.state.close());
+        self.begin_close();
+    }
+
+    /// Retains desired resources when the peer closes only the physical transport.
+    fn peer_close(&mut self) {
+        self.events.extend(self.state.disconnect());
+        self.begin_close();
+    }
+
+    /// Bounds the existing sink's close acknowledgement, discarding only unadmitted output.
+    fn begin_close(&mut self) {
+        if self.socket.is_none() || self.close_deadline.is_some() {
             return;
         }
         let Some(deadline) = Instant::now().checked_add(self.options.close_timeout) else {
@@ -298,7 +306,6 @@ impl RtaSocket {
         self.close_deadline = Some(deadline);
         self.outgoing.clear();
         self.queued_bytes = 0;
-        self.events.extend(self.state.close());
     }
 
     /// Immediately drops I/O and fails pending requests, retaining desired resources for explicit reconnect.
@@ -466,7 +473,7 @@ impl RtaSocket {
                 Poll::Ready(Some(Ok(message))) if message.is_ping() || message.is_pong() => {
                     self.control_flush = true
                 }
-                Poll::Ready(Some(Ok(message))) if message.is_close() => self.close(),
+                Poll::Ready(Some(Ok(message))) if message.is_close() => self.peer_close(),
                 Poll::Ready(Some(Ok(_))) => self.finish(SocketError::Protocol),
                 Poll::Ready(Some(Err(e))) => self.finish(SocketError::from_wire(e)),
                 Poll::Ready(None) => self.finish(SocketError::Closed),
