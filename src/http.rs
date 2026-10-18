@@ -139,6 +139,12 @@ impl Http {
     }
 
     #[cfg(test)]
+    /// Advances fixture UTC explicitly without sleeping or changing the host clock.
+    pub(crate) fn set_fixture_time(&mut self, now: SystemTime) {
+        self.clock = Some((now, Instant::now()));
+    }
+
+    #[cfg(test)]
     /// Uses only the test's loopback endpoint without changing production TLS policy.
     pub fn fixture(address: std::net::SocketAddr) -> Self {
         Self::fixture_agent(address, "fixture-acquisition-agent")

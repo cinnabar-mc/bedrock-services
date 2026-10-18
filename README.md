@@ -64,12 +64,17 @@ when replacement is due, and invalidates an unauthorized mint's exact issuance
 before retrying once. Service metadata comes from a bounded HTTPS response; decoding
 those claims does not verify a multiplayer peer's identity.
 
+`Minecraft::entity` acquires title or master-player credentials for PlayFab
+services, reuses immutable authorizations and renews them on demand within the
+expiry margin. Returned identity and expiry must match the request. An expired
+or once-rejected source causes one fresh PlayFab login.
+
 These concrete HTTP clients use the caller's async runtime. Transport state machines
 belong to the separate networking libraries; service credentials do not create an
 internal runtime or per-account background tasks.
 
 Persistent proof-key/session caching, account sign-up, Realms, friends/presence,
-entity-token exchange, shared acquisition flights, transient service retries and
+shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account
 integration, real-account acceptance and source-based vanilla parity are unverified.
 
