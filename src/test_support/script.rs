@@ -16,7 +16,7 @@ use uuid::Uuid;
 pub(super) const HOST_XUID: &str = "123";
 pub(super) const CONNECTION: Uuid = Uuid::from_u128(0x7001);
 const DATE: &str = "Sun, 18 Oct 2026 12:00:00 GMT";
-const HTTP_EXCHANGES: usize = 13;
+const HTTP_EXCHANGES: usize = 14;
 
 #[derive(Clone)]
 pub(super) struct Scenario(Arc<Mutex<State>>);
@@ -94,7 +94,7 @@ pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
                 json!({"TitleToken":token("title",false),"UserToken":token("user",false),
                     "AuthorizationToken":token("xbox",true)})
             }
-            4 => {
+            4 | 13 => {
                 assert_eq!(target, "/nsal-current");
                 assert_eq!(header(headers, "authorization"), "XBL3.0 x=synthetic;xbox");
                 verify(target, headers, body, &state.proof(), &[]);
@@ -111,7 +111,7 @@ pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
                 assert_eq!(value["RelyingParty"], if step == 5 { "rp://rta" } else { "rp://mpsd" });
                 token(if step == 5 { "rta" } else { "directory" }, true)
             }
-            7 | 8 | 13 => {
+            7 | 8 | 14 => {
                 verify(target, headers, body, &state.proof(), SIGNED_HEADERS);
                 assert_eq!(header(headers, "authorization"), "XBL3.0 x=synthetic;directory");
                 assert_eq!(header(headers, "x-xbl-contract-version"), DIRECTORY_CONTRACT);
@@ -149,7 +149,7 @@ pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
                         response_headers.push(("ETag", "\"host-acknowledged\""));
                         snapshot.clone()
                     }
-                    13 => {
+                    14 => {
                         assert!(headers.starts_with("PUT "));
                         assert_eq!(header(headers, "if-match"), "\"host-acknowledged\"");
                         assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), json!({"members":{"me":null}}));
