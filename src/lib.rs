@@ -7,8 +7,10 @@
 
 mod error;
 mod http;
+pub mod minecraft;
 mod nsal;
 pub mod oauth;
+pub mod playfab;
 pub mod signature;
 pub mod xbox;
 

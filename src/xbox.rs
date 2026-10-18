@@ -148,6 +148,7 @@ pub struct Account {
     device: Option<Token>,
     session: Option<Session>,
     title_data: Option<TitleData>,
+    current_title_data: Option<TitleData>,
     authorizations: HashMap<String, Arc<Authorization>>,
 }
 
@@ -169,6 +170,7 @@ impl Account {
             device: None,
             session: None,
             title_data: None,
+            current_title_data: None,
             authorizations: HashMap::new(),
         })
     }
@@ -176,6 +178,38 @@ impl Account {
     /// Borrows the account's current Microsoft credentials for secure persistence.
     pub fn credentials(&self) -> &Credentials {
         &self.credentials
+    }
+
+    /// Resolves concrete service traffic against the authenticated title before generic policy.
+    pub(crate) async fn authorize_service(
+        &mut self,
+        url: &url::Url,
+    ) -> Result<Arc<Authorization>, Error> {
+        if self.current_title_data.is_none() {
+            let token = self.authorize(XBOX_RELYING_PARTY).await?;
+            let mut request = self
+                .http
+                .request(reqwest::Method::GET, &self.http.endpoints.nsal_current)
+                .header("x-xbl-contract-version", "1")
+                .header("authorization", token.header_value()?)
+                .build()?;
+            SignaturePolicy::default().sign(&mut request, &self.key, self.http.now())?;
+            let response = self.http.send(request).await?;
+            if response.status == reqwest::StatusCode::UNAUTHORIZED {
+                self.reject(&token);
+            }
+            response.success()?;
+            self.current_title_data = Some(response.json()?);
+        }
+        self.ensure_title_data().await?;
+        let party = self
+            .current_title_data
+            .as_ref()
+            .and_then(|data| data.resolve(url))
+            .or_else(|| self.title_data.as_ref().and_then(|data| data.resolve(url)))
+            .map(|(party, _)| party.to_owned())
+            .ok_or(Error::Invalid("unmatched service endpoint"))?;
+        self.authorize(&party).await
     }
 
     /// Acquires or reuses a credential for one relying party. Cancellation drops
@@ -432,4 +466,4 @@ impl TokenResponse {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -1,0 +1,160 @@
+//! Immutable Minecraft service credentials and bounded metadata decoding.
+
+use crate::Error;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use reqwest::header::HeaderValue;
+use serde::Deserialize;
+use std::{collections::HashMap, time::SystemTime};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use uuid::Uuid;
+use zeroize::Zeroizing;
+
+const CLAIMS_LEEWAY_SECONDS: i64 = 5 * 60;
+
+/// Configuration returned with a Minecraft service credential.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Configuration {
+    /// Service configuration name.
+    pub id: String,
+    /// Data-driven values retained in their wire string form.
+    pub parameters: HashMap<String, String>,
+}
+
+/// An immutable service credential. Metadata is decoded from the HTTPS response;
+/// it is not a cryptographically verified multiplayer peer identity.
+pub struct Authorization {
+    header: Zeroizing<String>,
+    expires: OffsetDateTime,
+    messaging_id: Uuid,
+    treatments: Vec<String>,
+    configurations: HashMap<String, Configuration>,
+    treatment_context: String,
+}
+
+impl Authorization {
+    /// Returns the network identity used by player messaging and signaling.
+    pub fn messaging_id(&self) -> Uuid {
+        self.messaging_id
+    }
+
+    /// Returns assigned service treatments.
+    pub fn treatments(&self) -> &[String] {
+        &self.treatments
+    }
+
+    /// Returns service configuration without duplicating a local policy table.
+    pub fn configurations(&self) -> &HashMap<String, Configuration> {
+        &self.configurations
+    }
+
+    /// Returns the service's treatment context.
+    pub fn treatment_context(&self) -> &str {
+        &self.treatment_context
+    }
+
+    /// Returns the sensitive credential for a concrete Minecraft service request.
+    pub fn header_value(&self) -> Result<HeaderValue, Error> {
+        let mut header = HeaderValue::from_str(&self.header)
+            .map_err(|_| Error::Invalid("Minecraft authorization header"))?;
+        header.set_sensitive(true);
+        Ok(header)
+    }
+
+    /// Reserves the service's one-minute refresh margin using caller time.
+    pub(crate) fn reusable(&self, now: SystemTime) -> bool {
+        OffsetDateTime::from(now) < self.expires - time::Duration::minutes(1)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TokenResponse {
+    authorization_header: String,
+    valid_until: String,
+    #[serde(default)]
+    treatments: Vec<String>,
+    #[serde(default)]
+    configurations: HashMap<String, Configuration>,
+    #[serde(default)]
+    treatment_context: String,
+}
+
+#[derive(Deserialize)]
+struct Claims {
+    pmid: Uuid,
+    exp: Option<i64>,
+    nbf: Option<i64>,
+    iat: Option<i64>,
+}
+
+impl TokenResponse {
+    /// Decodes service metadata only after the bounded HTTPS response is accepted.
+    pub(super) fn authorization(self, now: SystemTime) -> Result<Authorization, Error> {
+        let jwt = self
+            .authorization_header
+            .strip_prefix("MCToken ")
+            .ok_or(Error::Invalid("Minecraft credential prefix"))?;
+        let mut parts = jwt.split('.');
+        let header = parts.next().filter(|part| !part.is_empty());
+        let payload = parts.next().filter(|part| !part.is_empty());
+        let signature = parts.next().filter(|part| !part.is_empty());
+        if header.is_none() || signature.is_none() || parts.next().is_some() {
+            return Err(Error::Invalid("Minecraft credential framing"));
+        }
+        let payload = Zeroizing::new(
+            URL_SAFE_NO_PAD
+                .decode(payload.ok_or(Error::Invalid("Minecraft claims"))?)
+                .map_err(|_| Error::Invalid("Minecraft claims encoding"))?,
+        );
+        let claims: Claims =
+            serde_json::from_slice(&payload).map_err(|_| Error::Invalid("Minecraft claims"))?;
+        let utc = OffsetDateTime::from(now);
+        if claims.pmid.is_nil()
+            || claims.exp.is_some_and(|expiry| {
+                utc.unix_timestamp() > expiry.saturating_add(CLAIMS_LEEWAY_SECONDS)
+            })
+            || claims.nbf.is_some_and(|start| {
+                utc.unix_timestamp().saturating_add(CLAIMS_LEEWAY_SECONDS) < start
+            })
+            || claims.iat.is_some_and(|issued| {
+                utc.unix_timestamp().saturating_add(CLAIMS_LEEWAY_SECONDS) < issued
+            })
+        {
+            return Err(Error::Invalid("Minecraft claims lifetime or identity"));
+        }
+        let expires = OffsetDateTime::parse(&self.valid_until, &Rfc3339)
+            .map_err(|_| Error::Invalid("Minecraft credential expiry"))?;
+        let authorization = Authorization {
+            header: Zeroizing::new(self.authorization_header),
+            expires,
+            messaging_id: claims.pmid,
+            treatments: self.treatments,
+            configurations: self.configurations,
+            treatment_context: self.treatment_context,
+        };
+        if !authorization.reusable(now) {
+            return Err(Error::Invalid("Minecraft credential lifetime"));
+        }
+        authorization.header_value()?;
+        Ok(authorization)
+    }
+}
+
+/// A multiplayer credential minted for one connection's public key.
+/// The caller retains its matching private key throughout Login and key exchange.
+pub struct MultiplayerToken {
+    pub(super) token: Zeroizing<String>,
+    pub(super) public_key: Vec<u8>,
+}
+
+impl MultiplayerToken {
+    /// Borrows the signed token for the Bedrock Login payload.
+    pub fn as_str(&self) -> &str {
+        &self.token
+    }
+
+    /// Returns the exact DER/SPKI public key used by this mint request.
+    pub fn public_key_der(&self) -> &[u8] {
+        &self.public_key
+    }
+}
