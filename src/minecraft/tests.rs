@@ -36,8 +36,8 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
 #[tokio::test]
 async fn service_chain_preserves_compact_device_identity() {
     service_chain(
-        DeviceId::compact(Uuid::from_u128(1)),
-        "00000000000000000000000000000001",
+        DeviceId::compact(Uuid::from_u128(0xfa540d62_7071_506d_92c1_e6888b3099e6)),
+        "fa540d627071506d92c1e6888b3099e6",
     )
     .await;
 }
