@@ -1,7 +1,46 @@
 //! Caller-owned device and locale policy, independent from Xbox's device platform.
 
 use crate::Error;
+use std::fmt;
 use uuid::Uuid;
+
+/// A stable device UUID with an explicit Minecraft-service wire representation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DeviceId {
+    uuid: Uuid,
+    compact: bool,
+}
+
+impl DeviceId {
+    /// Preserves the lowercase, unhyphenated representation of an existing device ID.
+    pub fn compact(uuid: Uuid) -> Self {
+        Self {
+            uuid,
+            compact: true,
+        }
+    }
+}
+
+impl From<Uuid> for DeviceId {
+    /// Uses the standard lowercase, hyphenated UUID representation.
+    fn from(uuid: Uuid) -> Self {
+        Self {
+            uuid,
+            compact: false,
+        }
+    }
+}
+
+impl fmt::Display for DeviceId {
+    /// Formats the persisted identity using its caller-selected wire representation.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.compact {
+            self.uuid.simple().fmt(formatter)
+        } else {
+            self.uuid.hyphenated().fmt(formatter)
+        }
+    }
+}
 
 /// Stable policy for one Minecraft account session; the caller persists its device ID.
 #[derive(Clone, Debug)]
@@ -11,7 +50,7 @@ pub struct Config {
     /// Protocol number supplied alongside the generated game version.
     pub network_protocol_version: u32,
     /// Stable device identity, distinct from per-connection proof keys.
-    pub device_id: Uuid,
+    pub device_id: DeviceId,
     /// Minecraft services platform (independent from Xbox's authentication platform).
     pub platform: String,
     /// Store associated with the device.
@@ -39,11 +78,11 @@ impl Config {
     pub fn desktop(
         game_version: impl Into<String>,
         network_protocol_version: u32,
-        device_id: Uuid,
+        device_id: impl Into<DeviceId>,
     ) -> Self {
         Self {
             game_version: game_version.into(),
-            device_id,
+            device_id: device_id.into(),
             platform: "Windows10".into(),
             network_protocol_version,
             store_platform: "uwp.store".into(),
@@ -60,7 +99,7 @@ impl Config {
 
     /// Rejects missing policy and version path separators before any request.
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        if self.device_id.is_nil()
+        if self.device_id.uuid.is_nil()
             || self.network_protocol_version == 0
             || self.hardware_memory_tier == 0
             || self.game_version.is_empty()

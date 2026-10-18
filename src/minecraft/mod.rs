@@ -4,7 +4,7 @@ mod config;
 mod entity;
 mod token;
 
-pub use config::Config;
+pub use config::{Config, DeviceId};
 pub use token::{Authorization, Configuration, MultiplayerToken};
 
 use crate::{Error, http::Http, playfab, realms, xbox};
@@ -84,6 +84,13 @@ impl Minecraft {
     /// Borrows current Microsoft credentials for the caller's secure persistence layer.
     pub fn credentials(&self) -> &crate::oauth::Credentials {
         self.xbox.credentials()
+    }
+
+    /// Acquires this account's Xbox identity without replacing its proof or game-session owner.
+    /// Callers must verify the returned XUID before associating rotated credentials
+    /// with a saved account. A matching OAuth client ID does not establish identity.
+    pub async fn xbox_authorization(&mut self) -> Result<Arc<xbox::Authorization>, Error> {
+        self.xbox.authorize(xbox::XBOX_RELYING_PARTY).await
     }
 
     /// Captures the current refresh credential and proof key without consuming this session.
