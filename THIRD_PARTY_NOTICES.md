@@ -3,6 +3,8 @@
 Xbox request signing, authentication and PlayFab behavior are adapted from
 [df-mc/go-xsapi](https://github.com/df-mc/go-xsapi) and
 [df-mc/go-playfab](https://github.com/df-mc/go-playfab), under the following license.
+ICE credential wire formats are adapted from
+[df-mc/go-nethernet](https://github.com/df-mc/go-nethernet), under the same license.
 
 MIT License
 
@@ -26,7 +28,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Minecraft service discovery and credential behavior are adapted from
+Minecraft service discovery, credential and Player Messaging behavior are adapted from
 [HashimTheArab/gophertunnel](https://github.com/HashimTheArab/gophertunnel),
 under the following license.
 

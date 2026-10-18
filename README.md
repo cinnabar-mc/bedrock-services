@@ -73,6 +73,30 @@ These concrete HTTP clients use the caller's async runtime. Transport state mach
 belong to the separate networking libraries; service credentials do not create an
 internal runtime or per-account background tasks.
 
+`Minecraft::messaging_connection()` uses the same Minecraft service credential and
+player messaging identity to resolve `signaling-afd` configuration. It returns a
+validated WSS destination, a sensitive Authorization header and the advertised ping
+interval. Missing or malformed optional signaling discovery affects this operation
+without changing auth-only discovery. Configuration 401s and explicit
+`reject_messaging(&request)` invalidate only the exact rejected issuance.
+
+`signaling::Messaging` provides bounded JSON-RPC correlation and TURN credential
+caching for that connection. The caller sends each returned `Outgoing` as one text
+message, feeds received text into `receive(bytes, now)`, sends callback replies and
+routes opaque `ReceivedSignal` payloads through its NetherNet codec. Call
+`acknowledge` only after the transport accepts a signal. Delivery waits require both
+service acceptance and a receipt from the expected peer; numeric service failures
+contain no remote diagnostics. Cancel requests explicitly, drive `expire(now)` at
+`next_deadline()` and close the state when its socket closes. All time is supplied
+by the caller; the state owns no output queue, tasks, sockets or automatic retries.
+
+This slice does not open the WebSocket or adapt messaging to NetherNet. The next
+integration must drive bounded socket I/O with redirects disabled, schedule pings,
+close/cancel on write failure and own reconnects. Reuse valid TURN credentials
+through `credentials(now)`; otherwise request them with `request_credentials`.
+SDP identities, request bytes and ICE credentials are sensitive and have no Debug
+implementation. Explicit exports and transport buffers are the caller's responsibility.
+
 Persistent proof-key/session caching, account sign-up, Realms, friends/presence,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account

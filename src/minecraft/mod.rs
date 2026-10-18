@@ -2,6 +2,7 @@
 
 mod config;
 mod entity;
+mod signaling;
 mod token;
 
 pub use config::Config;
@@ -26,6 +27,7 @@ pub struct Minecraft {
     config: Config,
     session_id: uuid::Uuid,
     environment: Option<Environment>,
+    signaling_environment: Option<serde_json::Value>,
     playfab: Option<Arc<playfab::Session>>,
     entities: HashMap<playfab::EntityKind, Arc<playfab::Entity>>,
     authorization: Option<Arc<Authorization>>,
@@ -45,6 +47,8 @@ struct Discovery {
 #[derive(Deserialize)]
 struct Environments {
     auth: Retail,
+    #[serde(default, rename = "signaling-afd")]
+    signaling_afd: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +72,7 @@ impl Minecraft {
             http: Http::new(USER_AGENT)?,
             config,
             environment: None,
+            signaling_environment: None,
             session_id: uuid::Uuid::new_v4(),
             playfab: None,
             entities: HashMap::new(),
@@ -235,6 +240,7 @@ impl Minecraft {
         let environment = discovery.service_environments.auth.prod;
         validate_service_url(&environment.service_uri)?;
         playfab::login_url(&environment.play_fab_title_id)?;
+        self.signaling_environment = discovery.service_environments.signaling_afd;
         self.environment = Some(environment);
         Ok(())
     }
