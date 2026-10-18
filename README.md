@@ -141,6 +141,60 @@ These concrete HTTP clients use the caller's async runtime. Transport state mach
 belong to the separate networking libraries; service credentials do not create an
 internal runtime or per-account background tasks.
 
+`Minecraft::messaging_connection()` uses the same Minecraft service credential and
+player messaging identity to resolve `signaling-afd` configuration. It returns a
+validated WSS destination, a sensitive Authorization header and the advertised ping
+interval. Missing or malformed optional signaling discovery affects this operation
+without changing auth-only discovery. Configuration 401s and explicit
+`reject_messaging(&request)` invalidate only the exact rejected issuance.
+
+`signaling::Messaging` provides bounded JSON-RPC correlation and TURN credential
+caching for that connection. The caller sends each returned `Outgoing` as one text
+message, feeds received text into `receive(bytes, now)`, sends callback replies and
+routes opaque `ReceivedSignal` payloads through its NetherNet codec. Call
+`acknowledge` only after the transport accepts a signal. Delivery waits require both
+service acceptance and a receipt from the expected peer; numeric service failures
+contain no remote diagnostics. Cancel requests explicitly, drive `expire(now)` at
+`next_deadline()` and close the state when its socket closes. All time is supplied
+by the caller; the state owns no output queue, tasks, sockets or automatic retries.
+
+The optional `signaling-tokio` feature adds `signaling::websocket::MessagingSocket`.
+It opens only the acquired WSS destination using verified Rustls, follows no
+redirects, and owns the socket, bounded wire/event queues and partial writes.
+Call `drive().await` continuously to progress messages, application pings,
+deadlines and control/close frames. It creates no runtime, tasks or automatic
+reconnect loop. Canceling a drive future retains pending wire writes on the owner;
+canceling a request retracts only frames that have not entered the socket sink.
+Drop or `abort()` for immediate shutdown, or call `close()` and keep driving to
+drain pending completions and finish the bounded close handshake.
+
+Request admission returns `Error::Limit` without publishing a handle or frame when
+a queue is full; retry local admission after driving. A reserved callback-response
+slot prevents receipt/control replies from being silently lost under backpressure.
+The driver accepts bounded JSON in text or binary messages, sends text, consumes
+JSON-RPC callback replies internally and returns application
+`Event`s, preserving explicit `acknowledge` after transport acceptance. Reuse current
+TURN credentials through `credentials()`; reconnect starts a fresh cache. Upgrade
+failures retain only numeric HTTP status or static causes. On `UpgradeStatus(401)`,
+pass the retained `ConnectionRequest` to `Minecraft::reject_messaging` before
+explicitly reacquiring and reconnecting.
+
+The runtime edge uses `tokio-websockets` and an explicit AWS-LC Rustls provider
+with WebPKI roots. Neither the SDK nor the selected WebSocket implementation logs
+raw upgrades or frames. Explicit exports, temporary HTTP/JSON and socket/TLS buffers
+can still retain credential copies and are not guaranteed erased on drop. Opaque
+SDP identities and ICE credentials must never be logged. The SDK does not import a
+NetherNet codec or decide whether an incoming signal is safe to acknowledge.
+
+The interactive example uses caller-supplied game/protocol policy and persistent
+device identity, then acquires configuration, opens the socket, obtains TURN
+credentials and closes it. It displays only the device code intended for sign-in
+and the number of TURN entries; account storage remains application-owned:
+
+```sh
+cargo run --features signaling-tokio --example messaging -- <game-version> <protocol> <persistent-device-uuid> <network-id>
+```
+
 `Account::social()` and `Minecraft::social()` borrow PeopleHub profiles and
 relationship lists, full user/device/title presence, and multiplayer activity
 handles through `xbox::social::Social`. Read calls reuse the account's NSAL policy,
@@ -196,8 +250,8 @@ integration, real-account acceptance and source-based vanilla parity are unverif
 cd tools/go-oracle
 go build -o ../../target/go-signature-oracle .
 cd ../..
-BEDROCK_SERVICES_GO_ORACLE="$PWD/target/go-signature-oracle" cargo test
-cargo clippy --all-targets -- -D warnings
+BEDROCK_SERVICES_GO_ORACLE="$PWD/target/go-signature-oracle" cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 The Go oracle checks signing boundaries on original synthetic requests. Local
