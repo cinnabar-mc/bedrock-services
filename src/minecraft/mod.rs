@@ -163,6 +163,12 @@ impl Minecraft {
         self.xbox.reject_rta(request)
     }
 
+    /// Checks whether this account retains the proof owner of an existing RTA connection.
+    /// Applications must also fence their selected XUID and sign-in generation.
+    pub fn owns_rta(&self, connection: &xbox::rta::Connection) -> bool {
+        connection.owns_account_proof(&self.xbox)
+    }
+
     /// Returns the game-session identifier shared by credential exchange and every mint.
     pub fn session_id(&self) -> uuid::Uuid {
         self.session_id

@@ -119,6 +119,11 @@ impl ConnectionRequest {
 }
 
 impl Connection {
+    /// Checks this socket's immutable proof owner without exporting or cloning key material.
+    pub(crate) fn owns_account_proof(&self, account: &Account) -> bool {
+        self.scope.proof == *account.key.verifying_key()
+    }
+
     /// Rebinds to one freshly acquired same-account socket and fails old pending requests.
     /// First close the old socket and discard its queued frames/events. Desired subscription
     /// handles survive; call resubscribe explicitly for each returned subscriptions() entry,
