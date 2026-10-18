@@ -2,6 +2,78 @@ use super::*;
 use crate::xbox::mpsd::tests::signed_service_script;
 use serde_json::json;
 
+/// A valid requested batch may exceed acquisition's cap while remaining within its service bound.
+#[tokio::test]
+async fn profile_service_body_above_default_limit_preserves_statistics() {
+    let scid = Uuid::from_u128(7);
+    let names = (0..MAX_STATISTICS)
+        .map(|index| format!("Original{index}"))
+        .collect::<Vec<_>>();
+    let text = "v".repeat(crate::http::RESPONSE_LIMIT / MAX_STATISTICS + 128);
+    let values = names
+        .iter()
+        .map(|name| {
+            json!({
+                "statname":name,"type":"String","value":text,
+            })
+        })
+        .collect::<Vec<_>>();
+    let response = json!({"users":[{"xuid":"123","scids":[{"scid":scid,"stats":values}]}]});
+    let bytes = serde_json::to_vec(&response).unwrap();
+    assert!(bytes.len() > crate::http::RESPONSE_LIMIT);
+    assert!(bytes.len() < 2 * crate::http::RESPONSE_LIMIT);
+    let requested = names.clone();
+    let mut response = Some(response);
+    let (mut account, address, server) = signed_service_script(
+        "1",
+        true,
+        move |_, path, headers, body| {
+            assert_eq!(path, "/batch?operation=read");
+            assert!(headers.starts_with("POST "));
+            let request: Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(request["requestedusers"], json!(["123"]));
+            assert_eq!(
+                request["requestedscids"],
+                json!([{"scid":scid,"requestedstats":requested}])
+            );
+            (200, vec![], response.take().unwrap())
+        },
+        1,
+    )
+    .await;
+    let mut statistics = account.statistics();
+    statistics.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+    let selection = [Selection {
+        service_config_id: scid,
+        names: names.clone(),
+    }];
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        statistics.read(&["123"], &selection),
+    )
+    .await
+    .unwrap();
+    if result.is_err() {
+        server.abort();
+    }
+    let served = server.await;
+    let batch = result
+        .unwrap_or_else(|error| panic!("valid in-bound statistics response rejected: {error:?}"));
+    served.unwrap();
+    assert_eq!(batch.malformed_users, 0);
+    assert_eq!(batch.users.len(), 1);
+    assert_eq!(batch.users[0].xuid, "123");
+    let returned = &batch.users[0].configurations[0];
+    assert_eq!(returned.service_config_id, scid);
+    assert_eq!(returned.statistics.len(), names.len());
+    let encoded = serde_json::to_string(&text).unwrap();
+    for (value, name) in returned.statistics.iter().zip(&names) {
+        assert_eq!(&value.name, name);
+        assert_eq!(value.value_type, "String");
+        assert_eq!(value.raw_value(), Some(encoded.as_str()));
+    }
+}
+
 /// Verifies real signed batches, exact user identity and original numeric values without zero fallbacks.
 #[tokio::test]
 async fn statistics_read_preserves_precision_absence_and_requested_identity() {

@@ -48,6 +48,68 @@ fn services(address: std::net::SocketAddr) -> Minecraft {
     services
 }
 
+/// A source-bounded persona image must survive the public owner above acquisition's smaller cap.
+#[tokio::test]
+async fn profile_service_body_above_default_limit_preserves_persona_image() {
+    // A one-pixel GIF padded with legal comment sub-blocks.
+    let mut image = b"GIF89a".to_vec();
+    image.extend_from_slice(&[1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255]);
+    image.extend_from_slice(&[0x21, 0xfe]);
+    let comment = vec![b'a'; crate::http::RESPONSE_LIMIT + 1024];
+    for block in comment.chunks(255) {
+        image.push(u8::try_from(block.len()).unwrap());
+        image.extend_from_slice(block);
+    }
+    image.push(0);
+    image.extend_from_slice(&[0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0, 0x3b]);
+    assert!(image.len() > crate::http::RESPONSE_LIMIT);
+    assert!(image.len() < 2 * crate::http::RESPONSE_LIMIT);
+    let served_image = image.clone();
+    let mut step = 0;
+    let (address, server) = fixture_bytes(move |path, headers, body| {
+        step += 1;
+        assert!(headers.starts_with("GET "));
+        assert!(body.is_empty());
+        let headers = headers.to_ascii_lowercase();
+        if step == 1 {
+            assert_eq!(path, "/api/v1.0/discovery/MinecraftPE/builds/1.26.50");
+            assert!(!headers.contains("authorization:"));
+            let host = headers.lines().find_map(|line| line.strip_prefix("host: ")).unwrap();
+            return (200, vec![], json!({"result":{"serviceEnvironments":{
+                "auth":{"prod":{"serviceUri":format!("http://{host}/auth"),"playFabTitleId":"AB12"}},
+                "persona":{"prod":{"serviceUri":format!("http://{host}/persona")}}
+            }}}).to_string().into_bytes());
+        }
+        assert_eq!(path, "/persona/api/v1.0/profile/xuid/123/image/head");
+        assert!(headers.contains("authorization: mctoken original."));
+        assert!(headers.contains("accept: image/*"));
+        assert!(!headers.contains("signature:"));
+        (200, vec![("Content-Type", "image/gif"), ("ETag", "\"original-image\"")], served_image.clone())
+    }, 2).await;
+    let mut services = services(address);
+    let original = Arc::clone(services.authorization.as_ref().unwrap());
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        services.profile().image("123", ImageKind::Head),
+    )
+    .await
+    .unwrap();
+    if result.is_err() {
+        server.abort();
+    }
+    let served = server.await;
+    let response = result
+        .unwrap_or_else(|error| panic!("valid in-bound persona response rejected: {error:?}"));
+    served.unwrap();
+    assert_eq!(response.bytes.as_slice(), image.as_slice());
+    assert_eq!(response.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(response.etag.as_deref(), Some("\"original-image\""));
+    assert!(Arc::ptr_eq(
+        &original,
+        services.authorization.as_ref().unwrap()
+    ));
+}
+
 /// Verifies discovered path prefixes, real authorized binary/JSON GETs and exact-issuance rejection.
 #[tokio::test]
 async fn persona_and_gallery_share_discovery_and_service_issuance_without_following_metadata() {
