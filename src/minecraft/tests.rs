@@ -36,7 +36,7 @@ fn discovery_owner(address: std::net::SocketAddr) -> Minecraft {
     let account = xbox::Account::new(Http::fixture(address), config, credentials).unwrap();
     let mut minecraft = Minecraft::new(
         account,
-        Config::desktop("1.26.50", 2193, Uuid::from_u128(1).into()),
+        Config::desktop("1.26.50", 2193, Uuid::from_u128(1)),
     )
     .unwrap();
     minecraft.http = Http::fixture_agent(address, USER_AGENT);
