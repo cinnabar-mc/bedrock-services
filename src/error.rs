@@ -17,7 +17,7 @@ pub enum Error {
     /// An encoded or decoded value violates the service contract.
     #[error("invalid authentication data: {0}")]
     Invalid(&'static str),
-    /// A response exceeded the acquisition byte budget.
+    /// A response exceeded its acquisition or concrete service byte budget.
     #[error("authentication response exceeds the byte limit")]
     ResponseTooLarge,
     /// A timestamp cannot be represented by the platform or wire format.

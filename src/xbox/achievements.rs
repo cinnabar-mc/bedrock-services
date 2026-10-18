@@ -9,6 +9,8 @@ use std::collections::HashSet;
 use url::Url;
 
 const ENDPOINT: &str = "https://achievements.xboxlive.com";
+/// Largest encoded response body for one achievement page.
+pub(crate) const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Largest retained page, independent of server behavior.
 pub const MAX_PAGE_ITEMS: usize = 1024;
 /// Largest number of explicit collection requests.
@@ -172,7 +174,10 @@ impl Achievements<'_> {
             .header("accept", "application/json")
             .header("accept-language", super::DEFAULT_LANGUAGE)
             .build()?;
-        let response = self.account.send_service(request, token).await?;
+        let response = self
+            .account
+            .send_service_with_limit(request, token, MAX_PAGE_BYTES)
+            .await?;
         if response.status != StatusCode::OK {
             return Err(Error::Status {
                 status: response.status,

@@ -179,7 +179,10 @@ impl Statistics<'_> {
             reqwest::header::USER_AGENT,
             reqwest::header::HeaderValue::from_static(USER_AGENT),
         );
-        let response = self.account.send_service(request, token).await?;
+        let response = self
+            .account
+            .send_service_with_limit(request, token, crate::http::PROFILE_RESPONSE_LIMIT)
+            .await?;
         if response.status != StatusCode::OK {
             return Err(Error::Status {
                 status: response.status,

@@ -83,7 +83,9 @@ impl Profile<'_> {
         let url = self
             .destination(&["api", "v1.0", "profile", "xuid", xuid, "image", kind.path()])
             .await?;
-        let response = self.read(url, "image/*").await?;
+        let response = self
+            .read(url, "image/*", crate::http::PROFILE_RESPONSE_LIMIT)
+            .await?;
         Ok(ImageBody {
             content_type: header(&response, reqwest::header::CONTENT_TYPE),
             etag: header(&response, reqwest::header::ETAG),
@@ -101,7 +103,9 @@ impl Profile<'_> {
         let url = self
             .destination(&["api", "v1.0", "gallery", "xuid", xuid])
             .await?;
-        let response = self.read(url, "application/json").await?;
+        let response = self
+            .read(url, "application/json", crate::http::RESPONSE_LIMIT)
+            .await?;
         if response.status != StatusCode::OK {
             return Err(Error::Status {
                 status: response.status,
@@ -158,7 +162,12 @@ impl Profile<'_> {
 
     /// Sends one Minecraft-authorized GET, rejecting only its exact cached issuance on 401.
     /// No retry, Xbox signature, response URL follow or separate credential state is introduced.
-    async fn read(&mut self, url: Url, accept: &'static str) -> Result<Response, Error> {
+    async fn read(
+        &mut self,
+        url: Url,
+        accept: &'static str,
+        response_limit: usize,
+    ) -> Result<Response, Error> {
         let token = self.minecraft.authorize().await?;
         let request = self
             .minecraft
@@ -167,7 +176,11 @@ impl Profile<'_> {
             .header("authorization", token.header_value()?)
             .header("accept", accept)
             .build()?;
-        let response = self.minecraft.http.send(request).await?;
+        let response = self
+            .minecraft
+            .http
+            .send_with_limit(request, response_limit)
+            .await?;
         if response.status == StatusCode::UNAUTHORIZED {
             self.minecraft.reject(&token);
         }
