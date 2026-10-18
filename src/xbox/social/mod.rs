@@ -305,7 +305,7 @@ impl Service {
 }
 
 /// Accepts only bounded decimal Xbox identifiers before constructing a service path or body.
-pub(super) fn validate_xuid(value: &str) -> Result<(), Error> {
+pub(crate) fn validate_xuid(value: &str) -> Result<(), Error> {
     if value.is_empty()
         || value.len() > 20
         || !value.bytes().all(|byte| byte.is_ascii_digit())
