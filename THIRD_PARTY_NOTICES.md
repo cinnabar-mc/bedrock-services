@@ -1,7 +1,7 @@
 # Third-party notices
 
 Xbox request signing, authentication, Real-Time Activity subscriptions,
-Multiplayer Session Directory and PlayFab behavior are adapted from
+Multiplayer Session Directory, title presence and PlayFab behavior are adapted from
 [df-mc/go-xsapi](https://github.com/df-mc/go-xsapi) and
 [df-mc/go-playfab](https://github.com/df-mc/go-playfab), under the following license.
 ICE credential wire formats are adapted from
@@ -55,7 +55,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-The optional Tokio socket edge uses [tokio-websockets](https://github.com/Gelbpunkt/tokio-websockets),
+The optional Tokio socket edges use [tokio-websockets](https://github.com/Gelbpunkt/tokio-websockets),
 under the following license.
 
 MIT License

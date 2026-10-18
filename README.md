@@ -53,11 +53,23 @@ and OAuth scope. It does not provide encryption, integrity protection or account
 generation fencing: the caller must serialize refresh and persistence, reject
 stale revisions and prevent signed-out accounts from being restored.
 
-Restoring preserves proof and refresh ownership, then reacquires access and
-derived credentials. Response-clock anchors do not survive restart, so access,
-device, SISU, XSTS and title-policy caches are deliberately omitted. This requires
-network requests after restart; persistent reuse of derived credentials remains
-open work.
+Version-two checkpoints can also retain the exact OAuth material and Xbox device,
+SISU and XSTS issuances with their original absolute expiries. A restored cache is
+dormant until a fresh successful public title-policy request supplies a valid
+HTTP Date. Saved OAuth access remains operationally dormant under the same admission:
+failed time qualification forces refresh before SISU, even when its original bytes
+and expiry are retained for persistence. Importing identical material cannot change
+this state. Missing time, clock rollback or expired entries cause reacquisition;
+response-clock anchors and title policies are never restored. Cancellation keeps
+the dormant snapshot for a later attempt. Older version-one checkpoints remain
+readable, and optional cache bytes are omitted if they cannot fit the existing
+64 KiB bound, preserving refresh and proof durability.
+
+At least one public policy request is required after restart. Minecraft and PlayFab
+credentials are not persisted. A caller must prevent restoration of stale
+checkpoints after rejection or account changes; this SDK does not reconcile
+snapshots across processes. `Account::replace_credentials()` preserves caches only
+when every OAuth field is identical. Changed material invalidates all Xbox stages.
 
 A running `Minecraft` owner can export `checkpoint()` without being consumed.
 After a caller validates a same-account rotation under its storage lease,
@@ -209,12 +221,36 @@ unrelated authorization failures do not silently discard it. Social read APIs do
 not publish presence, send invitations, modify multiplayer sessions or subscribe
 to realtime updates.
 
+`Account::title_presence()` and `Minecraft::title_presence()` borrow one-shot title
+presence writes through the same account, proof, NSAL policy and XSTS cache.
+`update` publishes a typed state with optional bounded rich-presence ID, service
+configuration and substitution parameters. It always addresses the authenticated
+title; application activity IDs and title policy stay with the caller. Repeat
+`update` explicitly for a heartbeat, using `UpdateResult::heartbeat_after` when
+present and a caller-selected fallback otherwise. The API owns no scheduling,
+background task or automatic retry, including for throttled service responses.
+
+Call `remove` explicitly on shutdown, even after a failed or canceled update:
+the earlier write may have applied. Removal sends once without consulting a local
+success flag. Dropping the borrowed view performs no network cleanup. Callers own
+their account-generation checks, refresh persistence and operation deadlines.
+
 `Account::mpsd()` and `Minecraft::mpsd()` borrow the session directory through the
 same account/proof/XSTS owner. `xbox::mpsd::Reference` validates a complete locator
 and converts existing social session observations without duplicating activity
 search. `publish` creates one membership with `If-None-Match: *`; activity
 publication and invitations are separate explicit calls. Retain the returned
 `Session` if a later operation fails, and reconcile or leave it explicitly.
+
+For cancellation-sensitive hosting, retain a `PublishAttempt` before awaiting
+`publish_retained`. It fixes the original reference, RTA binding and account proof.
+Only final signed HTTP dispatch seals the one creation write; an observed 412 is
+known rejection. A canceled or failed dispatch stays uncertain until
+`reconcile_publish` reads the exact original active membership and a concrete
+validator. A 404, replaced binding or invalid response preserves the recovery
+obligation. Callers own deadlines and guarded cleanup; the SDK starts no worker.
+`set_properties_bound` also requires that original active binding and a concrete
+validator for conditional title admission updates; a conflict requires refresh.
 
 Session snapshots retain unknown system/title metadata without inventing join
 permission. Conditional refresh and partial writes retain exact ETags and known
@@ -228,7 +264,7 @@ custom data can contain admission nonces and must not be logged; ordinary JSON a
 HTTP temporary buffers are not guaranteed erased on drop.
 
 A caller-supplied `Binding` contains the actual RTA connection and stable session
-subscription ID. The SDK does not create an RTA socket or background subscription;
+subscription ID. The core does not create an RTA socket or background subscription;
 the application orders connection generations and explicitly rebinds/refreshes.
 A `JoinAttempt` keeps one stable membership body and IDs. `join` performs one PUT:
 only an explicit HTTP 412 permits another attempt, up to three, with a returned
@@ -281,10 +317,36 @@ its change payload remains opaque for caller interpretation.
 
 The RTA request, resource URI and payload owners have no Debug or implicit
 serialization. Standard JSON/HTTP and caller socket buffers can retain temporary
-copies and are not guaranteed erased. A concrete RTA socket edge, application
-social/notification adapters and real-account acceptance remain open work.
+copies and are not guaranteed erased. Application social/notification adapters
+and real-account acceptance remain open work.
 
-Persistent derived-token caching, account sign-up, presence publication,
+The independent optional `rta-tokio` feature adds `xbox::rta::websocket::RtaSocket`.
+Call `websocket::upgrade_headers()` first, pass those fields to the account's
+`rta_connection`, then pass the protected request to `RtaSocket::connect`. The edge
+uses verified TLS, transmits every final signed header unchanged, validates the
+exact accept challenge and V2 subprotocol, and follows no redirects. It exposes
+no production plaintext or trust override.
+
+One owner holds the socket, pure connection, bounded output/events and partial
+write progress. `subscribe` returns a desired handle and cancelable request;
+`unsubscribe` and `resubscribe` are explicit. `connection()` borrows current
+identity, desired handles and MPSD bindings. Keep calling `drive().await` even
+when idle so ordered messages, automatic Pongs, request deadlines and close
+handshakes progress. The edge has no runtime, spawned task, active heartbeat,
+automatic retry or reconnect loop. Canceling a drive future retains admitted
+frame progress without replay. Canceling a request or reaching its deadline
+immediately drops the entire ambiguous physical socket and drains completions.
+
+`abort` drops I/O while retaining desired resources; `close` permanently stops
+admission and starts a bounded close handshake. Explicit `reconnect` checks
+XUID/proof/generation before touching current I/O, drops the old socket and
+queued work, then attempts one freshly acquired upgrade. Failure or cancellation
+keeps disconnected desired state. After success, explicitly `resubscribe` and
+install initial snapshots before applying changes or rebinding MPSD sessions.
+`into_connection` drops I/O/queued work and transfers disconnected pure state
+to another caller driver. Sign-out retires the owner and its account generation.
+
+Persistent derived-token caching, account sign-up,
 friends-world application joining/hosting, invitation receipt, applied realtime social updates,
 shared acquisition flights, transient service retries and
 cross-process cache coordination remain migration work. Native Cinnabar account

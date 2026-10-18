@@ -8,9 +8,11 @@
 //! Title custom data can contain admission nonces; these owners have no Debug.
 
 mod join;
+mod publish;
 mod types;
 
 pub use join::{JoinAttempt, JoinOutcome, MAX_JOIN_ATTEMPTS};
+pub use publish::PublishAttempt;
 pub use types::{
     Binding, Description, Invitation, Member, MemberData, Publish, Reference, Restriction, Section,
     Session,
@@ -73,6 +75,9 @@ pub enum Error {
     /// A successful, exhausted, failed or canceled join write cannot be replayed.
     #[error("session directory join attempt is no longer writable")]
     JoinFinished,
+    /// A dispatched or completed publication cannot be replayed.
+    #[error("session directory publication is no longer writable")]
+    PublishFinished,
 }
 
 /// The result of one explicit refresh or write, without hidden retries.
@@ -133,33 +138,8 @@ impl Directory<'_> {
         reference: &Reference,
         config: Publish,
     ) -> Result<Session, Error> {
-        let mut body = json!({"properties":{"system":{"joinRestriction":config.join,
-            "readRestriction":config.read,"closed":false}},"members":{"me":member(config.binding, config.member)}});
-        if let Some(custom) = config.constants {
-            body["constants"] = json!({"custom":custom});
-        }
-        if let Some(custom) = config.properties {
-            body["properties"]["custom"] = custom;
-        }
-        let _ = encode(&body)?;
-        let url = self.session_url(reference)?;
-        let token = self.token(&url, None).await?;
-        body["members"]["me"]["constants"]["system"]["xuid"] = json!(token.xuid());
-        let bytes = encode(&body)?;
-        let response = self
-            .send(
-                Arc::clone(&token),
-                Method::PUT,
-                url,
-                Some(bytes),
-                Some((
-                    reqwest::header::IF_NONE_MATCH,
-                    HeaderValue::from_static("*"),
-                )),
-            )
-            .await?;
-        require(&response, StatusCode::CREATED)?;
-        self.session(reference.clone(), token.xuid(), response)
+        let mut attempt = self.publish_attempt(reference, config)?;
+        self.publish_retained(&mut attempt).await
     }
 
     /// Explicitly refreshes this owner; canceled/failed writes force an unconditional GET.
@@ -210,6 +190,27 @@ impl Directory<'_> {
         .await
     }
 
+    /// Replaces session custom properties only under the original active membership and validator.
+    /// Use this for title admission state that must not overwrite an observed replacement session.
+    ///
+    /// # Errors
+    /// Rejects dirty/closed owners, replaced bindings and absent validators before mutation I/O.
+    pub async fn set_properties_bound(
+        &mut self,
+        session: &mut Session,
+        binding: Binding,
+        custom: &Value,
+    ) -> Result<Update, Error> {
+        self.check(session, true)?;
+        if !session.is_bound(binding) {
+            return Err(Error::Invalid("session property binding"));
+        }
+        if session.etag.is_none() {
+            return Err(Error::Invalid("session property validator"));
+        }
+        self.set_properties(session, custom).await
+    }
+
     /// Replaces this account's mutable member custom properties; never modifies another member.
     ///
     /// # Errors
@@ -251,6 +252,26 @@ impl Directory<'_> {
     pub async fn leave(&mut self, session: &mut Session) -> Result<Update, Error> {
         self.update(session, encode(&json!({"members":{"me":null}}))?, true)
             .await
+    }
+
+    /// Removes this owner's membership only under its original binding and exact current validator.
+    /// The retained binding permits cleanup after its RTA socket ends; synchronize dirty owners first.
+    ///
+    /// # Errors
+    /// Returns lifecycle, ownership, missing-validator or service errors without deleting a replacement.
+    pub async fn leave_bound(
+        &mut self,
+        session: &mut Session,
+        binding: Binding,
+    ) -> Result<Update, Error> {
+        self.check(session, true)?;
+        if !session.is_bound(binding) {
+            return Err(Error::Invalid("session cleanup binding"));
+        }
+        if session.etag.is_none() {
+            return Err(Error::Invalid("session cleanup validator"));
+        }
+        self.leave(session).await
     }
 
     /// Publishes the existing membership as this account's discoverable activity, once.

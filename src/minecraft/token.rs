@@ -159,6 +159,13 @@ impl MultiplayerToken {
         &self.public_key
     }
 
+    /// Returns the original hard validity from the mint response, without a refresh margin.
+    /// Preserve this absolute value through signaling and Login; copying a remaining
+    /// lifetime and anchoring it later would extend the credential.
+    pub fn expires_at(&self) -> SystemTime {
+        self.expires.into()
+    }
+
     /// Checks hard expiry before Login using the caller's service-aligned time.
     pub fn valid(&self, now: SystemTime) -> bool {
         OffsetDateTime::from(now) < self.expires

@@ -43,6 +43,11 @@ impl TurnCredentials {
         now < self.expires
     }
 
+    /// Returns the original monotonic expiry for transport handoff without extending it.
+    pub fn expires_at(&self) -> Instant {
+        self.expires
+    }
+
     /// Decodes a bounded service result and anchors its lifetime to receipt time.
     pub(super) fn from_value(value: Value, now: Instant) -> Result<Self, Error> {
         #[derive(Deserialize)]

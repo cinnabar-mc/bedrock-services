@@ -3,9 +3,16 @@
 use super::{Account, Config, Device};
 use crate::{Error, http::Http, oauth::Credentials};
 use p256::ecdsa::SigningKey;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
 
 const PREFIX: &[u8] = b"BSAC\x01";
+const CACHED_PREFIX: &[u8] = b"BSAC\x02";
+const TIME_BYTES: usize = 12;
+
+mod derived;
+pub(super) use derived::Derived;
+use derived::View;
 const PROOF_BYTES: usize = 32;
 
 /// Ordered authentication-policy fields in the version-one format.
@@ -48,8 +55,10 @@ impl Account {
     ///
     /// This performs no I/O. Persist each returned checkpoint under the same account
     /// generation and serialization boundary as refresh and sign-out. Access, device,
-    /// SISU and XSTS tokens are omitted: their response-clock anchors cannot survive
-    /// restart. The restored owner reacquires them using this same proof key.
+    /// SISU and XSTS entries may be included within the same size limit when their
+    /// live owner has a service clock. Their original absolute expiry is preserved;
+    /// restore requires fresh public policy and a successful response Date before use.
+    /// Optional cache bytes never prevent capturing the refresh credential and proof.
     ///
     /// # Errors
     /// Returns [`Error::SignInRequired`] without a refresh token, or a redacted error
@@ -68,9 +77,27 @@ impl Account {
                 .filter(|length| *length <= MAX_CHECKPOINT_BYTES)
                 .ok_or(Error::Invalid("account checkpoint size"))?;
         }
+        let cached = View::of(self);
+        let cached_length = cached
+            .as_ref()
+            .and_then(|cached| cached.encoded_len())
+            .and_then(|cache_length| {
+                length
+                    .checked_add(4 + TIME_BYTES)
+                    .and_then(|length| length.checked_add(self.credentials.access_token().len()))
+                    .and_then(|length| length.checked_add(4))
+                    .and_then(|length| length.checked_add(cache_length))
+            })
+            .filter(|length| *length <= MAX_CHECKPOINT_BYTES);
+        let cached_length =
+            cached_length.filter(|_| encode_time(self.credentials.expires_at()).is_ok());
         // Allocate once before exporting the scalar so secret bytes never move on growth.
-        let mut bytes = Zeroizing::new(Vec::with_capacity(length));
-        bytes.extend_from_slice(PREFIX);
+        let mut bytes = Zeroizing::new(Vec::with_capacity(cached_length.unwrap_or(length)));
+        bytes.extend_from_slice(if cached_length.is_some() {
+            CACHED_PREFIX
+        } else {
+            PREFIX
+        });
         bytes.push(device_tag(self.config.device));
         for field in policy {
             append_field(&mut bytes, field)?;
@@ -78,6 +105,18 @@ impl Account {
         let proof = Zeroizing::new(self.key.to_bytes());
         bytes.extend_from_slice(proof.as_slice());
         append_field(&mut bytes, refresh)?;
+        if let (Some(cached), Some(_)) = (cached, cached_length) {
+            append_field(&mut bytes, self.credentials.access_token())?;
+            bytes.extend_from_slice(&encode_time(self.credentials.expires_at())?);
+            let length = u32::try_from(
+                cached
+                    .encoded_len()
+                    .ok_or(Error::Invalid("account checkpoint size"))?,
+            )
+            .map_err(|_| Error::Invalid("account checkpoint size"))?;
+            bytes.extend_from_slice(&length.to_le_bytes());
+            cached.write(&mut bytes)?;
+        }
         Ok(Checkpoint { bytes })
     }
 
@@ -94,13 +133,16 @@ impl Account {
         }
         let key = SigningKey::from_slice(contents.proof)
             .map_err(|_| Error::Invalid("account checkpoint proof key"))?;
-        let credentials = Credentials::from_tokens(
+        let mut credentials = Credentials::from_tokens(
             config.client_id.clone(),
-            String::new(),
+            contents.access.to_owned(),
             contents.refresh.to_owned(),
-            std::time::UNIX_EPOCH,
+            contents.expires,
         )?;
-        Ok(Self::with_key(http, config, credentials, key))
+        credentials.suspend_access();
+        let mut account = Self::with_key(http, config, credentials, key);
+        account.restored = contents.derived.map(View::into_owned);
+        Ok(account)
     }
 }
 
@@ -149,6 +191,9 @@ struct Contents<'a> {
     policy: PolicyFields<'a>,
     proof: &'a [u8],
     refresh: &'a str,
+    access: &'a str,
+    expires: SystemTime,
+    derived: Option<View<'a>>,
 }
 
 impl<'a> Contents<'a> {
@@ -158,7 +203,8 @@ impl<'a> Contents<'a> {
             return Err(Error::Invalid("account checkpoint size"));
         }
         let mut reader = Reader(bytes);
-        if reader.take(PREFIX.len())? != PREFIX {
+        let prefix = reader.take(PREFIX.len())?;
+        if prefix != PREFIX && prefix != CACHED_PREFIX {
             return Err(Error::Invalid("account checkpoint version"));
         }
         let device = reader.take(1)?[0];
@@ -168,6 +214,14 @@ impl<'a> Contents<'a> {
         }
         let proof = reader.take(PROOF_BYTES)?;
         let refresh = reader.field()?;
+        let (access, expires, derived) = if prefix == CACHED_PREFIX {
+            let access = reader.field()?;
+            let expires = reader.time()?;
+            let derived = View::parse(reader.bytes()?)?;
+            (access, expires, Some(derived))
+        } else {
+            ("", UNIX_EPOCH, None)
+        };
         if refresh.is_empty() || !reader.0.is_empty() {
             return Err(Error::Invalid("account checkpoint framing"));
         }
@@ -176,6 +230,9 @@ impl<'a> Contents<'a> {
             policy,
             proof,
             refresh,
+            access,
+            expires,
+            derived,
         })
     }
 }
@@ -193,8 +250,20 @@ impl<'a> Reader<'a> {
         Ok(value)
     }
 
-    /// Reads one length-prefixed UTF-8 value without trusting its declared size.
-    fn field(&mut self) -> Result<&'a str, Error> {
+    /// Reads one original absolute expiry without constructing a new lifetime.
+    fn time(&mut self) -> Result<SystemTime, Error> {
+        let seconds = u64::from_le_bytes(self.take(8)?.try_into().map_err(|_| Error::TimeRange)?);
+        let nanos = u32::from_le_bytes(self.take(4)?.try_into().map_err(|_| Error::TimeRange)?);
+        if nanos >= 1_000_000_000 {
+            return Err(Error::TimeRange);
+        }
+        UNIX_EPOCH
+            .checked_add(Duration::new(seconds, nanos))
+            .ok_or(Error::TimeRange)
+    }
+
+    /// Reads a bounded length-prefixed byte field without copying credential material.
+    fn bytes(&mut self) -> Result<&'a [u8], Error> {
         let length = u32::from_le_bytes(
             self.take(4)?
                 .try_into()
@@ -202,9 +271,25 @@ impl<'a> Reader<'a> {
         );
         let length =
             usize::try_from(length).map_err(|_| Error::Invalid("account checkpoint size"))?;
-        std::str::from_utf8(self.take(length)?)
+        self.take(length)
+    }
+
+    /// Reads one length-prefixed UTF-8 value without trusting its declared size.
+    fn field(&mut self) -> Result<&'a str, Error> {
+        std::str::from_utf8(self.bytes()?)
             .map_err(|_| Error::Invalid("account checkpoint encoding"))
     }
+}
+
+/// Encodes the credential's absolute timestamp, retaining its subsecond precision.
+fn encode_time(time: SystemTime) -> Result<[u8; TIME_BYTES], Error> {
+    let elapsed = time
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::TimeRange)?;
+    let mut bytes = [0; TIME_BYTES];
+    bytes[..8].copy_from_slice(&elapsed.as_secs().to_le_bytes());
+    bytes[8..].copy_from_slice(&elapsed.subsec_nanos().to_le_bytes());
+    Ok(bytes)
 }
 
 #[cfg(test)]

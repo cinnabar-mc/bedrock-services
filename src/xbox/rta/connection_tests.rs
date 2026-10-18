@@ -101,6 +101,13 @@ async fn protected_upgrade_reuses_account_policy_signs_final_headers_and_fences_
     assert_eq!(first.subprotocol(), SUBPROTOCOL);
     verify(&first, &account);
     let mut state = first.start().unwrap();
+    assert!(state.owns_account_proof(&account));
+    let original_proof = state.scope.proof;
+    state.scope.proof = *p256::ecdsa::SigningKey::from_slice(&[11; 32])
+        .unwrap()
+        .verifying_key();
+    assert!(!state.owns_account_proof(&account));
+    state.scope.proof = original_proof;
     assert!(matches!(first.start(), Err(Error::State)));
     let now = Instant::now();
     let (id, frame) = state

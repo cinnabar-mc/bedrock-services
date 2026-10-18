@@ -6,8 +6,9 @@
 //! [`Outgoing`] as one text message and feed complete messages in socket order.
 //! Apply each initial snapshot before processing the next message's changes.
 //!
-//! This module creates no socket, runtime, task, retry loop or output queue. The
-//! caller supplies monotonic time, drives deadlines and explicitly resubscribes
+//! The pure owner creates no socket, runtime, task, retry loop or output queue.
+//! The optional `rta-tokio` feature provides a separate caller-driven socket edge.
+//! Other callers supply monotonic time, drive deadlines and explicitly resubscribe
 //! after reconnect. On disconnection, cancellation, timeout or receive error,
 //! close the old socket and discard its queued frames before reconnecting. This
 //! conservative cancellation rule prevents an unacknowledged remote subscription
@@ -15,6 +16,8 @@
 
 mod connection;
 mod state;
+#[cfg(feature = "rta-tokio")]
+pub mod websocket;
 mod wire;
 
 pub use connection::ConnectionRequest;

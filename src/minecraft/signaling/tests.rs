@@ -43,6 +43,7 @@ fn services(address: std::net::SocketAddr) -> Minecraft {
     minecraft.environment = Some(Environment {
         service_uri: format!("http://{address}/auth"),
         play_fab_title_id: "AB12".into(),
+        issuer: String::new(),
     });
     minecraft.signaling_environment =
         Some(json!({"prod":{"serviceUri":format!("http://{address}/prefix")}}));

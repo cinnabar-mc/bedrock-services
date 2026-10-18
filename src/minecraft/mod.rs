@@ -16,7 +16,12 @@ use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc};
 use url::Url;
 
-const USER_AGENT: &str = "libhttpclient/1.0.0.0";
+/// Minecraft service and public authorization-provider metadata request policy.
+pub const USER_AGENT: &str = "libhttpclient/1.0.0.0";
+
+/// Release Minecraft service identity for multiplayer activity and session queries.
+pub const SERVICE_CONFIG_ID: uuid::Uuid =
+    uuid::Uuid::from_u128(0x4fc1_0100_5f7a_4470_899b_2808_3576_0c07);
 
 /// Owns the concrete service chain without background tasks or shared mutable locks.
 /// Async methods use the caller's runtime. Successfully acquired stages survive
@@ -65,6 +70,8 @@ struct Retail {
 struct Environment {
     service_uri: String,
     play_fab_title_id: String,
+    #[serde(default)]
+    issuer: String,
 }
 
 impl Minecraft {
@@ -136,6 +143,11 @@ impl Minecraft {
         self.xbox.social()
     }
 
+    /// Borrows one-shot title presence writes using the same account, proof and XSTS cache.
+    pub fn title_presence(&mut self) -> xbox::presence::TitlePresence<'_> {
+        self.xbox.title_presence()
+    }
+
     /// Borrows session-directory operations on this account without starting RTA or hosting tasks.
     pub fn mpsd(&mut self) -> xbox::mpsd::Directory<'_> {
         self.xbox.mpsd()
@@ -156,9 +168,34 @@ impl Minecraft {
         self.xbox.reject_rta(request)
     }
 
+    /// Checks whether this account retains the proof owner of an existing RTA connection.
+    /// Applications must also fence their selected XUID and sign-in generation.
+    pub fn owns_rta(&self, connection: &xbox::rta::Connection) -> bool {
+        connection.owns_account_proof(&self.xbox)
+    }
+
     /// Returns the game-session identifier shared by credential exchange and every mint.
     pub fn session_id(&self) -> uuid::Uuid {
         self.session_id
+    }
+
+    /// Borrows the discovered authorization issuer for caller-owned multiplayer verification.
+    /// Discovery must already have completed; the returned value is not derived from token claims.
+    pub fn authorization_issuer(&self) -> Result<&str, Error> {
+        let issuer = &self
+            .environment
+            .as_ref()
+            .ok_or(Error::Invalid("missing authorization discovery"))?
+            .issuer;
+        validate_service_url(issuer)?;
+        Ok(issuer)
+    }
+
+    /// Samples the last HTTPS service Date advanced by monotonic elapsed time.
+    /// The caller captures its monotonic observation before this call and retains that
+    /// pair across transport work rather than starting a fresh credential lifetime later.
+    pub fn service_time(&self) -> std::time::SystemTime {
+        self.http.now()
     }
 
     /// Borrows Realms services on the discovered retail endpoint using this account's XSTS cache.

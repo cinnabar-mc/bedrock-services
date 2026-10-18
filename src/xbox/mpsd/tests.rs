@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 use std::time::{Duration, UNIX_EPOCH};
 use uuid::Uuid;
 
+mod publication;
+
 const SIGNED_HEADERS: &[&str] = &[
     "User-Agent",
     "Accept",
@@ -139,6 +141,64 @@ fn account(address: std::net::SocketAddr) -> Account {
 fn snapshot(change: u64) -> Value {
     json!({"branch":Uuid::from_u128(1),"changeNumber":change,"members":{"me":{"constants":{"system":{"xuid":"123"}},"properties":{"system":{"active":true}}}},
         "properties":{"system":{"joinRestriction":"FutureRestriction"},"custom":{"nonces":{"321":"synthetic-admission"}}}})
+}
+
+#[test]
+fn binding_requires_the_local_active_member_and_exact_connection_and_subscription() {
+    let account = account("127.0.0.1:1".parse().unwrap());
+    let connection = Uuid::from_u128(41);
+    let subscription = Uuid::from_u128(42);
+    let binding = Binding::new(connection, subscription).unwrap();
+    let mut description = snapshot(1);
+    description["members"]["me"]["properties"]["system"] = json!({
+        "active":true, "connection":connection,
+        "subscription":{"id":subscription.to_string().to_uppercase()}
+    });
+    let mut session = Session {
+        reference: Reference::new(Uuid::from_u128(7), "MinecraftLobby".into(), "world".into())
+            .unwrap(),
+        owner: "123".into(),
+        proof: *account.key.verifying_key(),
+        description: serde_json::from_value(description).unwrap(),
+        etag: None,
+        closed: false,
+        uncertain: false,
+    };
+    assert!(session.is_bound(binding));
+    assert!(!session.is_bound(Binding::new(Uuid::from_u128(43), subscription).unwrap()));
+    assert!(!session.is_bound(Binding::new(connection, Uuid::from_u128(44)).unwrap()));
+    session.uncertain = true;
+    assert!(!session.is_bound(binding));
+    session.uncertain = false;
+    session
+        .description
+        .members
+        .get_mut("me")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .properties
+        .as_mut()
+        .unwrap()
+        .system
+        .as_mut()
+        .unwrap()["active"] = json!(false);
+    assert!(!session.is_bound(binding));
+    session
+        .description
+        .members
+        .get_mut("me")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .properties
+        .as_mut()
+        .unwrap()
+        .system
+        .as_mut()
+        .unwrap()["active"] = json!(true);
+    session.owner = "456".into();
+    assert!(!session.is_bound(binding));
 }
 
 /// Exercises actual signed lifecycle, isolated account ownership, partial writes and complete-cache refresh.
@@ -294,10 +354,14 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
     let mut attempt = directory
         .join_attempt(Uuid::from_u128(5), binding, MemberData::default())
         .unwrap();
+    assert!(!attempt.needs_reconciliation());
+    drop(directory.join(&mut attempt));
+    assert!(!attempt.needs_reconciliation());
     assert!(matches!(
         directory.join(&mut attempt).await.unwrap(),
         JoinOutcome::Precondition { remaining: 2, .. }
     ));
+    assert!(!attempt.needs_reconciliation());
     assert!(matches!(
         directory.join(&mut attempt).await.unwrap(),
         JoinOutcome::Precondition { remaining: 1, .. }
@@ -323,6 +387,10 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
         directory.join(&mut raced).await.unwrap(),
         JoinOutcome::Exhausted
     ));
+    assert!(
+        !raced.needs_reconciliation(),
+        "explicitly exhausted 412 writes did not create membership"
+    );
     assert!(matches!(
         directory.join(&mut raced).await,
         Err(Error::JoinFinished)
@@ -355,6 +423,114 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
     );
     assert!(Reference::new(Uuid::from_u128(1), "../credentials".into(), "world".into()).is_err());
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_rejected_join_metadata_does_not_make_the_write_ambiguous() {
+    let (mut account, address, server) = script(
+        true,
+        |_, _, _, _| (412, vec![("ETag", "unquoted")], json!({})),
+        1,
+    )
+    .await;
+    let mut directory = account.mpsd();
+    directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+    let mut attempt = directory
+        .join_attempt(
+            Uuid::from_u128(5),
+            Binding::new(Uuid::from_u128(2), Uuid::from_u128(3)).unwrap(),
+            MemberData::default(),
+        )
+        .unwrap();
+    assert!(matches!(
+        directory.join(&mut attempt).await,
+        Err(Error::Invalid("session ETag"))
+    ));
+    assert!(
+        !attempt.needs_reconciliation(),
+        "the observed 412 rejected membership before metadata decoding"
+    );
+    assert!(matches!(
+        directory.join(&mut attempt).await,
+        Err(Error::JoinFinished)
+    ));
+    server.await.unwrap();
+}
+
+/// Exercises real reads/refresh/conditional leave without needing the original RTA socket to be live.
+async fn bound_cleanup_scenario(scenario: &'static str) {
+    let connection = Uuid::from_u128(41);
+    let subscription = Uuid::from_u128(42);
+    let binding = Binding::new(connection, subscription).unwrap();
+    let (mut account, address, server) = script(true, move |step, _, headers, body| {
+            let mut value = snapshot(step as u64);
+            value["members"]["me"]["properties"]["system"] = json!({
+                "active":true, "connection":connection,
+                "subscription":{"id":if scenario == "replacement" && step == 2 { Uuid::from_u128(43) } else { subscription }}
+            });
+            match step {
+                1 => (200, vec![("ETag", "\"v1\"")], value),
+                2 => {
+                    assert_eq!(header(headers, "if-none-match"), "\"v1\"");
+                    (200, if scenario == "missing-validator" { vec![] } else { vec![("ETag", "\"v2\"")] }, value)
+                }
+                3 => {
+                    assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), json!({"members":{"me":null}}));
+                    assert_eq!(header(headers, "if-match"), if scenario == "missing-validator" { "*" } else { "\"v2\"" });
+                    (204, vec![], Value::Null)
+                }
+                _ => panic!("unexpected bound cleanup request"),
+            }
+        }, 3).await;
+    let mut directory = account.mpsd();
+    directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+    let reference =
+        Reference::new(Uuid::from_u128(7), "MinecraftLobby".into(), "Hosted".into()).unwrap();
+    let mut session = directory.read(&reference).await.unwrap();
+    assert!(session.is_bound(binding));
+    assert_eq!(directory.sync(&mut session).await.unwrap(), Update::Updated);
+    let result = directory.leave_bound(&mut session, binding).await;
+    match scenario {
+        "original" => {
+            assert_eq!(result.unwrap(), Update::Closed);
+            server.await.unwrap();
+        }
+        "replacement" => {
+            assert!(
+                matches!(result, Err(Error::Invalid("session cleanup binding"))),
+                "cleanup must never delete an observed replacement membership"
+            );
+            assert!(!session.is_closed());
+            assert!(!session.needs_sync());
+            server.abort();
+            let _ = server.await;
+        }
+        _ => {
+            assert!(
+                matches!(result, Err(Error::Invalid("session cleanup validator"))),
+                "wildcard cleanup cannot protect an unobserved replacement"
+            );
+            assert!(!session.is_closed());
+            assert!(!session.needs_sync());
+            server.abort();
+            let _ = server.await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn bound_cleanup_leaves_original_membership_without_a_live_socket() {
+    bound_cleanup_scenario("original").await;
+}
+
+#[tokio::test]
+async fn bound_cleanup_preserves_an_observed_replacement_membership() {
+    bound_cleanup_scenario("replacement").await;
+}
+
+#[tokio::test]
+async fn bound_cleanup_rejects_a_missing_validator_before_destructive_io() {
+    bound_cleanup_scenario("missing-validator").await;
 }
 
 /// Drops a live HTTP future once the fixture has applied its request but before consuming its reply.
@@ -392,13 +568,14 @@ async fn canceled_writes_require_reconciliation_and_canceled_joins_cannot_replay
             1=>(200,vec![("ETag","\"v1\"")],snapshot(1)),
             2=>{assert_eq!(header(headers,"if-match"),"\"v1\"");signal.store(2,Ordering::SeqCst);(200,vec![("ETag","\"v2\"")],snapshot(2))}
             3=>{assert_eq!(header(headers,"if-none-match"),"");(200,vec![("ETag","\"v2\"")],snapshot(2))}
-            4=>{let value:Value=serde_json::from_slice(body).unwrap();assert_eq!(value["members"]["me"]["constants"]["system"]["xuid"],"123");signal.store(4,Ordering::SeqCst);
+            4|5=>(412,vec![("ETag","\"raced\"")],json!({})),
+            6=>{let value:Value=serde_json::from_slice(body).unwrap();assert_eq!(value["members"]["me"]["constants"]["system"]["xuid"],"123");signal.store(6,Ordering::SeqCst);
                 (200,vec![("Content-Location","/serviceconfigs/00000000-0000-0000-0000-000000000007/sessionTemplates/MinecraftLobby/sessions/Joined")],snapshot(1))}
-            5=>(200,vec![("ETag","\"joined\"")],snapshot(1)),
-            6|7=>{assert_eq!(serde_json::from_slice::<Value>(body).unwrap(),json!({"members":{"me":null}}));(204,vec![],Value::Null)}
+            7=>(200,vec![("ETag","\"joined\"")],snapshot(1)),
+            8|9=>{assert_eq!(serde_json::from_slice::<Value>(body).unwrap(),json!({"members":{"me":null}}));(204,vec![],Value::Null)}
             _=>panic!("unexpected cancellation request"),
         }
-    },7).await;
+    },9).await;
     let mut directory = account.mpsd();
     directory.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
     let reference =
@@ -417,7 +594,15 @@ async fn canceled_writes_require_reconciliation_and_canceled_joins_cannot_replay
     let mut attempt = directory
         .join_attempt(Uuid::from_u128(5), binding, MemberData::default())
         .unwrap();
-    cancel_after_application(directory.join(&mut attempt), &applied, 4).await;
+    for _ in 1..MAX_JOIN_ATTEMPTS {
+        assert!(matches!(
+            directory.join(&mut attempt).await.unwrap(),
+            JoinOutcome::Precondition { .. }
+        ));
+        assert!(!attempt.needs_reconciliation());
+    }
+    cancel_after_application(directory.join(&mut attempt), &applied, 6).await;
+    assert!(attempt.needs_reconciliation());
     assert!(matches!(
         directory.join(&mut attempt).await,
         Err(Error::JoinFinished)

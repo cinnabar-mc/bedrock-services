@@ -9,8 +9,19 @@ impl Account {
     /// Callers own destination/body and service headers; the HTTP edge fills absent transport defaults.
     pub(super) async fn send_service(
         &mut self,
+        request: Request,
+        token: Arc<Authorization>,
+    ) -> Result<Response, Error> {
+        self.send_service_with_dispatch(request, token, || {}).await
+    }
+
+    /// Reports conservative dispatch only after final signing, immediately before the HTTP await.
+    /// The callback must retain uncertain mutation state; it does not prove remote receipt.
+    pub(super) async fn send_service_with_dispatch(
+        &mut self,
         mut request: Request,
         token: Arc<Authorization>,
+        dispatched: impl FnOnce(),
     ) -> Result<Response, Error> {
         let (party, policy) = self
             .service_policy(request.url())
@@ -23,6 +34,7 @@ impl Account {
             .insert(reqwest::header::AUTHORIZATION, token.header_value()?);
         self.http.prepare_signature(&mut request)?;
         policy.sign(&mut request, &self.key, self.http.now())?;
+        dispatched();
         let response = self.http.send(request).await?;
         if token_expired(&response) {
             self.reject(&token);
