@@ -8,7 +8,7 @@ mod token;
 pub use config::Config;
 pub use token::{Authorization, Configuration, MultiplayerToken};
 
-use crate::{Error, http::Http, playfab, xbox};
+use crate::{Error, http::Http, playfab, realms, xbox};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use p384::{ecdsa::VerifyingKey, pkcs8::EncodePublicKey};
 use reqwest::{Method, header::HeaderValue};
@@ -28,6 +28,8 @@ pub struct Minecraft {
     session_id: uuid::Uuid,
     environment: Option<Environment>,
     signaling_environment: Option<serde_json::Value>,
+    realms_environment: Option<serde_json::Value>,
+    realms_state: realms::State,
     playfab: Option<Arc<playfab::Session>>,
     entities: HashMap<playfab::EntityKind, Arc<playfab::Entity>>,
     authorization: Option<Arc<Authorization>>,
@@ -49,6 +51,8 @@ struct Environments {
     auth: Retail,
     #[serde(default, rename = "signaling-afd")]
     signaling_afd: Option<serde_json::Value>,
+    #[serde(default)]
+    realms_frontend_bedrock_legacy: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +77,8 @@ impl Minecraft {
             config,
             environment: None,
             signaling_environment: None,
+            realms_environment: None,
+            realms_state: realms::State::default(),
             session_id: uuid::Uuid::new_v4(),
             playfab: None,
             entities: HashMap::new(),
@@ -85,6 +91,34 @@ impl Minecraft {
         self.xbox.credentials()
     }
 
+    /// Captures the current refresh credential and proof key without consuming this session.
+    /// Protected storage, account generation and refresh serialization remain caller-owned.
+    ///
+    /// # Errors
+    /// Returns the account checkpoint's bounded encoding or missing-refresh error.
+    pub fn checkpoint(&self) -> Result<xbox::Checkpoint, Error> {
+        self.xbox.checkpoint()
+    }
+
+    /// Adopts a same-account OAuth rotation while retaining proof and game-session identity.
+    ///
+    /// The caller must enforce account generation and serialize refresh/persistence.
+    /// Derived Xbox, PlayFab and Minecraft credentials are reacquired on demand;
+    /// immutable credentials already borrowed by callers are not revoked remotely.
+    ///
+    /// # Errors
+    /// Rejects a different client ID without changing any retained credentials.
+    pub fn replace_credentials(
+        &mut self,
+        credentials: crate::oauth::Credentials,
+    ) -> Result<(), Error> {
+        self.xbox.replace_credentials(credentials)?;
+        self.playfab = None;
+        self.entities.clear();
+        self.authorization = None;
+        Ok(())
+    }
+
     /// Releases the service wrapper and returns its account, including rotated OAuth state.
     pub fn into_account(self) -> xbox::Account {
         self.xbox
@@ -93,6 +127,28 @@ impl Minecraft {
     /// Returns the game-session identifier shared by credential exchange and every mint.
     pub fn session_id(&self) -> uuid::Uuid {
         self.session_id
+    }
+
+    /// Borrows Realms services on the discovered retail endpoint using this account's XSTS cache.
+    /// Missing or malformed Realms discovery fails here without affecting auth-only calls.
+    pub async fn realms(&mut self) -> Result<realms::Realms<'_>, realms::Error> {
+        self.discover().await?;
+        let uri = self
+            .realms_environment
+            .as_ref()
+            .and_then(|environment| environment.get("prod"))
+            .and_then(|environment| environment.get("serviceUri"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or(Error::Invalid("missing Realms service discovery"))?;
+        validate_service_url(uri)?;
+        let base = Url::parse(uri).map_err(|_| Error::Invalid("Realms service URL"))?;
+        Ok(realms::Realms {
+            xbox: &mut self.xbox,
+            http: &mut self.http,
+            config: &self.config,
+            state: &mut self.realms_state,
+            base,
+        })
     }
 
     /// Acquires or reuses the PlayFab session for the discovered retail title.
@@ -241,6 +297,9 @@ impl Minecraft {
         validate_service_url(&environment.service_uri)?;
         playfab::login_url(&environment.play_fab_title_id)?;
         self.signaling_environment = discovery.service_environments.signaling_afd;
+        self.realms_environment = discovery
+            .service_environments
+            .realms_frontend_bedrock_legacy;
         self.environment = Some(environment);
         Ok(())
     }
@@ -288,5 +347,7 @@ fn validate_service_url(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(test)]
+mod realms_tests;
 #[cfg(test)]
 mod tests;
