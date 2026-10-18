@@ -220,6 +220,35 @@ pub struct Session {
 }
 
 impl Session {
+    /// Checks that a current snapshot contains this owner's active membership on the exact RTA binding.
+    /// This does not perform a service refresh or establish that the title has admitted a game login.
+    pub fn is_bound(&self, binding: Binding) -> bool {
+        !self.closed
+            && !self.uncertain
+            && self.description.members.values().flatten().any(|member| {
+                let Some(system) = member
+                    .properties
+                    .as_ref()
+                    .and_then(|section| section.system.as_ref())
+                else {
+                    return false;
+                };
+                member.xuid() == Some(self.owner.as_str())
+                    && system.get("active").and_then(Value::as_bool) == Some(true)
+                    && system
+                        .get("connection")
+                        .and_then(Value::as_str)
+                        .and_then(|value| Uuid::parse_str(value).ok())
+                        == Some(binding.connection)
+                    && system
+                        .get("subscription")
+                        .and_then(|value| value.get("id"))
+                        .and_then(Value::as_str)
+                        .and_then(|value| Uuid::parse_str(value).ok())
+                        == Some(binding.subscription)
+            })
+    }
+
     /// Borrows the validated locator, including after deletion for diagnostics/cleanup policy.
     pub fn reference(&self) -> &Reference {
         &self.reference
