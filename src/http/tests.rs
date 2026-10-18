@@ -37,7 +37,8 @@ async fn fixture(
         tokio::time::timeout(Duration::from_secs(10), async move {
             let (mut stream, _) = listener.accept().await?;
             phase.store(1, Ordering::Relaxed);
-            let (request, header_end, _) = crate::xbox::tests::read_request(&mut stream).await;
+            let (request, header_end, _) =
+                crate::xbox::test_support::read_request(&mut stream).await;
             phase.store(2, Ordering::Relaxed);
             assert!(
                 std::str::from_utf8(&request[..header_end])

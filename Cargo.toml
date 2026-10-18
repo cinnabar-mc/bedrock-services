@@ -9,6 +9,7 @@ repository = "https://github.com/cinnabar-mc/bedrock-services"
 publish = false
 
 [features]
+test-support = ["rta-tokio", "tokio/rt", "tokio/macros", "tokio/sync", "tokio-websockets/server"]
 signaling-tokio = ["dep:tokio", "dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
 rta-tokio = ["dep:tokio", "dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots", "dep:httparse", "dep:aws-lc-rs"]
 

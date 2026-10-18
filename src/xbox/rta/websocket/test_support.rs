@@ -1,16 +1,20 @@
 use super::*;
+#[cfg(test)]
 use crate::{
     http::Http,
     oauth::Credentials,
     xbox::{
         Account, Config, XBOX_RELYING_PARTY,
-        tests::{fixture, token},
+        test_support::{fixture, token},
     },
 };
 use futures_util::SinkExt;
 use reqwest::header::{HeaderValue, SEC_WEBSOCKET_PROTOCOL};
+#[cfg(test)]
 use serde_json::json;
-use std::{sync::Arc, time::UNIX_EPOCH};
+use std::sync::Arc;
+#[cfg(test)]
+use std::time::UNIX_EPOCH;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{
     TlsAcceptor,
@@ -22,12 +26,13 @@ use tokio_rustls::{
 };
 use tokio_websockets::{Connector, ServerBuilder, WebSocketStream};
 
-pub(super) type Server = WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>;
+pub(crate) type Server = WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>;
 const ROOT: &[u8] = include_bytes!("../../../../tests/fixtures/rta-tls/root.der");
 const CERT: &[u8] = include_bytes!("../../../../tests/fixtures/rta-tls/server.der");
 const KEY: &[u8] = include_bytes!("../../../../tests/fixtures/rta-tls/server.key.der");
 
 /// Acquires real signed protected fields using only the existing original synthetic account server.
+#[cfg(test)]
 pub(super) async fn request() -> (Account, ConnectionRequest) {
     let headers = upgrade_headers().unwrap();
     let mut signed: Vec<String> = headers.keys().map(|k| k.as_str().into()).collect();
@@ -123,7 +128,7 @@ pub(super) async fn transport(
 }
 
 /// Starts one pure owner only after its exact verified transport upgrade completed.
-pub(super) async fn pair(
+pub(crate) async fn pair(
     request: &mut ConnectionRequest,
     initial: Option<Message>,
 ) -> (RtaSocket, Server) {

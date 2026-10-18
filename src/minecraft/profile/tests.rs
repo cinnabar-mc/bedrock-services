@@ -3,7 +3,7 @@ use crate::{
     http::Http,
     minecraft::{Config, USER_AGENT, token::TokenResponse},
     oauth::Credentials,
-    xbox::{self, tests::fixture_bytes},
+    xbox::{self, test_support::fixture_bytes},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::json;

@@ -527,5 +527,8 @@ impl TokenResponse {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_support;
+
 #[cfg(test)]
 pub(crate) mod tests;

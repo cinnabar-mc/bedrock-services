@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     oauth::Credentials,
-    xbox::tests::{fixture_headers, token},
+    xbox::test_support::{fixture_headers, token},
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};

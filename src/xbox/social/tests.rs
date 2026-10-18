@@ -1,5 +1,5 @@
 use super::*;
-use crate::xbox::tests::{fixture_headers, token};
+use crate::xbox::test_support::{fixture_headers, token};
 use crate::{http::Http, oauth::Credentials, xbox::Config};
 use base64::{
     Engine as _,
