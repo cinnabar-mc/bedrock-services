@@ -35,7 +35,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = "1"
 
 [dev-dependencies]
-socket2 = "0.6"
 tokio-websockets = { version = "0.13", default-features = false, features = ["server", "aws_lc_rs"] }
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }
 
