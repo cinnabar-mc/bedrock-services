@@ -136,6 +136,11 @@ impl Minecraft {
         self.xbox.social()
     }
 
+    /// Borrows session-directory operations on this account without starting RTA or hosting tasks.
+    pub fn mpsd(&mut self) -> xbox::mpsd::Directory<'_> {
+        self.xbox.mpsd()
+    }
+
     /// Returns the game-session identifier shared by credential exchange and every mint.
     pub fn session_id(&self) -> uuid::Uuid {
         self.session_id
