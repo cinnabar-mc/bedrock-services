@@ -9,8 +9,8 @@ use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
 
-const ENDPOINT: &str = "https://rta.xboxlive.com/connect";
-const SUBPROTOCOL: &str = "rta.xboxlive.com.V2";
+pub(super) const ENDPOINT: &str = "https://rta.xboxlive.com/connect";
+pub(super) const SUBPROTOCOL: &str = "rta.xboxlive.com.V2";
 
 /// One protected upgrade tied to an exact XSTS issuance and caller account generation.
 /// No Debug or serialization: headers contain credentials and the upgrade destination is private.
@@ -101,6 +101,12 @@ impl ConnectionRequest {
         self.scope.epoch
     }
 
+    /// Rejects reuse before an optional transport starts any I/O.
+    #[cfg(feature = "rta-tokio")]
+    pub(super) fn unused(&self) -> Result<(), Error> {
+        if self.used { Err(Error::State) } else { Ok(()) }
+    }
+
     /// Starts one pure owner after this exact protected upgrade succeeds.
     /// Keep this request for exact-issuance rejection; it cannot start another owner.
     pub fn start(&mut self) -> Result<Connection, Error> {
@@ -118,6 +124,16 @@ impl Connection {
     /// handles survive; call resubscribe explicitly for each returned subscriptions() entry,
     /// apply new initial snapshots, then explicitly rebind/refresh affected MPSD sessions.
     pub fn reconnect(&mut self, request: &mut ConnectionRequest) -> Result<Vec<Event>, Error> {
+        self.check_reconnect(request)?;
+        let events = self.disconnect();
+        self.scope = request.scope.clone();
+        self.connected = true;
+        request.used = true;
+        Ok(events)
+    }
+
+    /// Checks account/generation/issuance before a replacement edge opens its socket.
+    pub(super) fn check_reconnect(&self, request: &ConnectionRequest) -> Result<(), Error> {
         if self.closed {
             return Err(Error::Closed);
         }
@@ -127,11 +143,7 @@ impl Connection {
         if request.used || self.scope.epoch == request.scope.epoch {
             return Err(Error::State);
         }
-        let events = self.disconnect();
-        self.scope = request.scope.clone();
-        self.connected = true;
-        request.used = true;
-        Ok(events)
+        Ok(())
     }
 }
 

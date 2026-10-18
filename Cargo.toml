@@ -10,10 +10,13 @@ publish = false
 
 [features]
 signaling-tokio = ["dep:tokio", "dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
+rta-tokio = ["dep:tokio", "dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots", "dep:httparse", "dep:aws-lc-rs"]
 
 [dependencies]
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"], optional = true }
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"], optional = true }
+httparse = { version = "1", optional = true }
 httpdate = "1"
 ipnet = "2"
 p256 = { version = "0.14", default-features = false, features = ["std", "ecdsa"] }

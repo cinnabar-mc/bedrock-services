@@ -240,7 +240,7 @@ custom data can contain admission nonces and must not be logged; ordinary JSON a
 HTTP temporary buffers are not guaranteed erased on drop.
 
 A caller-supplied `Binding` contains the actual RTA connection and stable session
-subscription ID. The SDK does not create an RTA socket or background subscription;
+subscription ID. The core does not create an RTA socket or background subscription;
 the application orders connection generations and explicitly rebinds/refreshes.
 A `JoinAttempt` keeps one stable membership body and IDs. `join` performs one PUT:
 only an explicit HTTP 412 permits another attempt, up to three, with a returned
@@ -293,8 +293,34 @@ its change payload remains opaque for caller interpretation.
 
 The RTA request, resource URI and payload owners have no Debug or implicit
 serialization. Standard JSON/HTTP and caller socket buffers can retain temporary
-copies and are not guaranteed erased. A concrete RTA socket edge, application
-social/notification adapters and real-account acceptance remain open work.
+copies and are not guaranteed erased. Application social/notification adapters
+and real-account acceptance remain open work.
+
+The independent optional `rta-tokio` feature adds `xbox::rta::websocket::RtaSocket`.
+Call `websocket::upgrade_headers()` first, pass those fields to the account's
+`rta_connection`, then pass the protected request to `RtaSocket::connect`. The edge
+uses verified TLS, transmits every final signed header unchanged, validates the
+exact accept challenge and V2 subprotocol, and follows no redirects. It exposes
+no production plaintext or trust override.
+
+One owner holds the socket, pure connection, bounded output/events and partial
+write progress. `subscribe` returns a desired handle and cancelable request;
+`unsubscribe` and `resubscribe` are explicit. `connection()` borrows current
+identity, desired handles and MPSD bindings. Keep calling `drive().await` even
+when idle so ordered messages, automatic Pongs, request deadlines and close
+handshakes progress. The edge has no runtime, spawned task, active heartbeat,
+automatic retry or reconnect loop. Canceling a drive future retains admitted
+frame progress without replay. Canceling a request or reaching its deadline
+immediately drops the entire ambiguous physical socket and drains completions.
+
+`abort` drops I/O while retaining desired resources; `close` permanently stops
+admission and starts a bounded close handshake. Explicit `reconnect` checks
+XUID/proof/generation before touching current I/O, drops the old socket and
+queued work, then attempts one freshly acquired upgrade. Failure or cancellation
+keeps disconnected desired state. After success, explicitly `resubscribe` and
+install initial snapshots before applying changes or rebinding MPSD sessions.
+`into_connection` drops I/O/queued work and transfers disconnected pure state
+to another caller driver. Sign-out retires the owner and its account generation.
 
 Persistent derived-token caching, account sign-up, presence publication,
 friends-world application joining/hosting, invitation receipt, applied realtime social updates,
