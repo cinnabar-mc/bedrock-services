@@ -47,6 +47,17 @@ impl Credentials {
         &self.refresh
     }
 
+    /// Explicitly borrows the current access credential for protected persistence.
+    /// This value is sensitive and must never appear in logs or ordinary configuration.
+    pub fn access_token(&self) -> &str {
+        &self.access
+    }
+
+    /// Returns the access credential's expiry alongside its persisted value.
+    pub fn expires_at(&self) -> SystemTime {
+        self.expires
+    }
+
     /// Checks the access token against a conservative renewal margin.
     pub(crate) fn valid(&self, now: SystemTime) -> bool {
         !self.access.is_empty()

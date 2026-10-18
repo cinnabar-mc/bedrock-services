@@ -33,6 +33,7 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
     let protocol = 2193;
     let mut step = 0;
     let mut session_id = None;
+    let mut proof = None;
     let (address, server) = fixture(move |target, header, body| {
         step += 1;
         let headers = header.to_ascii_lowercase();
@@ -48,25 +49,35 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                     "unrelated":{"prod":{"unrecognized":"ignored"}}
                 }}}))
             }
-            2 => { assert_eq!(target,"/device-token"); (200,token("device",false)) }
-            3 => { assert_eq!(target,"/nsal"); (200,json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1",
+            2 | 27 => {
+                assert_eq!(target,"/device-token");
+                let body: Value = serde_json::from_slice(body).unwrap();
+                let received = body["Properties"]["ProofKey"].clone();
+                if let Some(expected) = &proof { assert_eq!(&received, expected); }
+                else { proof = Some(received); }
+                (200,token("device",false))
+            }
+            3 | 28 => { assert_eq!(target,"/nsal"); (200,json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1",
                 "HostType":"fqdn","RelyingParty":"http://xboxlive.com"}]})) }
-            4 => { assert_eq!(target,"/sisu"); (200,json!({"TitleToken":token("title",false),
+            4 | 29 => { assert_eq!(target,"/sisu");
+                let body: Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(body["AccessToken"], if step == 4 {"t=access"} else {"t=external-access"});
+                (200,json!({"TitleToken":token("title",false),
                 "UserToken":token("user",true),"AuthorizationToken":token("xbox",true)})) }
-            5 => {
+            5 | 30 => {
                 assert_eq!(target,"/nsal-current");
                 assert!(headers.contains("authorization: xbl3.0 x=synthetic;xbox"));
                 assert!(headers.contains("signature: "));
                 (200,json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1","HostType":"fqdn",
                     "Path":"/Client/LoginWithXbox","RelyingParty":"rp://title-playfab"}]}))
             }
-            6 => {
+            6 | 31 => {
                 assert_eq!(target,"/xsts");
                 let body: Value = serde_json::from_slice(body).unwrap();
                 assert_eq!(body["RelyingParty"],"rp://title-playfab");
                 (200,token("playfab",true))
             }
-            7 => {
+            7 | 32 => {
                 assert_eq!(target,"/Client/LoginWithXbox");
                 assert!(!headers.contains("authorization:"));
                 let body: Value = serde_json::from_slice(body).unwrap();
@@ -74,10 +85,10 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                 assert_eq!(body["CreateAccount"],true);
                 assert_eq!(body["XboxToken"],"XBL3.0 x=synthetic;playfab");
                 (200,json!({"data":{"SessionTicket":"ticket","PlayFabId":"player",
-                    "EntityToken":{"EntityToken":"entity","TokenExpiration":"2030-01-01T01:00:00Z",
+                    "EntityToken":{"EntityToken":"entity","TokenExpiration":if step == 7 {"2030-01-01T01:00:00Z"} else {"2030-01-03T00:00:00Z"},
                     "Entity":{"Id":"title-player","Type":"title_player_account"}}}}))
             }
-            8 | 10 => {
+            8 | 10 | 33 => {
                 assert_eq!(target,"/prefix/api/v1.0/session/start");
                 let id = headers.lines().find_map(|line| line.strip_prefix("session-id: ")).unwrap();
                 let parsed = Uuid::parse_str(id).unwrap();
@@ -93,9 +104,9 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                 assert_eq!(body["device"]["hardwareMemoryTier"],5);
                 assert_eq!(body["device"]["platform"],"Windows10");
                 assert_eq!(body["device"]["capabilities"],json!([]));
-                (200,service_token(if step == 8 {"original"} else {"replacement"}))
+                (200,service_token(match step {8 => "original", 10 => "replacement", _ => "after-import"}))
             }
-            9 | 11 => {
+            9 | 11 | 34 => {
                 assert_eq!(target,"/prefix/api/v1.0/multiplayer/session/start");
                 let id = headers.lines().find_map(|line| line.strip_prefix("session-id: ")).unwrap();
                 assert_eq!(Uuid::parse_str(id).unwrap(),session_id.unwrap());
@@ -105,7 +116,7 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                     assert!(headers.contains("authorization: mctoken original."));
                     (401,json!({"diagnostic":"SECRET"}))
                 } else {
-                    assert!(headers.contains("authorization: mctoken replacement."));
+                    assert!(headers.contains(if step == 11 {"authorization: mctoken replacement."} else {"authorization: mctoken after-import."}));
                     (200,json!({"result":{"signedToken":"synthetic-multiplayer","validUntil":"2099-01-01T00:00:00Z"}}))
                 }
             }
@@ -163,7 +174,7 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
             }
             _ => panic!("unexpected service request {step}: {target}"),
         }
-    },26).await;
+    },34).await;
     let xbox_config = xbox::Config::default();
     let credentials = Credentials::from_tokens(
         xbox_config.client_id.clone(),
@@ -172,7 +183,8 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
         UNIX_EPOCH + Duration::from_secs(4102444800),
     )
     .unwrap();
-    let account = xbox::Account::new(Http::fixture(address), xbox_config, credentials).unwrap();
+    let account =
+        xbox::Account::new(Http::fixture(address), xbox_config.clone(), credentials).unwrap();
     let mut minecraft =
         Minecraft::new(account, Config::desktop(version, protocol, device_id)).unwrap();
     minecraft.http = Http::fixture_agent(address, USER_AGENT);
@@ -281,6 +293,49 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
         .unwrap();
     assert_eq!(master3.id(), "player");
     assert_eq!(master3.header_value().unwrap(), "master3");
+
+    let session_id = minecraft.session_id();
+    let wrong_policy = Credentials::from_tokens(
+        "unrelated-client".into(),
+        "SECRET".into(),
+        "SECRET".into(),
+        start,
+    )
+    .unwrap();
+    assert!(minecraft.replace_credentials(wrong_policy).is_err());
+    assert!(Arc::ptr_eq(
+        &replacement,
+        &minecraft.authorize().await.unwrap()
+    ));
+    let expiry = UNIX_EPOCH + Duration::from_secs(4_102_444_800);
+    minecraft
+        .replace_credentials(
+            Credentials::from_tokens(
+                xbox_config.client_id.clone(),
+                "external-access".into(),
+                "external-refresh".into(),
+                expiry,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let after_import = minecraft.authorize().await.unwrap();
+    assert!(!Arc::ptr_eq(&replacement, &after_import));
+    assert_eq!(minecraft.session_id(), session_id);
+    assert_eq!(minecraft.credentials().access_token(), "external-access");
+    assert_eq!(minecraft.credentials().refresh_token(), "external-refresh");
+    assert_eq!(minecraft.credentials().expires_at(), expiry);
+    let checkpoint = minecraft.checkpoint().unwrap();
+    let restored = crate::oauth::MicrosoftAuth::new(xbox_config)
+        .unwrap()
+        .restore_account(checkpoint)
+        .unwrap();
+    assert_eq!(restored.credentials().refresh_token(), "external-refresh");
+    let after_import_mint = minecraft
+        .multiplayer_token(key.verifying_key())
+        .await
+        .unwrap();
+    assert_eq!(after_import_mint.public_key_der(), der.as_bytes());
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
