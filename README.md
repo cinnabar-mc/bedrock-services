@@ -228,6 +228,14 @@ search. `publish` creates one membership with `If-None-Match: *`; activity
 publication and invitations are separate explicit calls. Retain the returned
 `Session` if a later operation fails, and reconcile or leave it explicitly.
 
+For cancellation-sensitive hosting, retain a `PublishAttempt` before awaiting
+`publish_retained`. It fixes the original reference, RTA binding and account proof.
+Only final signed HTTP dispatch seals the one creation write; an observed 412 is
+known rejection. A canceled or failed dispatch stays uncertain until
+`reconcile_publish` reads the exact original active membership and a concrete
+validator. A 404, replaced binding or invalid response preserves the recovery
+obligation. Callers own deadlines and guarded cleanup; the SDK starts no worker.
+
 Session snapshots retain unknown system/title metadata without inventing join
 permission. Conditional refresh and partial writes retain exact ETags and known
 branch/change metadata; fresh responses replace the whole member map. Change
