@@ -138,8 +138,10 @@ impl Connection {
 /// Validates final mandatory upgrade fields before any account acquisition or signing.
 fn validate_upgrade(headers: &HeaderMap) -> Result<(), Error> {
     bounded_headers(headers)?;
+    let endpoint = Url::parse(ENDPOINT).map_err(|_| Error::Invalid("upgrade endpoint"))?;
+    let authority = &endpoint[url::Position::BeforeHost..url::Position::AfterPort];
     for (name, expected) in [
-        ("host", "rta.xboxlive.com"),
+        ("host", authority),
         ("connection", "Upgrade"),
         ("upgrade", "websocket"),
         ("sec-websocket-version", "13"),
