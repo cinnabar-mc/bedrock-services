@@ -8,8 +8,12 @@ description = "Native account authentication and services for Minecraft Bedrock 
 repository = "https://github.com/cinnabar-mc/bedrock-services"
 publish = false
 
+[features]
+signaling-tokio = ["dep:tokio", "dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
+
 [dependencies]
 base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"], optional = true }
 httpdate = "1"
 ipnet = "2"
 p256 = { version = "0.14", default-features = false, features = ["std", "ecdsa"] }
@@ -22,11 +26,17 @@ serde_json = "1"
 sha2 = "0.11"
 thiserror = "2"
 time = { version = "0.3", features = ["parsing"] }
+tokio = { version = "1", features = ["net", "time", "io-util"], optional = true }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "rustls-bring-your-own-connector", "aws_lc_rs", "getrandom"], optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"], optional = true }
+webpki-roots = { version = "1", optional = true }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = "1"
 
 [dev-dependencies]
+socket2 = "0.6"
+tokio-websockets = { version = "0.13", default-features = false, features = ["server", "aws_lc_rs"] }
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }
 
 [lints.rust]
@@ -37,3 +47,7 @@ missing_docs = "warn"
 correctness = "deny"
 suspicious = "warn"
 perf = "warn"
+
+[[example]]
+name = "messaging"
+required-features = ["signaling-tokio"]
