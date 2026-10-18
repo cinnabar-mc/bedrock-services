@@ -23,7 +23,7 @@ pub(super) struct UpgradeIo<T> {
     inner: T,
     remaining: Option<usize>,
     #[cfg(test)]
-    writes_blocked: bool,
+    write_budget: Option<usize>,
     #[cfg(test)]
     write_waker: Option<std::task::Waker>,
 }
@@ -34,7 +34,7 @@ impl<T> UpgradeIo<T> {
             inner,
             remaining: Some(MAX_UPGRADE_BYTES),
             #[cfg(test)]
-            writes_blocked: false,
+            write_budget: None,
             #[cfg(test)]
             write_waker: None,
         }
@@ -44,16 +44,22 @@ impl<T> UpgradeIo<T> {
         self.remaining = None;
     }
 
-    /// Holds writes Pending so tests can control pressure without depending on socket buffer sizes.
+    /// Allows a finite number of bytes before holding test writes Pending.
     #[cfg(test)]
-    pub(super) fn block_writes(&mut self) {
-        self.writes_blocked = true;
+    pub(super) fn limit_writes(&mut self, bytes: usize) {
+        self.write_budget = Some(bytes);
+    }
+
+    /// Reports the remaining test write allowance, or None when writes are unrestricted.
+    #[cfg(test)]
+    pub(super) fn write_budget(&self) -> Option<usize> {
+        self.write_budget
     }
 
     /// Releases write pressure and notifies the most recent registered writer.
     #[cfg(test)]
     pub(super) fn resume_writes(&mut self) {
-        self.writes_blocked = false;
+        self.write_budget = None;
         if let Some(waker) = self.write_waker.take() {
             waker.wake();
         }
@@ -99,11 +105,26 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for UpgradeIo<T> {
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
         #[cfg(test)]
-        if this.writes_blocked {
-            this.write_waker = Some(cx.waker().clone());
-            return Poll::Pending;
+        {
+            let bytes = if let Some(remaining) = this.write_budget {
+                if remaining == 0 && !bytes.is_empty() {
+                    this.write_waker = Some(cx.waker().clone());
+                    return Poll::Pending;
+                }
+                &bytes[..bytes.len().min(remaining)]
+            } else {
+                bytes
+            };
+            let result = Pin::new(&mut this.inner).poll_write(cx, bytes);
+            if let (Some(remaining), Poll::Ready(Ok(count))) = (&mut this.write_budget, &result) {
+                *remaining -= *count;
+            }
+            result
         }
-        Pin::new(&mut this.inner).poll_write(cx, bytes)
+        #[cfg(not(test))]
+        {
+            Pin::new(&mut this.inner).poll_write(cx, bytes)
+        }
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_flush(cx)
