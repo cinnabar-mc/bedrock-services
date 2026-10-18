@@ -15,7 +15,13 @@ use p256::ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier};
 use reqwest::header::HeaderValue;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::time::UNIX_EPOCH;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::UNIX_EPOCH,
+};
 
 const SIGNED_HEADERS: &[&str] = &[
     "User-Agent",
@@ -82,11 +88,18 @@ fn verify(target: &str, headers: &str, body: &[u8], proof: &Value) {
 /// Exercises authenticated title selection, actual signed bytes, reuse, failure and cleanup.
 #[tokio::test]
 async fn title_updates_and_removal_share_exact_account_policy_without_retrying() {
+    let dispatches = Arc::new(AtomicUsize::new(0));
+    let observed_dispatches = Arc::clone(&dispatches);
+    let mut posts = 0;
     let mut step = 0;
     let mut proof = None;
     let (address, server) = fixture_headers(
         move |target, headers, body| {
             step += 1;
+            if step <= 5 || step == 10 {
+                assert_eq!(observed_dispatches.load(Ordering::SeqCst), posts,
+                    "acquiring credentials must not report a title POST");
+            }
             let mut extra = Vec::new();
             let (status, response) = match step {
                 1 => {
@@ -124,6 +137,11 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
                 _ => {
                     assert_eq!(target, "/users/xuid(123)/devices/current/titles/current");
                     verify(target, headers, body, proof.as_ref().unwrap());
+                    if headers.starts_with("POST ") {
+                        posts += 1;
+                    }
+                    assert_eq!(observed_dispatches.load(Ordering::SeqCst), posts,
+                        "each actual signed POST has exactly one dispatch callback");
                     assert_eq!(header(headers, "x-xbl-contract-version"), CONTRACT);
                     assert_eq!(header(headers, "accept"), "*/*");
                     assert_eq!(header(headers, "accept-language"), DEFAULT_LANGUAGE);
@@ -200,16 +218,30 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
                 .with_parameters(&["alpha", ""])
                 .unwrap(),
         );
+    let dispatched = || {
+        dispatches.fetch_add(1, Ordering::SeqCst);
+    };
     assert_eq!(
-        presence.update(&update).await.unwrap().heartbeat_after,
+        presence
+            .update_with_dispatch(&update, dispatched)
+            .await
+            .unwrap()
+            .heartbeat_after,
         Some(Duration::from_secs(79))
     );
     assert_eq!(
-        presence.update(&update).await.unwrap().heartbeat_after,
+        presence
+            .update_with_dispatch(&update, dispatched)
+            .await
+            .unwrap()
+            .heartbeat_after,
         None
     );
     for expected in [401, 401, 429, 503] {
-        let error = presence.update(&update).await.unwrap_err();
+        let error = presence
+            .update_with_dispatch(&update, dispatched)
+            .await
+            .unwrap_err();
         assert!(matches!(error, Error::Status { status, .. } if status.as_u16() == expected));
         assert!(!format!("{error:?} {error}").contains("SENSITIVE"));
     }
@@ -217,7 +249,7 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
     presence.remove().await.unwrap();
     presence.remove().await.unwrap();
     assert!(matches!(
-        presence.update(&update).await,
+        presence.update_with_dispatch(&update, dispatched).await,
         Err(Error::Status {
             status: StatusCode::ACCEPTED,
             ..
@@ -225,7 +257,7 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
     ));
     assert_eq!(
         presence
-            .update(&TitleUpdate::new(State::Inactive))
+            .update_with_dispatch(&TitleUpdate::new(State::Inactive), dispatched)
             .await
             .unwrap()
             .heartbeat_after,
@@ -238,6 +270,7 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
             ..
         })
     ));
+    assert_eq!(dispatches.load(Ordering::SeqCst), 8);
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
@@ -321,20 +354,26 @@ async fn title_identity_and_canceled_update_do_not_suppress_explicit_cleanup() {
     let mut account = Account::new(Http::fixture(address), config, credentials).unwrap();
     let base = Url::parse(&format!("http://{address}")).unwrap();
     let update = TitleUpdate::new(State::Active);
+    let mut dispatched = false;
     {
         let mut presence = account.title_presence();
         presence.fixture_base = Some(base.clone());
         assert!(matches!(
-            presence.update(&update).await,
+            presence
+                .update_with_dispatch(&update, || dispatched = true)
+                .await,
             Err(Error::Invalid("presence account identity"))
         ));
     }
+    assert!(!dispatched, "a rejected service XUID cannot dispatch");
     let mismatched = account.authorize("rp://presence").await.unwrap();
     assert!(account.reject(&mismatched));
     let mut presence = account.title_presence();
     presence.fixture_base = Some(base);
     {
-        let pending = presence.update(&update);
+        drop(presence.update_with_dispatch(&update, || dispatched = true));
+        assert!(!dispatched, "an unpolled future cannot dispatch");
+        let pending = presence.update_with_dispatch(&update, || dispatched = true);
         tokio::pin!(pending);
         tokio::time::timeout(Duration::from_secs(5), async {
             tokio::select! {
@@ -347,11 +386,134 @@ async fn title_identity_and_canceled_update_do_not_suppress_explicit_cleanup() {
         .unwrap();
         // Drop the in-flight future after the service observed its write, before accepting its reply.
     }
+    assert!(
+        dispatched,
+        "observed POST cancellation retains caller-owned dispatch state"
+    );
     presence.remove().await.unwrap();
+    assert!(
+        dispatched,
+        "successful cleanup does not erase the earlier POST evidence"
+    );
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
         .unwrap();
+}
+
+/// Keeps dispatch absent through cold acquisition, identity rejection and final signing failure.
+#[tokio::test]
+async fn title_update_dispatch_observer_stays_clear_on_pre_dispatch_errors() {
+    #[derive(Clone, Copy)]
+    enum Failure {
+        Acquisition,
+        Identity,
+        Signing,
+    }
+    for failure in [Failure::Acquisition, Failure::Identity, Failure::Signing] {
+        let dispatches = Arc::new(AtomicUsize::new(0));
+        let observed_dispatches = Arc::clone(&dispatches);
+        let mut step = 0;
+        let count = if matches!(failure, Failure::Acquisition) {
+            1
+        } else {
+            5
+        };
+        let (address, server) = fixture_headers(
+            move |target, _, _| {
+                step += 1;
+                assert_eq!(
+                    observed_dispatches.load(Ordering::SeqCst),
+                    0,
+                    "acquisition traffic is not presence dispatch"
+                );
+                let response = match step {
+                    1 => {
+                        assert_eq!(target, "/device-token");
+                        if matches!(failure, Failure::Acquisition) {
+                            return (503, Vec::new(), Value::Null);
+                        }
+                        token("device", false)
+                    }
+                    2 => {
+                        assert_eq!(target, "/nsal");
+                        json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1",
+                        "HostType":"fqdn","RelyingParty":XBOX_RELYING_PARTY}],
+                        "SignaturePolicies":[]})
+                    }
+                    3 => {
+                        assert_eq!(target, "/sisu");
+                        json!({"TitleToken":token("title", false),"UserToken":token("user", false),
+                        "AuthorizationToken":token("default", true)})
+                    }
+                    4 => {
+                        assert_eq!(target, "/nsal-current");
+                        let signed = if matches!(failure, Failure::Signing) {
+                            &["invalid header name"][..]
+                        } else {
+                            SIGNED_HEADERS
+                        };
+                        json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1",
+                        "HostType":"fqdn","RelyingParty":"rp://presence","SignaturePolicyIndex":0}],
+                        "SignaturePolicies":[{"Version":1,"ExtraHeaders":signed}]})
+                    }
+                    5 => {
+                        assert_eq!(target, "/xsts");
+                        let mut value = token("service", true);
+                        if matches!(failure, Failure::Identity) {
+                            value["DisplayClaims"]["xui"][0]["xid"] = json!("321");
+                        }
+                        value
+                    }
+                    _ => panic!("a pre-dispatch failure reached the presence service"),
+                };
+                (200, Vec::new(), response)
+            },
+            count,
+        )
+        .await;
+        let config = Config::default();
+        let credentials = Credentials::from_tokens(
+            config.client_id.clone(),
+            "access".into(),
+            "refresh".into(),
+            UNIX_EPOCH + Duration::from_secs(4_000_000_000),
+        )
+        .unwrap();
+        let mut account = Account::new(Http::fixture(address), config, credentials).unwrap();
+        let mut presence = account.title_presence();
+        presence.fixture_base = Some(Url::parse(&format!("http://{address}")).unwrap());
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            presence.update_with_dispatch(&TitleUpdate::new(State::Active), || {
+                dispatches.fetch_add(1, Ordering::SeqCst);
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        match failure {
+            Failure::Acquisition => assert!(matches!(
+                error,
+                Error::Status {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    ..
+                }
+            )),
+            Failure::Identity => {
+                assert!(matches!(error, Error::Invalid("presence account identity")))
+            }
+            Failure::Signing => assert!(matches!(
+                error,
+                Error::Invalid("signature policy header name")
+            )),
+        }
+        assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }
 
 /// Does not turn malformed scheduling metadata into a zero-delay retry or overflow.
