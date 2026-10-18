@@ -20,7 +20,7 @@ pub enum Error {
     /// A response exceeded the acquisition byte budget.
     #[error("authentication response exceeds the byte limit")]
     ResponseTooLarge,
-    /// A timestamp cannot be represented by the wire format.
+    /// A timestamp cannot be represented by the platform or wire format.
     #[error("authentication timestamp is out of range")]
     TimeRange,
     /// The user must start a new device-code attempt.

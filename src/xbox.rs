@@ -392,9 +392,16 @@ impl TokenResponse {
     fn token(self, now: SystemTime) -> Result<Token, Error> {
         let expires = OffsetDateTime::parse(&self.not_after, &Rfc3339)
             .map_err(|_| Error::Invalid("Xbox token expiry"))?;
+        let offset = expires - OffsetDateTime::UNIX_EPOCH;
+        let expires = if offset.is_negative() {
+            SystemTime::UNIX_EPOCH.checked_sub(offset.unsigned_abs())
+        } else {
+            SystemTime::UNIX_EPOCH.checked_add(offset.unsigned_abs())
+        }
+        .ok_or(Error::TimeRange)?;
         let token = Token {
             value: Zeroizing::new(self.token),
-            expires: SystemTime::from(expires),
+            expires,
         };
         if !token.valid(now) {
             return Err(Error::Invalid("Xbox token lifetime"));
