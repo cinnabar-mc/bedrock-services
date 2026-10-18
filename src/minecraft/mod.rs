@@ -193,19 +193,10 @@ impl Minecraft {
                 }
             }
             response.success()?;
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Mint {
-                signed_token: String,
-            }
-            let minted = response.json::<ResultBody<Mint>>()?.result;
-            if minted.signed_token.is_empty() {
-                return Err(Error::Invalid("empty multiplayer credential"));
-            }
-            return Ok(MultiplayerToken {
-                token: zeroize::Zeroizing::new(minted.signed_token),
-                public_key,
-            });
+            return response
+                .json::<ResultBody<token::MintResponse>>()?
+                .result
+                .token(public_key, self.http.now());
         }
     }
 

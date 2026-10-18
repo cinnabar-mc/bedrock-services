@@ -106,12 +106,19 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
                     (401,json!({"diagnostic":"SECRET"}))
                 } else {
                     assert!(headers.contains("authorization: mctoken replacement."));
-                    (200,json!({"result":{"signedToken":"synthetic-multiplayer"}}))
+                    (200,json!({"result":{"signedToken":"synthetic-multiplayer","validUntil":"2099-01-01T00:00:00Z"}}))
                 }
+            }
+            12 | 13 | 14 => {
+                assert_eq!(target,"/prefix/api/v1.0/multiplayer/session/start");
+                let mut result=json!({"signedToken":"SECRET"});
+                if step == 12 { result["validUntil"]=json!("0001-01-01T00:00:00Z"); }
+                if step == 13 { result["validUntil"]=json!("malformed"); }
+                (200,json!({"result":result}))
             }
             _ => panic!("unexpected service request {step}: {target}"),
         }
-    },11).await;
+    },14).await;
     let xbox_config = xbox::Config::default();
     let credentials = Credentials::from_tokens(
         xbox_config.client_id.clone(),
@@ -148,6 +155,14 @@ async fn service_chain_reuses_state_and_retries_only_the_rejected_issuance() {
     assert!(!Arc::ptr_eq(&original, &replacement));
     assert!(!minecraft.reject(&original));
     assert!(Arc::ptr_eq(&playfab, &minecraft.playfab().await.unwrap()));
+    for _ in 0..3 {
+        let error = minecraft
+            .multiplayer_token(key.verifying_key())
+            .await
+            .err()
+            .expect("invalid multiplayer expiry must be rejected");
+        assert!(!format!("{error:?} {error}").contains("SECRET"));
+    }
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()

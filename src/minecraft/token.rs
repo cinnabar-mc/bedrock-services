@@ -145,6 +145,7 @@ impl TokenResponse {
 pub struct MultiplayerToken {
     pub(super) token: Zeroizing<String>,
     pub(super) public_key: Vec<u8>,
+    expires: OffsetDateTime,
 }
 
 impl MultiplayerToken {
@@ -156,5 +157,37 @@ impl MultiplayerToken {
     /// Returns the exact DER/SPKI public key used by this mint request.
     pub fn public_key_der(&self) -> &[u8] {
         &self.public_key
+    }
+
+    /// Checks hard expiry before Login using the caller's service-aligned time.
+    pub fn valid(&self, now: SystemTime) -> bool {
+        OffsetDateTime::from(now) < self.expires
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MintResponse {
+    signed_token: String,
+    valid_until: String,
+}
+
+impl MintResponse {
+    /// Rejects unusable expiry metadata before exposing a key-bound credential.
+    pub(super) fn token(
+        self,
+        public_key: Vec<u8>,
+        now: SystemTime,
+    ) -> Result<MultiplayerToken, Error> {
+        let expires = OffsetDateTime::parse(&self.valid_until, &Rfc3339)
+            .map_err(|_| Error::Invalid("multiplayer credential expiry"))?;
+        if self.signed_token.is_empty() || expires <= OffsetDateTime::from(now) {
+            return Err(Error::Invalid("multiplayer credential lifetime"));
+        }
+        Ok(MultiplayerToken {
+            token: Zeroizing::new(self.signed_token),
+            public_key,
+            expires,
+        })
     }
 }
