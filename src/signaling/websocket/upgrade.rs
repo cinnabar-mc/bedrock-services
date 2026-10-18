@@ -22,6 +22,10 @@ pub(super) type Socket = WebSocketStream<UpgradeIo<MaybeTlsStream<TcpStream>>>;
 pub(super) struct UpgradeIo<T> {
     inner: T,
     remaining: Option<usize>,
+    #[cfg(test)]
+    writes_blocked: bool,
+    #[cfg(test)]
+    write_waker: Option<std::task::Waker>,
 }
 
 impl<T> UpgradeIo<T> {
@@ -29,11 +33,30 @@ impl<T> UpgradeIo<T> {
         Self {
             inner,
             remaining: Some(MAX_UPGRADE_BYTES),
+            #[cfg(test)]
+            writes_blocked: false,
+            #[cfg(test)]
+            write_waker: None,
         }
     }
 
     pub(super) fn upgraded(&mut self) {
         self.remaining = None;
+    }
+
+    /// Holds writes Pending so tests can control pressure without depending on socket buffer sizes.
+    #[cfg(test)]
+    pub(super) fn block_writes(&mut self) {
+        self.writes_blocked = true;
+    }
+
+    /// Releases write pressure and notifies the most recent registered writer.
+    #[cfg(test)]
+    pub(super) fn resume_writes(&mut self) {
+        self.writes_blocked = false;
+        if let Some(waker) = self.write_waker.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -74,7 +97,13 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for UpgradeIo<T> {
         cx: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write(cx, bytes)
+        let this = self.get_mut();
+        #[cfg(test)]
+        if this.writes_blocked {
+            this.write_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        Pin::new(&mut this.inner).poll_write(cx, bytes)
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.get_mut().inner).poll_flush(cx)

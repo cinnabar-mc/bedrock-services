@@ -3,7 +3,14 @@ use crate::signaling::wire;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::HeaderValue;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Wake, Waker},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -126,6 +133,95 @@ async fn drives_control_signal_receipt_completion_and_close() {
     };
     tokio::time::timeout(Duration::from_secs(10), async {
         tokio::join!(application, service);
+    })
+    .await
+    .unwrap();
+}
+
+/// Counts both owned and borrowed wake calls without scheduling a task.
+#[derive(Default)]
+struct WakeCount(AtomicUsize);
+
+impl Wake for WakeCount {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// A blocked automatic Pong waits for I/O readiness even when application output is queued.
+#[tokio::test]
+async fn pending_control_flush_does_not_self_wake_queued_output() {
+    let (mut client, mut server) =
+        pair_with_initial(Some(Message::ping(b"control".to_vec()))).await;
+    client.socket.as_mut().unwrap().get_mut().block_writes();
+    poll_fn(|cx| {
+        assert!(client.poll_drive(cx).is_pending());
+        if client.control_flush {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    let request = client
+        .send_signal(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            "queued",
+            false,
+            Instant::now() + Duration::from_secs(30),
+        )
+        .unwrap();
+    let wakes = Arc::new(WakeCount::default());
+    let waker = Waker::from(Arc::clone(&wakes));
+    let mut cx = Context::from_waker(&waker);
+    for _ in 0..3 {
+        assert!(client.poll_drive(&mut cx).is_pending());
+        assert!(client.control_flush);
+        assert!(!client.write_active);
+        assert_eq!(client.outgoing.len(), 1);
+        assert_eq!(
+            wakes.0.load(Ordering::Relaxed),
+            0,
+            "queued output must wait for the blocked control flush's I/O waker"
+        );
+    }
+    client.socket.as_mut().unwrap().get_mut().resume_writes();
+    assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+
+    let service = async {
+        let pong = server.next().await.unwrap().unwrap();
+        assert!(pong.is_pong());
+        assert_eq!(&**pong.as_payload(), b"control");
+        let application = read_json(&mut server).await;
+        assert_eq!(application["id"], request.0);
+        assert_eq!(application["method"], wire::SEND);
+        server
+            .send(Message::text(
+                json!({"jsonrpc":"2.0","id":application["id"],"result":null}).to_string(),
+            ))
+            .await
+            .unwrap();
+        let close = server.next().await.unwrap().unwrap();
+        assert!(
+            close.is_close(),
+            "Pong and application frame must each arrive once"
+        );
+        server.close().await.unwrap();
+    };
+    let application = async {
+        assert!(
+            matches!(client.drive().await.unwrap(), Event::Completed { request: id, result: Ok(()) } if id == request)
+        );
+        client.close();
+        assert!(matches!(client.drive().await, Err(SocketError::Closed)));
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(service, application);
     })
     .await
     .unwrap();
