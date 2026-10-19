@@ -43,10 +43,13 @@ where
         let text = match frame {
             Frame::Text(text) => text,
             Frame::Control => {
-                match source {
+                let result = match source {
                     0 => flush(&mut host).await,
                     1 => flush(&mut first.socket).await,
                     _ => flush(&mut second.socket).await,
+                };
+                if let Err(terminal) = result {
+                    terminals[source] = Some(terminal);
                 }
                 continue;
             }
@@ -111,15 +114,27 @@ where
                         parsed["method"].as_str(),
                         Some(wire::WEBRTC | wire::RECEIPT)
                     ));
-                    assert!(callbacks[target].len() < MAX_PENDING_REQUESTS);
-                    let callback = Uuid::new_v4();
-                    assert!(callbacks[target].insert(callback));
-                    let delivery = json!({"jsonrpc":"2.0","id":callback,"method":wire::RECEIVE,
-                        "params":{"From":identities[source],"Id":message,"Message":inner}});
-                    match target {
-                        0 => send(&mut host, delivery).await,
-                        1 => send(&mut first.socket, delivery).await,
-                        _ => send(&mut second.socket, delivery).await,
+                    let active = match target {
+                        0 => host.is_some(),
+                        1 => first.socket.is_some(),
+                        _ => second.socket.is_some(),
+                    };
+                    // Retirement can precede an already accepted receipt on another physical socket.
+                    // An absent recipient creates neither a callback nor a peer-delivery receipt.
+                    if active {
+                        assert!(callbacks[target].len() < MAX_PENDING_REQUESTS);
+                        let callback = Uuid::new_v4();
+                        assert!(callbacks[target].insert(callback));
+                        let delivery = json!({"jsonrpc":"2.0","id":callback,"method":wire::RECEIVE,
+                            "params":{"From":identities[source],"Id":message,"Message":inner}});
+                        let result = match target {
+                            0 => send(&mut host, delivery).await,
+                            1 => send(&mut first.socket, delivery).await,
+                            _ => send(&mut second.socket, delivery).await,
+                        };
+                        if let Err(terminal) = result {
+                            terminals[target] = Some(terminal);
+                        }
                     }
                     // Actual peer delivery is the peer's subsequent original RECEIPT, never this reply.
                     Value::Null
@@ -127,10 +142,14 @@ where
                 _ => panic!("unexpected activation signaling method"),
             };
             let reply = json!({"jsonrpc":"2.0","id":request,"result":result});
-            match source {
+            let result = match source {
                 0 => send(&mut host, reply).await,
                 1 => send(&mut first.socket, reply).await,
                 _ => send(&mut second.socket, reply).await,
+            };
+            if let Err(terminal) = result {
+                terminals[source] = Some(terminal);
+                break;
             }
         }
     }
@@ -163,19 +182,26 @@ where
     }
 }
 
-/// Uses the same bounded complete-message codec; no new payload queue or peer-grant path exists.
-async fn send<S>(socket: &mut Option<WebSocketStream<S>>, value: Value)
+/// Attempts the same bounded write; a socket failure retires only its original recipient.
+async fn send<S>(
+    socket: &mut Option<WebSocketStream<S>>,
+    value: Value,
+) -> Result<(), HostedSocketTerminal>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let text = serde_json::to_string(&value).unwrap();
     assert!(text.len() <= MAX_MESSAGE_BYTES);
-    socket
-        .as_mut()
-        .expect("original active recipient")
-        .send(Message::text(text))
-        .await
-        .unwrap();
+    let Some(active) = socket.as_mut() else {
+        return Ok(());
+    };
+    match active.send(Message::text(text)).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            *socket = None;
+            Err(failure(error))
+        }
+    }
 }
 
 /// Keeps an actual IO cause distinct from framing failure and clean physical retirement.
@@ -186,12 +212,21 @@ fn failure(error: tokio_websockets::Error) -> HostedSocketTerminal {
     }
 }
 
-/// Flushes control only after selection retained the actual selected socket outcome.
-async fn flush<S>(socket: &mut Option<WebSocketStream<S>>)
+/// Flushes selected control output, retaining a physical failure on only that socket.
+async fn flush<S>(socket: &mut Option<WebSocketStream<S>>) -> Result<(), HostedSocketTerminal>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    socket.as_mut().unwrap().flush().await.unwrap();
+    let Some(active) = socket.as_mut() else {
+        return Ok(());
+    };
+    match active.flush().await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            *socket = None;
+            Err(failure(error))
+        }
+    }
 }
 
 /// Retains an observed Close until its actual response flush completes, then retires that socket.
@@ -206,3 +241,6 @@ where
     *socket = None;
     terminal
 }
+
+#[cfg(test)]
+mod tests;
