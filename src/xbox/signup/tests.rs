@@ -442,3 +442,5 @@ async fn canceled_signup_request_keeps_the_original_account_and_installed_device
             .any(|(name, value)| name == "did" && value == format!("0x{DEVICE}"))
     );
 }
+
+mod shapes;
