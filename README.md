@@ -244,6 +244,16 @@ do not start a worker, refresh loop, runtime, upload or delete operation. Accoun
 generation, per-facet deadlines/errors, image policy and menu projection remain
 caller-owned.
 
+`Minecraft::player_messaging()` borrows the discovered marketing/inbox service.
+It retains a distinct messaging session and continuation across `refresh(language)`
+and `report_events(language, events)`. Only a completely decoded refresh replaces
+a nonempty continuation. Reports preserve original instance/report/button IDs,
+with explicit interaction times or the HTTP edge's UTC millisecond clock. Reads
+do not mark or delete messages; the application owns interaction ordering,
+uncertain-write retries and account retirement. This service uses the existing
+Minecraft credential and client, with no polling task, image fetch or link launch.
+It is separate from Xbox game invitations and NetherNet signaling.
+
 `Account::notifications()` and `Minecraft::notifications()` borrow explicit Xbox
 game invitation inbox reads. `game_invites` addresses the authenticated account,
 preserves invitation actions, original expiries and per-platform title metadata,

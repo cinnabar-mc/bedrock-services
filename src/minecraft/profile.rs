@@ -84,7 +84,7 @@ impl Profile<'_> {
             .destination(&["api", "v1.0", "profile", "xuid", xuid, "image", kind.path()])
             .await?;
         let response = self
-            .read(url, "image/*", crate::http::PROFILE_RESPONSE_LIMIT)
+            .read(url, "image/*", crate::http::SERVICE_RESPONSE_LIMIT)
             .await?;
         Ok(ImageBody {
             content_type: header(&response, reqwest::header::CONTENT_TYPE),
