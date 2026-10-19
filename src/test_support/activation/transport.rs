@@ -41,6 +41,7 @@ impl Transport {
     pub(crate) fn client(&self) -> Client {
         Client::builder()
             .no_proxy()
+            .resolve("localhost", self.http)
             .redirect(reqwest::redirect::Policy::none())
             .tls_certs_only([reqwest::Certificate::from_der(tls::root()).unwrap()])
             .no_gzip()
