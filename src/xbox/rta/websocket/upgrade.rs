@@ -178,6 +178,17 @@ pub(super) async fn connect(
         .ok_or(SocketError::Configuration)?;
     let connector = crate::websocket_io::connector().map_err(|_| SocketError::Configuration)?;
     tokio::time::timeout(options.connect_timeout, async {
+        #[cfg(feature = "test-support")]
+        if let Some(transport) = &request.hosted_transport {
+            let stream = transport
+                .socket(
+                    url,
+                    crate::test_support::activation::transport::SocketKind::Rta,
+                )
+                .await
+                .map_err(|_| SocketError::Transport)?;
+            return handshake(stream, request).await;
+        }
         let tcp = TcpStream::connect((host, port))
             .await
             .map_err(|_| SocketError::Transport)?;

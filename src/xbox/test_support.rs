@@ -4,8 +4,8 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpListener,
 };
 
 /// Serves a bounded sequence of synthetic HTTP exchanges on an ephemeral loopback port.
@@ -47,7 +47,7 @@ pub(crate) async fn fixture_headers(
 }
 
 /// Consumes the complete Content-Length request before a fixture replies or closes its socket.
-pub(crate) async fn read_request(stream: &mut TcpStream) -> (Vec<u8>, usize, usize) {
+pub(crate) async fn read_request(stream: &mut (impl AsyncRead + Unpin)) -> (Vec<u8>, usize, usize) {
     let mut bytes = Vec::new();
     let (header_end, length) = loop {
         assert!(bytes.len() <= 1024 * 1024);
@@ -91,21 +91,7 @@ pub(crate) async fn fixture_bytes(
                 .unwrap();
             let (status, response_headers, body) =
                 handler(target, header, &bytes[header_end..header_end + length]);
-            let extra = response_headers
-                .into_iter()
-                .map(|(name, value)| format!("{name}: {value}\r\n"))
-                .collect::<String>();
-            let content_length = if status == 304 {
-                assert!(body.is_empty(), "304 responses have no message body");
-                String::new()
-            } else {
-                format!("Content-Length: {}\r\n", body.len())
-            };
-            let header = format!(
-                "HTTP/1.1 {status} Fixture\r\n{content_length}Connection: close\r\n{extra}\r\n"
-            );
-            stream.write_all(header.as_bytes()).await.unwrap();
-            stream.write_all(&body).await.unwrap();
+            write_response(&mut stream, status, response_headers, &body).await;
         }
     });
     (address, task)
@@ -173,4 +159,27 @@ pub(crate) fn verify_signature(
         &Signature::from_slice(&signature[12..]).unwrap(),
     )
     .unwrap();
+}
+
+/// Writes exactly the existing finite fixture framing through either TCP or verified TLS.
+pub(crate) async fn write_response(
+    stream: &mut (impl AsyncWrite + Unpin),
+    status: u16,
+    response_headers: Vec<(&str, &str)>,
+    body: &[u8],
+) {
+    let extra = response_headers
+        .into_iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
+    let content_length = if status == 304 {
+        assert!(body.is_empty(), "304 responses have no message body");
+        String::new()
+    } else {
+        format!("Content-Length: {}\r\n", body.len())
+    };
+    let header =
+        format!("HTTP/1.1 {status} Fixture\r\n{content_length}Connection: close\r\n{extra}\r\n");
+    stream.write_all(header.as_bytes()).await.unwrap();
+    stream.write_all(body).await.unwrap();
 }
