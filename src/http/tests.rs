@@ -13,7 +13,7 @@ use tokio::{io::AsyncWriteExt, net::TcpListener, task::JoinHandle};
 const FIXTURE_DATE: &str = "Wed, 01 Jan 2025 00:00:00 GMT";
 const LIMITS: [Option<usize>; 3] = [
     None,
-    Some(PROFILE_RESPONSE_LIMIT),
+    Some(SERVICE_RESPONSE_LIMIT),
     Some(crate::xbox::achievements::MAX_PAGE_BYTES),
 ];
 
@@ -159,7 +159,7 @@ async fn response_body_limits_preserve_public_device_acquisition_bound() {
     }))
     .unwrap();
     assert!(body.len() > RESPONSE_LIMIT);
-    assert!(body.len() < PROFILE_RESPONSE_LIMIT);
+    assert!(body.len() < SERVICE_RESPONSE_LIMIT);
     for framing in [Framing::Declared(body.len()), Framing::Chunked] {
         let (address, server, phase) =
             fixture(body.clone(), framing, "POST /device-code HTTP/1.1\r\n").await;
