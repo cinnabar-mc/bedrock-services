@@ -222,3 +222,89 @@ async fn player_messaging_discovery_and_exact_rejection_preserve_account_ownersh
     assert!(!services.reject(&original));
     server.await.unwrap();
 }
+
+/// Malformed typed containers cannot turn a refresh into a success or poison later reports.
+#[tokio::test]
+async fn player_messaging_rejects_positional_containers_before_committing_continuation() {
+    for malformed in [
+        r#"[{"continuationToken":"poison"}]"#,
+        r#"{"result":[]}"#,
+        r#"{"result":["poison"]}"#,
+        r#"{"result":{"continuationToken":"poison","messages":[[]]}}"#,
+        r#"{"result":{"continuationToken":"poison","inboxSummary":[]}}"#,
+        r#"{"result":{"continuationToken":"poison","inboxSummary":{"categories":[[]]}}}"#,
+        r#"{"result":{"continuationToken":"poison","messages":[{"messageText":[]}]}}"#,
+        r#"{"result":{"continuationToken":"poison","messages":[{"buttons":{"wrong":[]}}]}}"#,
+        r#"{"result":{"continuationToken":"poison","messages":[{"images":{"wrong":{"imageSize":[]}}}]}}"#,
+        r#"{"result":{"continuationToken":"poison","messages":[{"messageItemList":[{"image":[]}]}]}}"#,
+        r#"{"result":{"continuationToken":"poison","messages":[{"colors":{"wrong":{"hexColor":[]}}}]}}"#,
+    ] {
+        let mut step = 0;
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let requests = Arc::clone(&observed);
+        let (address, server) = fixture_bytes(move |_, headers, bytes| {
+            step += 1;
+            if step == 1 {
+                let headers = headers.to_ascii_lowercase();
+                let host = headers.lines().find_map(|line| line.strip_prefix("host: ")).unwrap();
+                return (200, vec![], json!({"result":{"serviceEnvironments":{
+                    "auth":{"prod":{"serviceUri":format!("http://{host}/auth"),"playFabTitleId":"AB12"}},
+                    "messaging":{"prod":{"serviceUri":format!("http://{host}")}}
+                }}}).to_string().into_bytes());
+            }
+            assert!(headers.to_ascii_lowercase().contains("authorization: mctoken original."));
+            let body: Value = serde_json::from_slice(bytes).unwrap();
+            requests.lock().unwrap().push(body["continuationToken"].clone());
+            match step {
+                2 => (200, vec![], json!({"result":{
+                    "continuationToken":"good", "messages":[null,{
+                        "messageText":null, "images":{"absent":null}, "buttons":{"absent":null},
+                        "messageItemList":[null,{"saleBanner":[],"footerCTA":[]}], "style":[]
+                    }], "inboxSummary":{"categories":[null,{"categoryInfo":null,"messages":null}]},
+                    "inboxSettings":[]
+                }}).to_string().into_bytes()),
+                3 => (200, vec![], malformed.as_bytes().to_vec()),
+                4 => (204, vec![], Vec::new()),
+                _ => panic!("unexpected fixture request"),
+            }
+        }, 4).await;
+        let mut services = services(address);
+        let observed_result = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut messaging = services.player_messaging();
+            let first = messaging.refresh("").await.unwrap();
+            assert_eq!(first.messages.len(), 2);
+            assert!(first.messages[0].id.is_empty());
+            assert!(first.messages[1].text.header.is_empty());
+            assert_eq!(first.messages[1].items.len(), 2);
+            assert!(first.inbox_settings.is_some());
+            let rejected = messaging.refresh("").await.is_err();
+            messaging
+                .report_events(
+                    "",
+                    &[Event {
+                        event_type: "ReadAll",
+                        ..Default::default()
+                    }],
+                )
+                .await
+                .unwrap();
+            rejected
+        })
+        .await;
+        if observed_result.is_err() {
+            server.abort();
+        }
+        let served = server.await;
+        let rejected = observed_result.unwrap();
+        served.unwrap();
+        assert!(
+            rejected,
+            "array-shaped typed container was accepted: {malformed}"
+        );
+        assert_eq!(
+            *observed.lock().unwrap(),
+            [json!(""), json!("good"), json!("good")],
+            "a rejected refresh changed the retained continuation"
+        );
+    }
+}
