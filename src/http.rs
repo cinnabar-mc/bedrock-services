@@ -13,6 +13,7 @@ pub(crate) const RESPONSE_LIMIT: usize = 1024 * 1024;
 /// Shared source-backed response budget for persona, statistics and Minecraft messaging.
 pub(crate) const SERVICE_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 const DEFAULT_ACCEPT: &str = "*/*";
+pub(crate) const SISU_ORIGIN: &str = "https://sisu.xboxlive.com";
 
 pub(crate) struct Endpoints {
     pub device_code: String,
@@ -34,7 +35,7 @@ impl Default for Endpoints {
             device_code: "https://login.live.com/oauth20_connect.srf".into(),
             oauth_token: "https://login.live.com/oauth20_token.srf".into(),
             device_token: "https://device.auth.xboxlive.com/device/authenticate".into(),
-            sisu: "https://sisu.xboxlive.com/authorize".into(),
+            sisu: format!("{SISU_ORIGIN}/authorize"),
             xsts: "https://xsts.auth.xboxlive.com/xsts/authorize".into(),
             nsal: "https://title.mgt.xboxlive.com/titles/default/endpoints?type=1".into(),
             nsal_current: "https://title.mgt.xboxlive.com/titles/current/endpoints".into(),

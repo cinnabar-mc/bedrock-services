@@ -14,6 +14,9 @@ pub enum Error {
         /// Parsed numeric X-Err header, when supplied.
         xerr: Option<u32>,
     },
+    /// The same account must complete the hosted Xbox profile page before authorization.
+    #[error("Xbox profile creation is required")]
+    AccountCreationRequired(#[source] crate::xbox::AccountCreationRequired),
     /// An encoded or decoded value violates the service contract.
     #[error("invalid authentication data: {0}")]
     Invalid(&'static str),

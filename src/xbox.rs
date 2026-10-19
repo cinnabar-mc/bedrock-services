@@ -22,6 +22,8 @@ const MAX_RELYING_PARTY_BYTES: usize = 4096;
 
 mod checkpoint;
 pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
+mod signup;
+pub use signup::AccountCreationRequired;
 
 pub mod achievements;
 pub mod mpsd;
@@ -160,6 +162,8 @@ pub struct Account {
     credentials: Credentials,
     key: SigningKey,
     device: Option<Token>,
+    device_id: Option<String>,
+    legacy_device: bool,
     session: Option<Session>,
     title_data: Option<TitleData>,
     current_title_data: Option<TitleData>,
@@ -190,6 +194,8 @@ impl Account {
             credentials,
             key,
             device: None,
+            device_id: None,
+            legacy_device: false,
             session: None,
             title_data: None,
             current_title_data: None,
@@ -224,6 +230,8 @@ impl Account {
         self.credentials = credentials;
         self.restored = None;
         self.device = None;
+        self.device_id = None;
+        self.legacy_device = false;
         self.session = None;
         self.title_data = None;
         self.current_title_data = None;
@@ -380,8 +388,16 @@ impl Account {
         SignaturePolicy::default().sign(&mut request, &self.key, self.http.now())?;
         let response = self.http.send(request).await?;
         response.success()?;
-        let token = response.json::<TokenResponse>()?.token(self.http.now())?;
+        let response = response.json::<DeviceTokenResponse>()?;
+        let device_id = response
+            .display_claims
+            .device
+            .map(|device| device.id)
+            .filter(|id| !id.is_empty());
+        let token = response.token.token(self.http.now())?;
         self.device = Some(token);
+        self.device_id = device_id;
+        self.legacy_device = false;
         self.session = None;
         Ok(())
     }
@@ -393,6 +409,40 @@ impl Account {
         }) {
             return Ok(());
         }
+        let mut response = self.request_session().await?;
+        if self.legacy_device && signup::required(&response) {
+            signup::metadata(&response)?;
+            // Old checkpoints lack the issued device ID: obtain a matching fresh challenge once.
+            self.device = None;
+            self.device_id = None;
+            self.legacy_device = false;
+            self.ensure_device().await?;
+            response = self.request_session().await?;
+        }
+        signup::check(
+            &response,
+            self.device_id.as_deref(),
+            &self.key,
+            self.http.now(),
+        )?;
+        response.success()?;
+        let response: SisuResponse = response.json()?;
+        let now = self.http.now();
+        let title = response.title_token.token(now)?;
+        let user = response.user_token.token(now)?;
+        let authorization = Arc::new(
+            response
+                .authorization_token
+                .authorization(XBOX_RELYING_PARTY, now)?,
+        );
+        self.session = Some(Session { title, user });
+        self.authorizations
+            .insert(XBOX_RELYING_PARTY.into(), authorization);
+        Ok(())
+    }
+
+    /// Sends one SISU request using only this account's original credentials, device and proof.
+    async fn request_session(&mut self) -> Result<crate::http::Response, Error> {
         self.credentials.renew(&mut self.http).await?;
         self.ensure_title_data().await?;
         let device = self
@@ -412,21 +462,7 @@ impl Account {
             .and_then(|data| data.resolve(request.url()))
             .ok_or(Error::Invalid("unmatched SISU endpoint"))?;
         policy.sign(&mut request, &self.key, self.http.now())?;
-        let response = self.http.send(request).await?;
-        response.success()?;
-        let response: SisuResponse = response.json()?;
-        let now = self.http.now();
-        let title = response.title_token.token(now)?;
-        let user = response.user_token.token(now)?;
-        let authorization = Arc::new(
-            response
-                .authorization_token
-                .authorization(XBOX_RELYING_PARTY, now)?,
-        );
-        self.session = Some(Session { title, user });
-        self.authorizations
-            .insert(XBOX_RELYING_PARTY.into(), authorization);
-        Ok(())
+        self.http.send(request).await
     }
 
     /// Encodes only the public coordinates of the account's ES256 proof key.
@@ -467,6 +503,27 @@ struct TokenResponse {
 struct Claims {
     #[serde(default, rename = "xui")]
     users: Vec<User>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DeviceTokenResponse {
+    #[serde(flatten)]
+    token: TokenResponse,
+    #[serde(default)]
+    display_claims: DeviceClaims,
+}
+
+#[derive(Default, Deserialize)]
+struct DeviceClaims {
+    #[serde(default, rename = "xdi")]
+    device: Option<DeviceInfo>,
+}
+
+#[derive(Deserialize)]
+struct DeviceInfo {
+    #[serde(default, rename = "did")]
+    id: String,
 }
 
 #[derive(Deserialize)]
