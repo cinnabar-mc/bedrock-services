@@ -82,6 +82,32 @@ impl HostedAuthority {
         }
     }
 
+    /// Acquires the explicit signed activity/invite sibling on the original hosted membership.
+    /// Call host, acknowledge properties, publish_activity, invite the configured peer, sync, leave and finish.
+    /// Capacity/title are expected request metadata; neither creates a listening route or world authority.
+    pub async fn acquire_activity(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+        max_members: std::num::NonZeroU32,
+        invite_title_id: String,
+    ) -> Self {
+        let (address, task, scenario) = script::start_activity(max_members, invite_title_id).await;
+        let mut peer = HostedPeer {
+            address,
+            http: Some(task),
+            server: None,
+            scenario,
+            auth,
+            minecraft,
+        };
+        let (account, identity) = peer.acquire_account().await;
+        Self {
+            account,
+            identity,
+            peer,
+        }
+    }
+
     /// Acquires the finite revocation sibling; call host, acknowledge, revoke, refresh, leave and finish.
     pub async fn acquire_revocation(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
         let (address, task, scenario) = script::start_revocation().await;
@@ -309,7 +335,7 @@ impl HostedPeer {
         )
         .unwrap();
         let mut account = Account::new(self.http(), self.auth.clone(), credentials).unwrap();
-        if self.scenario.revocation() {
+        if self.scenario.revocation() || self.scenario.activity() {
             mpsd::test_support::inherit_fixture_base(&mut account, self.address);
         }
         let mut account = Minecraft::new(account, self.minecraft.clone()).unwrap();
@@ -335,3 +361,6 @@ mod revocation_tests;
 
 #[cfg(test)]
 mod world_tests;
+
+#[cfg(test)]
+mod activity_tests;

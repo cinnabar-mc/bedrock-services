@@ -1,5 +1,6 @@
 //! Fixed original/fresh/restored proof sequence and independent signed directory oracle.
 
+mod activity;
 mod revocation;
 
 use crate::xbox::{
@@ -31,12 +32,18 @@ struct State {
     peer: Option<String>,
     rta_headers: Vec<String>,
     revocation: bool,
+    activity: Option<activity::Activity>,
 }
 
 impl Scenario {
     /// Identifies only the finite sibling scenario that exercises a real directory refresh.
     pub(super) fn revocation(&self) -> bool {
         self.0.lock().unwrap().revocation
+    }
+
+    /// Identifies only the explicit finite activity/invite sibling.
+    pub(super) fn activity(&self) -> bool {
+        self.0.lock().unwrap().activity.is_some()
     }
 
     /// Installs only public title-selected locator/member metadata before its first directory read.
@@ -64,26 +71,50 @@ impl Scenario {
 
 /// Starts exactly the original account/host/write, fresh account, restore and leave exchanges.
 pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
-    start_scenario(false, None).await
+    start_scenario(false, None, None).await
 }
 
 /// Reuses the original eight acquisition/acknowledgment exchanges before one revoke and leave.
 pub(super) async fn start_revocation() -> (SocketAddr, JoinHandle<()>, Scenario) {
-    start_scenario(true, None).await
+    start_scenario(true, None, None).await
 }
 
 /// Adds the selected build's single unauthenticated discovery read to the fixed revocation sequence.
 pub(super) async fn start_world(version: &str) -> (SocketAddr, JoinHandle<()>, Scenario) {
-    start_scenario(true, Some(version.to_owned())).await
+    start_scenario(true, Some(version.to_owned()), None).await
+}
+
+/// Adds only the original membership's signed activity/invite and conditional cleanup sequence.
+pub(super) async fn start_activity(
+    max_members: std::num::NonZeroU32,
+    title_id: String,
+) -> (SocketAddr, JoinHandle<()>, Scenario) {
+    assert!(usize::try_from(max_members.get()).is_ok_and(|limit| limit <= mpsd::MAX_MEMBERS));
+    assert!(
+        title_id
+            .parse::<u32>()
+            .is_ok_and(|id| id != 0 && id.to_string() == title_id)
+    );
+    start_scenario(
+        false,
+        None,
+        Some(activity::Activity {
+            max_members,
+            title_id,
+        }),
+    )
+    .await
 }
 
 /// Selects only fixed sequences; original fourteen exchange assertions stay shared.
 async fn start_scenario(
     revocation: bool,
     world_version: Option<String>,
+    activity: Option<activity::Activity>,
 ) -> (SocketAddr, JoinHandle<()>, Scenario) {
     let scenario = Scenario(Arc::new(Mutex::new(State {
         revocation,
+        activity,
         ..Default::default()
     })));
     let state = scenario.clone();
@@ -91,6 +122,7 @@ async fn start_scenario(
     let mut fresh_proof = None;
     let mut snapshot = Value::Null;
     let world = world_version.is_some();
+    let activity = scenario.activity();
     let (address, task) = fixture_headers(move |target, headers, body| {
         step += 1;
         let mut response_headers = vec![("Date", DATE)];
@@ -106,6 +138,9 @@ async fn start_scenario(
                 "serviceUri":"https://hosted-world-service.invalid/",
                 "playFabTitleId":"AB12", "issuer":super::HOSTED_WORLD_ISSUER
             }}}}}));
+        }
+        if activity && step > 8 {
+            return activity::respond(step, target, headers, body, &state);
         }
         if revocation && step > 8 {
             return revocation::respond(step - usize::from(world), target, headers, body, &state, &mut snapshot);
@@ -179,6 +214,9 @@ async fn start_scenario(
                                     "active":true,"connection":CONNECTION,"subscription":{"id":state.subscription.unwrap()}}}},
                                 "1":{"constants":{"system":{"xuid":state.peer.as_ref().unwrap()}},
                                     "properties":{"system":{"active":true}}}}});
+                        if let Some(activity) = &state.activity {
+                            snapshot["constants"] = json!({"system":{"maxMembersCount":activity.max_members.get()}});
+                        }
                         response_headers.push(("ETag", "\"host-original\""));
                         snapshot.clone()
                     }
@@ -207,6 +245,6 @@ async fn start_scenario(
             _ => panic!("unexpected hosted authority exchange"),
         };
         (status, response_headers, response)
-    }, if revocation { 10 + usize::from(world) } else { HTTP_EXCHANGES }).await;
+    }, if activity { activity::HTTP_EXCHANGES } else if revocation { 10 + usize::from(world) } else { HTTP_EXCHANGES }).await;
     (address, task, scenario)
 }
