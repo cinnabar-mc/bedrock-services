@@ -365,3 +365,5 @@ fn turn_credential_transfer_preserves_original_owner_and_expiry() {
     );
     assert!(state.credentials(now).is_none());
 }
+
+mod retirement;

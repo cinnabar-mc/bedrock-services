@@ -362,6 +362,22 @@ impl MessagingSocket {
         self.state.cancel(request)
     }
 
+    /// Retires the matching JSON-RPC TURN wait and its exact cached credential owner, if any.
+    /// Removes its unsent frame and queued completion; an admitted partial write stays owned
+    /// and can still reach the service. Late responses are ignored, never retried.
+    /// Returns false without mutation for a different, already moved/retired or legacy request.
+    /// Request IDs belong only to their original socket; this is not remote acknowledgment.
+    pub fn retire_credentials(&mut self, request: RequestId) -> bool {
+        if !self.state.retire_credentials(request) {
+            return false;
+        }
+        self.remove_queued(request);
+        self.events.retain(|event| {
+            !matches!(event, Event::Completed { request: completed, .. } if *completed == request)
+        });
+        true
+    }
+
     /// Stops admission, drops unsent messages and resolves pending waits as Closed.
     /// Continue driving to finish the bounded close handshake and drain completions.
     pub fn close(&mut self) {

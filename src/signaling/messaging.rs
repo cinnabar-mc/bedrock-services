@@ -81,7 +81,7 @@ pub struct Messaging {
     network_id: String,
     next_id: u64,
     pending: HashMap<RequestId, Pending>,
-    credentials: Option<TurnCredentials>,
+    credentials: Option<(RequestId, TurnCredentials)>,
     closed: bool,
 }
 
@@ -101,6 +101,7 @@ impl Messaging {
     pub fn credentials(&self, now: Instant) -> Option<&TurnCredentials> {
         self.credentials
             .as_ref()
+            .map(|(_, credentials)| credentials)
             .filter(|credentials| credentials.valid(now))
     }
 
@@ -109,6 +110,7 @@ impl Messaging {
     pub fn take_credentials(&mut self, now: Instant) -> Option<TurnCredentials> {
         self.credentials
             .take()
+            .map(|(_, credentials)| credentials)
             .filter(|credentials| credentials.valid(now))
     }
 
@@ -126,7 +128,7 @@ impl Messaging {
             .chain(
                 self.credentials
                     .as_ref()
-                    .map(|credentials| credentials.expires),
+                    .map(|(_, credentials)| credentials.expires),
             )
             .min()
     }
@@ -195,12 +197,33 @@ impl Messaging {
         self.pending.remove(&request).is_some()
     }
 
+    /// Retires only this owner's matching TURN wait or cached result, without affecting other requests.
+    /// Returns false for an unknown, already moved/retired or non-TURN request.
+    /// This is local retirement; an already written request can still receive a harmless late response.
+    pub fn retire_credentials(&mut self, request: RequestId) -> bool {
+        let pending = self
+            .pending
+            .get(&request)
+            .is_some_and(|pending| matches!(pending.kind, Kind::Turn));
+        let cached = self
+            .credentials
+            .as_ref()
+            .is_some_and(|(owner, _)| *owner == request);
+        if pending {
+            self.cancel(request);
+        }
+        if cached {
+            self.credentials = None;
+        }
+        pending || cached
+    }
+
     /// Finishes all expired requests using caller time, without sleeping or sending retries.
     pub fn expire(&mut self, now: Instant) -> Vec<Event> {
         if self
             .credentials
             .as_ref()
-            .is_some_and(|credentials| !credentials.valid(now))
+            .is_some_and(|(_, credentials)| !credentials.valid(now))
         {
             self.credentials = None;
         }
@@ -415,7 +438,7 @@ impl Messaging {
                     now,
                 ) {
                     Ok(credentials) => {
-                        self.credentials = Some(credentials);
+                        self.credentials = Some((id, credentials));
                         events.push(self.complete(id, Ok(())));
                     }
                     Err(_) => events.push(self.complete(id, Err(Failure::InvalidResponse))),
