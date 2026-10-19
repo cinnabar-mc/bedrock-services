@@ -206,3 +206,6 @@ where
     *socket = None;
     terminal
 }
+
+#[cfg(test)]
+mod tests;
