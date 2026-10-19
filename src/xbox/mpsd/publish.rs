@@ -1,6 +1,8 @@
 //! Caller-retained creation intent and explicit recovery after an uncertain publication.
 
-use super::{Binding, Directory, Error, Publish, Reference, Session, encode, member, require};
+use super::{
+    Binding, Directory, Error, MAX_MEMBERS, Publish, Reference, Session, encode, member, require,
+};
 use p256::ecdsa::VerifyingKey;
 use reqwest::{Method, StatusCode, header::HeaderValue};
 use serde_json::{Value, json};
@@ -47,17 +49,26 @@ impl Directory<'_> {
     /// Captures one bounded creation intent without authentication or service I/O.
     ///
     /// # Errors
-    /// Rejects an oversized title document before retaining it.
+    /// Rejects an oversized title document or a member cap beyond the supported snapshot bound.
     pub fn publish_attempt(
         &self,
         reference: &Reference,
         config: Publish,
     ) -> Result<PublishAttempt, Error> {
+        if let Some(limit) = config.max_members {
+            let limit = usize::try_from(limit.get()).map_err(|_| Error::Limit)?;
+            if limit > MAX_MEMBERS {
+                return Err(Error::Limit);
+            }
+        }
         let mut initial = json!({"properties":{"system":{"joinRestriction":config.join,
             "readRestriction":config.read,"closed":false}},
             "members":{"me":member(config.binding, config.member)}});
         if let Some(custom) = config.constants {
             initial["constants"] = json!({"custom":custom});
+        }
+        if let Some(limit) = config.max_members {
+            initial["constants"]["system"] = json!({"maxMembersCount":limit.get()});
         }
         if let Some(custom) = config.properties {
             initial["properties"]["custom"] = custom;

@@ -4,7 +4,7 @@ use p256::ecdsa::VerifyingKey;
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroU32};
 use uuid::Uuid;
 
 /// A complete validated directory locator, distinct from incomplete social observations.
@@ -141,6 +141,9 @@ pub struct Publish {
     pub member: MemberData,
     /// Immutable title-defined session constants.
     pub constants: Option<Value>,
+    /// Maximum total session members, encoded in `constants.system.maxMembersCount`.
+    /// At most [`super::MAX_MEMBERS`]; `None` preserves the service/template default.
+    pub max_members: Option<NonZeroU32>,
     /// Mutable title-defined session properties, including application-owned world metadata/nonces.
     pub properties: Option<Value>,
     /// Explicit initial join restriction.

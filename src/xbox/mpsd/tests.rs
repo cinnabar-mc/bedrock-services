@@ -12,6 +12,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use uuid::Uuid;
 
 mod publication;
+mod publication_capacity;
 
 /// Supplies five original authentication exchanges, then verifies each concrete directory request.
 async fn script(
@@ -226,6 +227,7 @@ async fn lifecycle_preserves_validators_membership_identity_and_uncertain_write_
                 binding,
                 member: MemberData::default(),
                 constants: None,
+                max_members: None,
                 properties: Some(json!({"worldName":"Fixture"})),
                 join: Restriction::Followed,
                 read: Restriction::Followed,
