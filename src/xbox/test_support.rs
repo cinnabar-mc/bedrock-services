@@ -34,7 +34,12 @@ pub(crate) async fn fixture_headers(
     fixture_bytes(
         move |target, header, body| {
             let (status, headers, body) = handler(target, header, body);
-            (status, headers, serde_json::to_vec(&body).unwrap())
+            let body = if status == 304 {
+                Vec::new()
+            } else {
+                serde_json::to_vec(&body).unwrap()
+            };
+            (status, headers, body)
         },
         count,
     )
@@ -90,9 +95,14 @@ pub(crate) async fn fixture_bytes(
                 .into_iter()
                 .map(|(name, value)| format!("{name}: {value}\r\n"))
                 .collect::<String>();
+            let content_length = if status == 304 {
+                assert!(body.is_empty(), "304 responses have no message body");
+                String::new()
+            } else {
+                format!("Content-Length: {}\r\n", body.len())
+            };
             let header = format!(
-                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n",
-                body.len()
+                "HTTP/1.1 {status} Fixture\r\n{content_length}Connection: close\r\n{extra}\r\n"
             );
             stream.write_all(header.as_bytes()).await.unwrap();
             stream.write_all(&body).await.unwrap();

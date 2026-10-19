@@ -2,6 +2,7 @@
 
 mod activity;
 mod revocation;
+mod unchanged;
 
 use crate::xbox::{
     XBOX_RELYING_PARTY, mpsd,
@@ -33,12 +34,19 @@ struct State {
     rta_headers: Vec<String>,
     revocation: bool,
     activity: Option<activity::Activity>,
+    unchanged: bool,
 }
 
 impl Scenario {
     /// Identifies only the finite sibling scenario that exercises a real directory refresh.
     pub(super) fn revocation(&self) -> bool {
-        self.0.lock().unwrap().revocation
+        let state = self.0.lock().unwrap();
+        state.revocation && !state.unchanged
+    }
+
+    /// Selects only a signed conditional 304 after an actual RTA resync.
+    pub(super) fn unchanged(&self) -> bool {
+        self.0.lock().unwrap().unchanged
     }
 
     /// Identifies only the explicit finite activity/invite sibling.
@@ -71,17 +79,17 @@ impl Scenario {
 
 /// Starts exactly the original account/host/write, fresh account, restore and leave exchanges.
 pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
-    start_scenario(false, None, None).await
+    start_scenario(false, None, None, false).await
 }
 
 /// Reuses the original eight acquisition/acknowledgment exchanges before one revoke and leave.
 pub(super) async fn start_revocation() -> (SocketAddr, JoinHandle<()>, Scenario) {
-    start_scenario(true, None, None).await
+    start_scenario(true, None, None, false).await
 }
 
 /// Adds the selected build's single unauthenticated discovery read to the fixed revocation sequence.
 pub(super) async fn start_world(version: &str) -> (SocketAddr, JoinHandle<()>, Scenario) {
-    start_scenario(true, Some(version.to_owned()), None).await
+    start_scenario(true, Some(version.to_owned()), None, false).await
 }
 
 /// Adds only the original membership's signed activity/invite and conditional cleanup sequence.
@@ -102,8 +110,14 @@ pub(super) async fn start_activity(
             max_members,
             title_id,
         }),
+        false,
     )
     .await
+}
+
+/// Keeps the original eight exchanges before one unchanged refresh and exact leave.
+pub(super) async fn start_unchanged() -> (SocketAddr, JoinHandle<()>, Scenario) {
+    start_scenario(true, None, None, true).await
 }
 
 /// Selects only fixed sequences; original fourteen exchange assertions stay shared.
@@ -111,10 +125,12 @@ async fn start_scenario(
     revocation: bool,
     world_version: Option<String>,
     activity: Option<activity::Activity>,
+    unchanged: bool,
 ) -> (SocketAddr, JoinHandle<()>, Scenario) {
     let scenario = Scenario(Arc::new(Mutex::new(State {
         revocation,
         activity,
+        unchanged,
         ..Default::default()
     })));
     let state = scenario.clone();
@@ -138,6 +154,9 @@ async fn start_scenario(
                 "serviceUri":"https://hosted-world-service.invalid/",
                 "playFabTitleId":"AB12", "issuer":super::HOSTED_WORLD_ISSUER
             }}}}}));
+        }
+        if unchanged && step > 8 {
+            return unchanged::respond(step, target, headers, body, &state);
         }
         if activity && step > 8 {
             return activity::respond(step, target, headers, body, &state);

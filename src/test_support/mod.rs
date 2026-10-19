@@ -108,6 +108,26 @@ impl HostedAuthority {
         }
     }
 
+    /// Acquires one unchanged-refresh sibling; original membership/nonces survive a real signed 304.
+    /// Call host, acknowledge properties, resync_unchanged_ready, consume Resync, sync, leave and finish.
+    pub async fn acquire_unchanged(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
+        let (address, task, scenario) = script::start_unchanged().await;
+        let mut peer = HostedPeer {
+            address,
+            http: Some(task),
+            server: None,
+            scenario,
+            auth,
+            minecraft,
+        };
+        let (account, identity) = peer.acquire_account().await;
+        Self {
+            account,
+            identity,
+            peer,
+        }
+    }
+
     /// Acquires the finite revocation sibling; call host, acknowledge, revoke, refresh, leave and finish.
     pub async fn acquire_revocation(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
         let (address, task, scenario) = script::start_revocation().await;
@@ -149,6 +169,19 @@ impl HostedAuthority {
 }
 
 impl HostedPeer {
+    /// Retains the actual next RTA Resync on the original socket before the fixed unchanged304 read.
+    /// This emits no fabricated event and performs no directory/approval state mutation.
+    pub async fn resync_unchanged_ready(&mut self, socket: &mut RtaSocket) {
+        assert!(self.scenario.unchanged());
+        self.server
+            .as_mut()
+            .expect("actual hosted socket")
+            .send(Message::text(rta::fixture_resync_message()))
+            .await
+            .unwrap();
+        rta::websocket::test_support::retain_ready_resync(socket).await;
+    }
+
     /// Makes the actual revocation event the next ready delivery on this same original socket.
     pub async fn revoke_member_ready(&mut self, socket: &mut RtaSocket) {
         self.revoke_member().await;
@@ -335,7 +368,7 @@ impl HostedPeer {
         )
         .unwrap();
         let mut account = Account::new(self.http(), self.auth.clone(), credentials).unwrap();
-        if self.scenario.revocation() || self.scenario.activity() {
+        if self.scenario.revocation() || self.scenario.activity() || self.scenario.unchanged() {
             mpsd::test_support::inherit_fixture_base(&mut account, self.address);
         }
         let mut account = Minecraft::new(account, self.minecraft.clone()).unwrap();
@@ -364,3 +397,6 @@ mod world_tests;
 
 #[cfg(test)]
 mod activity_tests;
+
+#[cfg(test)]
+mod unchanged_tests;
