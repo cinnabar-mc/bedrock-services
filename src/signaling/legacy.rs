@@ -79,6 +79,14 @@ impl Legacy {
             .filter(|credentials| credentials.valid(now))
     }
 
+    /// Transfers the current unexpired credential owner without cloning or extending its lifetime.
+    /// This clears the cache; taking a cached result alone proves no fresh service response.
+    pub fn take_credentials(&mut self, now: Instant) -> Option<TurnCredentials> {
+        self.credentials
+            .take()
+            .filter(|credentials| credentials.valid(now))
+    }
+
     /// Counts all retained waits, including credentials that require no outbound message.
     #[cfg(feature = "signaling-tokio")]
     pub(super) fn pending_requests(&self) -> usize {
