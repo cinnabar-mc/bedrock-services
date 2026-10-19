@@ -80,7 +80,7 @@ struct Environment {
 
 impl Minecraft {
     /// Confines only the nondefault hosted fixture's discovery owner to its finite HTTP peer.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "test-support")]
     pub(crate) fn hosted_fixture_http(&mut self, address: std::net::SocketAddr) {
         assert!(address.ip().is_loopback());
         self.http = Http::fixture_agent(address, USER_AGENT);
