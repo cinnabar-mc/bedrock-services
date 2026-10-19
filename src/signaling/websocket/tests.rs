@@ -15,55 +15,11 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
-use tokio_websockets::{MaybeTlsStream, ServerBuilder, WebSocketStream};
+use tokio_websockets::WebSocketStream;
 
-/// Opens actual loopback sockets; only this fixture bypasses production verified TLS.
-async fn pair() -> (MessagingSocket, WebSocketStream<TcpStream>) {
-    pair_with_initial(None).await
-}
+use super::test_support::pair_with_initial;
 
-/// Writes an optional first frame directly after the upgrade response, before returning either owner.
-async fn pair_with_initial(
-    initial: Option<Message>,
-) -> (MessagingSocket, WebSocketStream<TcpStream>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let tcp = TcpStream::connect(listener.local_addr().unwrap())
-        .await
-        .unwrap();
-    let (server, _) = listener.accept().await.unwrap();
-    let url = url::Url::parse("wss://messaging.invalid/prefix/ws/v1.0/messaging/connect").unwrap();
-    let builder =
-        upgrade::builder(&url, HeaderValue::from_static("MCToken synthetic-only")).unwrap();
-    let server_builder = ServerBuilder::new();
-    let (client, server) = tokio::join!(
-        builder.connect_on(upgrade::UpgradeIo::new(MaybeTlsStream::Plain(tcp))),
-        async {
-            let (request, mut socket) = server_builder.accept(server).await.unwrap();
-            if let Some(message) = initial {
-                socket.send(message).await.unwrap();
-            }
-            (request, socket)
-        },
-    );
-    let (mut socket, response) = client.unwrap();
-    upgrade::validate_upgrade(&response).unwrap();
-    socket.get_mut().upgraded();
-    let (request, server) = server;
-    assert_eq!(request.uri().path(), url.path());
-    assert_eq!(
-        request.headers()[reqwest::header::HOST],
-        "messaging.invalid"
-    );
-    assert_eq!(
-        request.headers()[reqwest::header::AUTHORIZATION],
-        "MCToken synthetic-only"
-    );
-    (
-        MessagingSocket::from_socket(socket, 7, Duration::from_secs(3600), Options::default())
-            .unwrap(),
-        server,
-    )
-}
+const TEST_NETWORK_ID: u64 = 7;
 
 /// Extracts one JSON message while ignoring no application frames accidentally.
 async fn read_json(server: &mut WebSocketStream<TcpStream>) -> Value {
@@ -75,7 +31,7 @@ async fn read_json(server: &mut WebSocketStream<TcpStream>) -> Value {
 /// Actual control exchange, callback response, caller-accepted receipt and bounded close.
 #[tokio::test]
 async fn drives_control_signal_receipt_completion_and_close() {
-    let (mut client, mut server) = pair().await;
+    let (mut client, mut server) = pair_with_initial(TEST_NETWORK_ID, None).await;
     let peer = Uuid::from_u128(1);
     let envelope = Uuid::from_u128(2);
     let receipt = Uuid::from_u128(3);
@@ -153,7 +109,7 @@ impl Wake for WakeCount {
 #[tokio::test]
 async fn pending_control_flush_does_not_self_wake_queued_output() {
     let (mut client, mut server) =
-        pair_with_initial(Some(Message::ping(b"control".to_vec()))).await;
+        pair_with_initial(TEST_NETWORK_ID, Some(Message::ping(b"control".to_vec()))).await;
     client.socket.as_mut().unwrap().get_mut().limit_writes(0);
     poll_fn(|cx| {
         assert!(client.poll_drive(cx).is_pending());
@@ -227,7 +183,7 @@ async fn pending_control_flush_does_not_self_wake_queued_output() {
 /// Canceling a partially flushed drive preserves one complete frame, while unsent cancellation retracts it.
 #[tokio::test]
 async fn backpressure_admission_and_canceled_drive_do_not_lose_or_duplicate_frames() {
-    let (mut client, mut server) = pair().await;
+    let (mut client, mut server) = pair_with_initial(TEST_NETWORK_ID, None).await;
     let deadline = Instant::now() + Duration::from_secs(30);
     let peer = Uuid::from_u128(1);
     let large = "x".repeat(MAX_MESSAGE_BYTES / 2);
@@ -345,7 +301,7 @@ async fn backpressure_admission_and_canceled_drive_do_not_lose_or_duplicate_fram
 /// Caller-driven service heartbeats use the shared correlation owner and do not leak internal handles.
 #[tokio::test]
 async fn heartbeat_success_and_failure_drive_connection_lifetime() {
-    let (mut client, mut server) = pair().await;
+    let (mut client, mut server) = pair_with_initial(TEST_NETWORK_ID, None).await;
     client.tick(client.next_ping);
     let service = async {
         let request = read_json(&mut server).await;
@@ -392,7 +348,8 @@ async fn heartbeat_success_and_failure_drive_connection_lifetime() {
 async fn upgrade_overread_and_lifetime_reads_preserve_messages() {
     let message =
         json!({"jsonrpc":"2.0","method":"Future_Callback","params":"x".repeat(1000)}).to_string();
-    let (mut client, mut server) = pair_with_initial(Some(Message::text(message.clone()))).await;
+    let (mut client, mut server) =
+        pair_with_initial(TEST_NETWORK_ID, Some(Message::text(message.clone()))).await;
     let count = upgrade::MAX_UPGRADE_BYTES / message.len() + 2;
     let service = async {
         for index in 1..count {
@@ -421,7 +378,7 @@ async fn upgrade_overread_and_lifetime_reads_preserve_messages() {
 /// A full caller-event queue rolls back correlation before rejecting admission.
 #[tokio::test]
 async fn event_backpressure_does_not_orphan_a_rejected_request() {
-    let (mut client, _server) = pair().await;
+    let (mut client, _server) = pair_with_initial(TEST_NETWORK_ID, None).await;
     client
         .events
         .extend((0..MAX_QUEUED_EVENTS).map(|_| Event::Ignored));
@@ -454,7 +411,7 @@ async fn malformed_frames_resolve_pending_requests_before_redacted_failure() {
             SocketError::Capacity,
         ),
     ] {
-        let (mut client, mut server) = pair().await;
+        let (mut client, mut server) = pair_with_initial(TEST_NETWORK_ID, None).await;
         let request = client
             .request_credentials(Instant::now() + Duration::from_secs(30))
             .unwrap();

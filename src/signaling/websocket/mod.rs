@@ -13,6 +13,10 @@
 
 mod upgrade;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
+
 use super::{
     Error, Event, Failure, MAX_BATCH_MESSAGES, MAX_MESSAGE_BYTES, MAX_PENDING_REQUESTS, Messaging,
     Outgoing, ReceivedSignal, RequestId, TurnCredentials,
