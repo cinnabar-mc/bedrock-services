@@ -8,8 +8,8 @@ pub(crate) mod activation;
 mod script;
 pub use activation::{
     HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedActivationPrefix,
-    HostedActivationVisitors, HostedRenewalObservation, HostedSocketTerminal, HostedVisitor,
-    HostedVisitorsObservation,
+    HostedActivationVisitors, HostedRenewalObservation, HostedSocketTerminal,
+    HostedSubscriptionHold, HostedVisitor, HostedVisitorsObservation,
 };
 
 /// Non-retail issuer returned only by the fixed hosted-world discovery response.
@@ -71,6 +71,31 @@ pub struct HostedPeer {
 }
 
 impl HostedAuthority {
+    /// Holds the original verified subscription acknowledgment until the returned hold is dropped.
+    /// This finite sibling supports caller-cutoff checks without creating a fabricated RTA event.
+    pub async fn acquire_activation_held_subscription(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+        max_members: std::num::NonZeroU32,
+        title_id: String,
+        audience: String,
+    ) -> (Self, HostedSubscriptionHold) {
+        activation::acquire_held_subscription(auth, minecraft, max_members, title_id, audience)
+            .await
+    }
+
+    /// Emits a fixed five-second initial TURN lease, then the original same-key mint and fresh lease.
+    /// Only this opt-in sibling expires promptly; ordinary fixture service lifetimes stay unchanged.
+    pub async fn acquire_activation_expiring_renewal(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+        max_members: std::num::NonZeroU32,
+        title_id: String,
+        audience: String,
+    ) -> Self {
+        activation::acquire_expiring_renewal(auth, minecraft, max_members, title_id, audience).await
+    }
+
     /// Reuses the original world acquisition, then admits fixed visitors 456 and 789 in its real read.
     /// The ordinary revocation removes only 456; both members share the original RTA/session owner.
     pub async fn acquire_world_two_visitors(

@@ -3,6 +3,8 @@
 use super::*;
 
 pub(super) const REFRESH_SECONDS: u64 = 600;
+pub(super) const INITIAL_SECONDS: u64 = 300;
+pub(super) const EXPIRING_SECONDS: u64 = 5;
 
 #[derive(Default)]
 pub(super) struct Observed {

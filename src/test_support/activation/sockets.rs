@@ -86,6 +86,10 @@ pub(super) async fn rta(listener: TcpListener, state: Shared) -> HostedSocketTer
         message,
         json!([1, message[1], rta::Resource::session_directory().as_str()])
     );
+    let hold = state.lock().unwrap().subscription_hold.take();
+    if let Some(hold) = hold {
+        hold.wait().await;
+    }
     socket
         .send(Message::text(
             json!([1, message[1], 0, 19, {"ConnectionId":super::super::script::CONNECTION}])
@@ -132,10 +136,11 @@ pub(super) async fn messaging(
         crate::signaling::websocket::test_support::turn_method()
     );
     assert!(message["id"].is_u64());
+    let initial_turn_seconds = state.lock().unwrap().initial_turn_seconds;
     socket
         .send(Message::text(
             json!({"jsonrpc":"2.0", "id":message["id"], "result":{
-                "ExpirationInSeconds":300, "TurnAuthServers":[],
+                "ExpirationInSeconds":initial_turn_seconds, "TurnAuthServers":[],
             }})
             .to_string(),
         ))
