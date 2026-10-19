@@ -56,13 +56,15 @@ async fn gatherings_requests_keep_catalog_metadata_counts_and_explicit_join_tran
                 assert!(lower.contains("accept-language: en-us"));
                 assert_eq!(bytes, b"{}\n");
                 json!({"data":{"ContinuationToken":"next-page","Items":[
-                    {"Id":"creator","ContentType":"3PP_V2.0","Title":{"en-US":"Creator"},
-                     "DisplayProperties":{"experienceId":EXPERIENCE,"news":"hello","availableGames":[{"title":"Game","imageTag":"mode"}],"creatorName":false,"unused":{"opaque":true}}},
+                    {"Id":"creator","ContentType":"3PP_V2.0","Title":{"en-US":"Creator","en_US":null},"Description":{"en-US":"Creator description","en_US":null},
+                     "DisplayProperties":{"experienceId":EXPERIENCE,"news":"hello","availableGames":[{"title":"Game","imageTag":"mode"},null],"creatorName":false,"unused":{"opaque":true}}},
                     {"Id":"rank-zero","IsHidden":true,"ContentType":"3PP_V2.0","Title":{"NEUTRAL":"Zero"},
-                     "Description":{"en_US":"Description"},"Images":[{"Id":"i","Tag":"Icon","Type":"Thumbnail","Url":"https://art.example/card"}],
+                     "Description":{"en_US":"Description"},"Images":[{"Id":"i","Tag":"Icon","Type":"Thumbnail","Url":"https://art.example/card"},null],
                      "DisplayProperties":{"url":"play.example","port":19132,"rank":0}},
                     {"Id":"invalid-properties","ContentType":"3PP_V2.0","DisplayProperties":[]},
-                    {"Id":"future-type","ContentType":"FUTURE","DisplayProperties":{"rank":null}}
+                    {"Id":"future-type","ContentType":"FUTURE","DisplayProperties":{"rank":null}},
+                    {"Id":"invalid-game","ContentType":"3PP_V2.0","DisplayProperties":{"availableGames":[[]]}},
+                    null
                 ]}})
             }
             3 => {
@@ -115,8 +117,19 @@ async fn gatherings_requests_keep_catalog_metadata_counts_and_explicit_join_tran
                 .iter()
                 .map(|item| item.id.as_str())
                 .collect::<Vec<_>>(),
-            ["creator", "rank-zero", "invalid-properties", "future-type"]
+            [
+                "creator",
+                "rank-zero",
+                "invalid-properties",
+                "future-type",
+                "invalid-game",
+                ""
+            ]
         );
+        assert_eq!(catalog.items[0].title["en-US"], "Creator");
+        assert!(catalog.items[0].title["en_US"].is_empty());
+        assert_eq!(catalog.items[0].description["en-US"], "Creator description");
+        assert!(catalog.items[0].description["en_US"].is_empty());
         assert_eq!(catalog.items[0].properties().unwrap().rank, None);
         assert!(
             catalog.items[0]
@@ -138,11 +151,19 @@ async fn gatherings_requests_keep_catalog_metadata_counts_and_explicit_join_tran
             catalog.items[0].properties().unwrap().available_games[0].image_tag,
             "mode"
         );
+        let games = catalog.items[0].properties().unwrap().available_games;
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0].title, "Game");
+        assert!(games[1].title.is_empty());
         assert_eq!(catalog.items[1].properties().unwrap().rank, Some(0));
         assert!(catalog.items[1].hidden);
         assert_eq!(catalog.items[1].images[0].url, "https://art.example/card");
+        assert_eq!(catalog.items[1].images.len(), 2);
+        assert!(catalog.items[1].images[1].url.is_empty());
         assert!(catalog.items[2].properties().is_err());
         assert_eq!(catalog.items[3].content_type, "FUTURE");
+        assert!(catalog.items[4].properties().is_err());
+        assert!(catalog.items[5].content_type.is_empty());
         let mut counts = api.player_counts().await.unwrap();
         assert_eq!(counts.len(), 3);
         assert_eq!(
@@ -354,6 +375,9 @@ async fn gatherings_rejects_wrong_containers_null_results_and_invalid_join_field
         (false, br#"{"data":[]}"#),
         (false, br#"{"data":null}"#),
         (false, br#"{"data":{"Items":[[]]}}"#),
+        (false, br#"{"data":{"Items":[{"Images":[[]]}]}}"#),
+        (false, br#"{"data":{"Items":[{"Images":[false]}]}}"#),
+        (false, br#"{"data":{"Items":[{"Title":{"en-US":false}}]}}"#),
         (true, br#"{"result":[]}"#),
         (true, br#"{"result":null}"#),
         (
