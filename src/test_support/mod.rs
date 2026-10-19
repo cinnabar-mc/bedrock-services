@@ -99,6 +99,12 @@ impl HostedAuthority {
 }
 
 impl HostedPeer {
+    /// Makes the actual revocation event the next ready delivery on this same original socket.
+    pub async fn revoke_member_ready(&mut self, socket: &mut RtaSocket) {
+        self.revoke_member().await;
+        rta::websocket::test_support::retain_ready_resync(socket).await;
+    }
+
     /// Sends one actual protocol resync so the owning host performs its real signed refresh.
     pub async fn revoke_member(&mut self) {
         assert!(self.scenario.revocation());

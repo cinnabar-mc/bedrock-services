@@ -37,7 +37,7 @@ async fn hosted_revocation_refreshes_through_the_original_account_owned_route() 
         )
         .await;
         let original_change = session.description().change_number.unwrap();
-        peer.revoke_member().await;
+        peer.revoke_member_ready(&mut socket).await;
         let event = socket.drive().await.unwrap();
         let update = account.mpsd().sync(&mut session).await.unwrap();
         let newer = session.description().change_number.unwrap() > original_change;
