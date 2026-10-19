@@ -190,7 +190,7 @@ mod tests {
             let inner: Value =
                 serde_json::from_str(envelope["params"]["message"].as_str().unwrap()).unwrap();
             assert_eq!(inner["method"], wire::WEBRTC);
-            assert_eq!(inner["params"]["netherNetId"].as_u64(), Some(network_id));
+            assert_eq!(inner["params"]["netherNetId"], network_id.to_string());
             assert_eq!(inner["params"]["message"], "fixture-offer");
             peer.send_text(
                 &json!({"jsonrpc":"2.0", "id":envelope["id"], "result":null}).to_string(),
