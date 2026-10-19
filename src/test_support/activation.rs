@@ -3,7 +3,9 @@
 mod renewal;
 mod script;
 mod sockets;
+pub(super) mod visitors;
 pub use renewal::HostedRenewalObservation;
+pub use visitors::{HostedActivationVisitors, HostedVisitor, HostedVisitorsObservation};
 pub(crate) mod transport;
 
 use super::*;
@@ -77,6 +79,7 @@ struct State {
     session_id: Option<Uuid>,
     verified_http_requests: usize,
     renewal: Option<renewal::Observed>,
+    visitors: Option<visitors::Observed>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -164,6 +167,41 @@ pub(super) async fn acquire(
     audience: String,
     renewal: bool,
 ) -> HostedAuthority {
+    acquire_inner(
+        auth,
+        minecraft,
+        max_members,
+        title_id,
+        audience,
+        if renewal {
+            Scenario::Renewal
+        } else {
+            Scenario::Base
+        },
+    )
+    .await
+}
+
+enum Scenario {
+    Base,
+    Renewal,
+    Visitors(visitors::Services),
+}
+
+/// Shares the original three service tasks with the fixed optional guest service sockets.
+async fn acquire_inner(
+    auth: xbox::Config,
+    minecraft: minecraft::Config,
+    max_members: NonZeroU32,
+    title_id: String,
+    audience: String,
+    scenario: Scenario,
+) -> HostedAuthority {
+    let (renewal, visitors) = match scenario {
+        Scenario::Base => (false, None),
+        Scenario::Renewal => (true, None),
+        Scenario::Visitors(services) => (false, Some(services)),
+    };
     assert!(usize::try_from(max_members.get()).is_ok_and(|limit| limit <= mpsd::MAX_MEMBERS));
     assert!(
         title_id
@@ -201,6 +239,7 @@ pub(super) async fn acquire(
         session_id: None,
         verified_http_requests: 0,
         renewal: renewal.then(renewal::Observed::default),
+        visitors: visitors.as_ref().map(|_| visitors::Observed::default()),
     }));
     let peer = Peer {
         public_key,
@@ -209,6 +248,7 @@ pub(super) async fn acquire(
         messaging: Some(tokio::spawn(sockets::messaging(
             messaging,
             Arc::clone(&state),
+            visitors,
         ))),
     };
     let game_version = minecraft.game_version.clone();

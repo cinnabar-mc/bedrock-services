@@ -22,7 +22,8 @@ pub(super) fn service_header() -> String {
 /// Serves exactly the retained original HTTP task through verified fixture TLS.
 pub(super) async fn serve(listener: TcpListener, state: Shared, version: String) {
     let renewal = state.lock().unwrap().renewal.is_some();
-    for step in 1..=EXCHANGES + usize::from(renewal) {
+    let visitors = state.lock().unwrap().visitors.is_some();
+    for step in 1..=EXCHANGES + usize::from(renewal) + 4 * usize::from(visitors) {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut stream = rta::websocket::test_support::acceptor()
             .accept(tcp)
@@ -40,14 +41,31 @@ pub(super) async fn serve(listener: TcpListener, state: Shared, version: String)
             } else {
                 step - usize::from(renewal && step > EXCHANGES - 1)
             };
-            let response = respond(
-                oracle_step,
-                target,
-                headers,
-                &bytes[end..end + length],
-                &mut state,
-                &version,
-            );
+            let mut response = if visitors && step >= 18 {
+                super::visitors::respond(
+                    step,
+                    target,
+                    headers,
+                    &bytes[end..end + length],
+                    &mut state,
+                )
+            } else {
+                respond(
+                    oracle_step,
+                    target,
+                    headers,
+                    &bytes[end..end + length],
+                    &mut state,
+                    &version,
+                )
+            };
+            if visitors && step == 13 {
+                super::visitors::created(&mut state);
+                response.2 = state.snapshot.clone();
+            }
+            if visitors && step == 15 {
+                super::visitors::acknowledged(&state);
+            }
             if let Some(original_public_key) = original_public_key {
                 assert_eq!(state.minted_public_key, original_public_key);
                 state.renewal.as_mut().unwrap().minted_public_key = Some(original_public_key);
@@ -63,6 +81,9 @@ pub(super) async fn serve(listener: TcpListener, state: Shared, version: String)
         let mut extra = extra;
         extra.push(("Date", super::super::script::DATE));
         write_response(&mut stream, status, extra, &body).await;
+        if visitors && (18..=21).contains(&step) {
+            super::visitors::flushed(&mut state.lock().unwrap());
+        }
     }
 }
 
@@ -232,21 +253,7 @@ fn directory(
     body: &[u8],
     state: &mut State,
 ) -> (u16, Vec<(&'static str, &'static str)>, Value) {
-    verify(
-        target,
-        headers,
-        body,
-        state.proof.as_ref().unwrap(),
-        SIGNED_HEADERS,
-    );
-    assert_eq!(
-        header(headers, "authorization"),
-        "XBL3.0 x=synthetic;directory"
-    );
-    assert_eq!(
-        header(headers, "x-xbl-contract-version"),
-        DIRECTORY_CONTRACT
-    );
+    verify_directory(target, headers, body, state);
     if step == 13 {
         let url = url::Url::parse(&format!("https://fixture.invalid{target}")).unwrap();
         let parts = url
@@ -296,17 +303,7 @@ fn directory(
             json!({"id":Uuid::from_u128(0x7110),"senderXuid":super::super::script::HOST_XUID,"invitedXuid":state.invited_xuid,"sessionRef":reference}),
         );
     }
-    let mut expected =
-        url::Url::parse(crate::xbox::mpsd::test_support::DIRECTORY_ENDPOINT).unwrap();
-    expected.path_segments_mut().unwrap().extend([
-        "serviceconfigs",
-        &reference.service_config_id().to_string(),
-        "sessionTemplates",
-        reference.template_name(),
-        "sessions",
-        reference.name(),
-    ]);
-    assert_eq!(target, expected.path());
+    verify_target(target, state);
     match step {
         13 => {
             assert!(headers.starts_with("PUT "));
@@ -400,4 +397,39 @@ fn directory(
         }
         _ => panic!("unexpected activation directory exchange"),
     }
+}
+
+/// Independently verifies the original signed directory service request before any scenario response.
+pub(super) fn verify_directory(target: &str, headers: &str, body: &[u8], state: &State) {
+    verify(
+        target,
+        headers,
+        body,
+        state.proof.as_ref().unwrap(),
+        SIGNED_HEADERS,
+    );
+    assert_eq!(
+        header(headers, "authorization"),
+        "XBL3.0 x=synthetic;directory"
+    );
+    assert_eq!(
+        header(headers, "x-xbl-contract-version"),
+        DIRECTORY_CONTRACT
+    );
+}
+
+/// Matches only the same original concrete session resource, never a caller-supplied replacement.
+pub(super) fn verify_target(target: &str, state: &State) {
+    let reference = state.reference.as_ref().unwrap();
+    let mut expected =
+        url::Url::parse(crate::xbox::mpsd::test_support::DIRECTORY_ENDPOINT).unwrap();
+    expected.path_segments_mut().unwrap().extend([
+        "serviceconfigs",
+        &reference.service_config_id().to_string(),
+        "sessionTemplates",
+        reference.template_name(),
+        "sessions",
+        reference.name(),
+    ]);
+    assert_eq!(target, expected.path());
 }

@@ -211,6 +211,12 @@ drain pending completions and finish the bounded close handshake.
 With `test-support` and `signaling-tokio`, the hidden
 `signaling::websocket::test_support::pair` supplies a real loopback socket and
 caller-owned text peer for integration tests. It supplies no account authority.
+The fixed `test_support::HostedAuthority::acquire_activation_visitors` scenario
+adds two such guest sockets to the original protected host fixture, retaining its
+three service tasks and checking four conditional occupancy writes. Guest service
+headers are synthetic; callers must supply independently verified signed game
+identities. `finish_activation_visitors` joins the original tasks and returns their
+actual socket and request observations, without creating session authority.
 
 Request admission returns `Error::Limit` without publishing a handle or frame when
 a queue is full; retry local admission after driving. A reserved callback-response
