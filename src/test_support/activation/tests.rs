@@ -130,3 +130,42 @@ async fn finished(servers: &[tokio::task::AbortHandle]) -> bool {
     .await
     .is_ok()
 }
+
+/// A real mint-only caller joins every unused original listener without fabricating hosting requests.
+#[tokio::test]
+async fn aborted_activation_joins_original_servers_and_reports_only_the_minted_prefix() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let HostedAuthority {
+            mut account, peer, ..
+        } = HostedAuthority::acquire_activation(
+            xbox::Config::default(),
+            minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
+            NonZeroU32::new(2).unwrap(),
+            "42".into(),
+            "fixture-audience".into(),
+        )
+        .await;
+        let key = SigningKey::from_slice(&[1; 48]).unwrap();
+        let minted = account
+            .multiplayer_token(key.verifying_key())
+            .await
+            .unwrap();
+        let public = minted.public_key_der().to_vec();
+        let activation = peer.activation.as_ref().unwrap();
+        let servers = [
+            peer.http.as_ref().unwrap().abort_handle(),
+            activation.rta.as_ref().unwrap().abort_handle(),
+            activation.messaging.as_ref().unwrap().abort_handle(),
+        ];
+        let observed = peer.abort_activation().await;
+        assert!(servers.iter().all(tokio::task::AbortHandle::is_finished));
+        assert_eq!(observed.verified_http_requests, 9);
+        assert_eq!(observed.minted_public_key, public);
+        assert_eq!(
+            public,
+            key.verifying_key().to_public_key_der().unwrap().as_bytes()
+        );
+    })
+    .await
+    .unwrap();
+}
