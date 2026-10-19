@@ -12,6 +12,8 @@ pub struct ConnectionRequest {
     pub(crate) url: Url,
     pub(crate) authorization: Arc<Authorization>,
     pub(crate) ping_interval: Duration,
+    #[cfg(feature = "test-support")]
+    pub(crate) hosted_transport: Option<Arc<crate::test_support::activation::transport::Transport>>,
 }
 
 impl ConnectionRequest {

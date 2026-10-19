@@ -4,7 +4,9 @@
 //! Its finite HTTP peer and verified local TLS peer run on the caller's runtime.
 //! Methods panic on a scenario mismatch; this is not a configurable service client.
 
+pub(crate) mod activation;
 mod script;
+pub use activation::{HostedActivationObservation, HostedSocketTerminal};
 
 /// Non-retail issuer returned only by the fixed hosted-world discovery response.
 pub const HOSTED_WORLD_ISSUER: &str = "https://hosted-world-fixture.invalid/tenant/";
@@ -58,9 +60,22 @@ pub struct HostedPeer {
     scenario: script::Scenario,
     auth: xbox::Config,
     minecraft: minecraft::Config,
+    activation: Option<activation::Peer>,
 }
 
 impl HostedAuthority {
+    /// Acquires the finite real public-activation sibling without creating membership or an accepting route.
+    /// Its original service requests use only verified loopback TLS on this same account owner.
+    pub async fn acquire_activation(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+        max_members: std::num::NonZeroU32,
+        title_id: String,
+        audience: String,
+    ) -> Self {
+        activation::acquire(auth, minecraft, max_members, title_id, audience).await
+    }
+
     /// Adds one actual public discovery response before the original revoke/refresh/leave sequence.
     /// Only this synthetic Minecraft account's private HTTP owner uses the fixed fixture route.
     pub async fn acquire_world(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
@@ -72,6 +87,7 @@ impl HostedAuthority {
             scenario,
             auth,
             minecraft,
+            activation: None,
         };
         let (mut account, identity) = peer.acquire_account().await;
         account.hosted_fixture_http(address);
@@ -99,6 +115,7 @@ impl HostedAuthority {
             scenario,
             auth,
             minecraft,
+            activation: None,
         };
         let (account, identity) = peer.acquire_account().await;
         Self {
@@ -126,6 +143,7 @@ impl HostedAuthority {
             scenario,
             auth,
             minecraft,
+            activation: None,
         };
         let (account, identity) = peer.acquire_account().await;
         Self {
@@ -146,6 +164,7 @@ impl HostedAuthority {
             scenario,
             auth,
             minecraft,
+            activation: None,
         };
         let (account, identity) = peer.acquire_account().await;
         Self {
@@ -165,6 +184,7 @@ impl HostedAuthority {
             scenario,
             auth,
             minecraft,
+            activation: None,
         };
         let (account, identity) = peer.acquire_account().await;
         Self {
@@ -185,6 +205,7 @@ impl HostedAuthority {
             scenario,
             auth,
             minecraft,
+            activation: None,
         };
         let (account, identity) = peer.acquire_account().await;
         Self {
@@ -196,6 +217,26 @@ impl HostedAuthority {
 }
 
 impl HostedPeer {
+    /// Borrows only the independent public fixture issuer key for the existing application verifier cache.
+    pub fn issuer_public_key_der(&self) -> &[u8] {
+        &self
+            .activation
+            .as_ref()
+            .expect("public activation scenario")
+            .public_key
+    }
+
+    /// Observes original server retirement after the caller closes its actual public active owner.
+    /// Joins the same finite HTTP/RTA/Messaging tasks; it never creates or closes a replacement socket.
+    pub async fn finish_activation(mut self) -> HostedActivationObservation {
+        let http = self.http.take().expect("actual activation HTTP owner");
+        self.activation
+            .take()
+            .expect("public activation scenario")
+            .finish(http)
+            .await
+    }
+
     /// Retains the actual next RTA Resync on the original socket before the fixed unchanged304 read.
     /// This emits no fabricated event and performs no directory/approval state mutation.
     pub async fn resync_unchanged_ready(&mut self, socket: &mut RtaSocket) {

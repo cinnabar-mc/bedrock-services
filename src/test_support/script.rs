@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 pub(super) const HOST_XUID: &str = "123";
 pub(super) const CONNECTION: Uuid = Uuid::from_u128(0x7001);
-const DATE: &str = "Sun, 18 Oct 2026 12:00:00 GMT";
+pub(super) const DATE: &str = "Sun, 18 Oct 2026 12:00:00 GMT";
 const HTTP_EXCHANGES: usize = 14;
 
 #[derive(Clone)]
@@ -39,6 +39,11 @@ struct State {
 }
 
 impl Scenario {
+    /// Retains no alternate authority for the separately scripted public-activation sibling.
+    pub(super) fn activation() -> Self {
+        Self(Arc::new(Mutex::new(State::default())))
+    }
+
     /// Identifies only the finite sibling scenario that exercises a real directory refresh.
     pub(super) fn revocation(&self) -> bool {
         let state = self.0.lock().unwrap();
