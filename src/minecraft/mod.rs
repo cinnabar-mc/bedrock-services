@@ -2,6 +2,7 @@
 
 mod config;
 mod entity;
+pub mod gatherings;
 pub mod player_messaging;
 pub mod profile;
 mod signaling;
@@ -40,6 +41,8 @@ pub struct Minecraft {
     realms_environment: Option<serde_json::Value>,
     persona_environment: Option<serde_json::Value>,
     messaging_environment: Option<serde_json::Value>,
+    gatherings_environment: Option<serde_json::Value>,
+    gatherings_state: gatherings::State,
     messaging_state: player_messaging::State,
     realms_state: realms::State,
     playfab: Option<Arc<playfab::Session>>,
@@ -69,6 +72,8 @@ struct Environments {
     persona: Option<serde_json::Value>,
     #[serde(default)]
     messaging: Option<serde_json::Value>,
+    #[serde(default)]
+    gatherings: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +110,8 @@ impl Minecraft {
             realms_environment: None,
             persona_environment: None,
             messaging_environment: None,
+            gatherings_environment: None,
+            gatherings_state: gatherings::State::default(),
             messaging_state: player_messaging::State::new(),
             realms_state: realms::State::default(),
             session_id: uuid::Uuid::new_v4(),
@@ -428,6 +435,7 @@ impl Minecraft {
             .realms_frontend_bedrock_legacy;
         self.persona_environment = discovery.service_environments.persona;
         self.messaging_environment = discovery.service_environments.messaging;
+        self.gatherings_environment = discovery.service_environments.gatherings;
         self.environment = Some(environment);
         Ok(())
     }
