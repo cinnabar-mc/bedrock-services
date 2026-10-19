@@ -3,8 +3,10 @@
 mod renewal;
 mod script;
 mod sockets;
+mod subscription;
 pub(super) mod visitors;
 pub use renewal::HostedRenewalObservation;
+pub use subscription::HostedSubscriptionHold;
 pub use visitors::{HostedActivationVisitors, HostedVisitor, HostedVisitorsObservation};
 pub(crate) mod transport;
 
@@ -80,6 +82,8 @@ struct State {
     verified_http_requests: usize,
     renewal: Option<renewal::Observed>,
     visitors: Option<visitors::Observed>,
+    subscription_hold: Option<subscription::SubscriptionHold>,
+    initial_turn_seconds: u64,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -185,7 +189,49 @@ pub(super) async fn acquire(
 enum Scenario {
     Base,
     Renewal,
+    ExpiringRenewal,
+    HeldSubscription(subscription::SubscriptionHold),
     Visitors(Box<visitors::Services>),
+}
+
+/// Holds only the original verified subscription acknowledgment in a fixed opt-in activation sibling.
+pub(super) async fn acquire_held_subscription(
+    auth: xbox::Config,
+    minecraft: minecraft::Config,
+    max_members: NonZeroU32,
+    title_id: String,
+    audience: String,
+) -> (HostedAuthority, HostedSubscriptionHold) {
+    let (hold, service) = subscription::hold();
+    let authority = acquire_inner(
+        auth,
+        minecraft,
+        max_members,
+        title_id,
+        audience,
+        Scenario::HeldSubscription(service),
+    )
+    .await;
+    (authority, hold)
+}
+
+/// Sends one short initial TURN lease through the original renewal fixture's protected reader.
+pub(super) async fn acquire_expiring_renewal(
+    auth: xbox::Config,
+    minecraft: minecraft::Config,
+    max_members: NonZeroU32,
+    title_id: String,
+    audience: String,
+) -> HostedAuthority {
+    acquire_inner(
+        auth,
+        minecraft,
+        max_members,
+        title_id,
+        audience,
+        Scenario::ExpiringRenewal,
+    )
+    .await
 }
 
 /// Shares the original three service tasks with the fixed optional guest service sockets.
@@ -197,10 +243,12 @@ async fn acquire_inner(
     audience: String,
     scenario: Scenario,
 ) -> HostedAuthority {
-    let (renewal, visitors) = match scenario {
-        Scenario::Base => (false, None),
-        Scenario::Renewal => (true, None),
-        Scenario::Visitors(services) => (false, Some(*services)),
+    let (renewal, visitors, subscription_hold, initial_turn_seconds) = match scenario {
+        Scenario::Base => (false, None, None, renewal::INITIAL_SECONDS),
+        Scenario::Renewal => (true, None, None, renewal::INITIAL_SECONDS),
+        Scenario::ExpiringRenewal => (true, None, None, renewal::EXPIRING_SECONDS),
+        Scenario::HeldSubscription(hold) => (false, None, Some(hold), renewal::INITIAL_SECONDS),
+        Scenario::Visitors(services) => (false, Some(*services), None, renewal::INITIAL_SECONDS),
     };
     assert!(usize::try_from(max_members.get()).is_ok_and(|limit| limit <= mpsd::MAX_MEMBERS));
     assert!(
@@ -240,6 +288,8 @@ async fn acquire_inner(
         verified_http_requests: 0,
         renewal: renewal.then(renewal::Observed::default),
         visitors: visitors.as_ref().map(|_| visitors::Observed::default()),
+        subscription_hold,
+        initial_turn_seconds,
     }));
     let peer = Peer {
         public_key,
