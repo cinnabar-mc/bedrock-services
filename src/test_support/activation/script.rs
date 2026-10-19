@@ -160,8 +160,7 @@ fn respond(
             let expires = issued + time::Duration::seconds(300);
             let claims = json!({"iss":super::super::HOSTED_WORLD_ISSUER,"aud":state.audience,"sub":"hosted-fixture-host","xid":super::super::script::HOST_XUID,"xname":"Host","iat":issued.unix_timestamp(),"exp":expires.unix_timestamp(),"cpk":public});
             let header = URL_SAFE_NO_PAD.encode(
-                serde_json::to_vec(&json!({"alg":"RS256","kid":"hosted-activation-issuer"}))
-                    .unwrap(),
+                serde_json::to_vec(&json!({"alg":"RS256","kid":HOSTED_ACTIVATION_KEY_ID})).unwrap(),
             );
             let claims = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
             let input = format!("{header}.{claims}");

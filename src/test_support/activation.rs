@@ -16,6 +16,9 @@ use transport::Transport;
 const AUTH_ORIGIN: &str = "https://hosted-world-service.invalid/";
 const SIGNALING_ORIGIN: &str = "https://hosted-world-signaling.invalid/";
 const TITLE: &str = "AB12";
+/// Public key identifier shared by the finite issuer token and its application verifier cache.
+pub const HOSTED_ACTIVATION_KEY_ID: &str = "hosted-activation-issuer";
+
 const MESSAGING_ID: Uuid = Uuid::from_u128(0x7101);
 const EXCHANGES: usize = 19;
 

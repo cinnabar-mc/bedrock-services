@@ -6,7 +6,7 @@
 
 pub(crate) mod activation;
 mod script;
-pub use activation::{HostedActivationObservation, HostedSocketTerminal};
+pub use activation::{HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedSocketTerminal};
 
 /// Non-retail issuer returned only by the fixed hosted-world discovery response.
 pub const HOSTED_WORLD_ISSUER: &str = "https://hosted-world-fixture.invalid/tenant/";
