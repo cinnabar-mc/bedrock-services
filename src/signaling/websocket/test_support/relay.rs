@@ -111,15 +111,24 @@ where
                         parsed["method"].as_str(),
                         Some(wire::WEBRTC | wire::RECEIPT)
                     ));
-                    assert!(callbacks[target].len() < MAX_PENDING_REQUESTS);
-                    let callback = Uuid::new_v4();
-                    assert!(callbacks[target].insert(callback));
-                    let delivery = json!({"jsonrpc":"2.0","id":callback,"method":wire::RECEIVE,
-                        "params":{"From":identities[source],"Id":message,"Message":inner}});
-                    match target {
-                        0 => send(&mut host, delivery).await,
-                        1 => send(&mut first.socket, delivery).await,
-                        _ => send(&mut second.socket, delivery).await,
+                    let active = match target {
+                        0 => host.is_some(),
+                        1 => first.socket.is_some(),
+                        _ => second.socket.is_some(),
+                    };
+                    // Retirement can precede an already accepted receipt on another physical socket.
+                    // An absent recipient creates neither a callback nor a peer-delivery receipt.
+                    if active {
+                        assert!(callbacks[target].len() < MAX_PENDING_REQUESTS);
+                        let callback = Uuid::new_v4();
+                        assert!(callbacks[target].insert(callback));
+                        let delivery = json!({"jsonrpc":"2.0","id":callback,"method":wire::RECEIVE,
+                            "params":{"From":identities[source],"Id":message,"Message":inner}});
+                        match target {
+                            0 => send(&mut host, delivery).await,
+                            1 => send(&mut first.socket, delivery).await,
+                            _ => send(&mut second.socket, delivery).await,
+                        }
                     }
                     // Actual peer delivery is the peer's subsequent original RECEIPT, never this reply.
                     Value::Null
