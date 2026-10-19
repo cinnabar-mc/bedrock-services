@@ -64,16 +64,24 @@ impl Scenario {
 
 /// Starts exactly the original account/host/write, fresh account, restore and leave exchanges.
 pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
-    start_scenario(false).await
+    start_scenario(false, None).await
 }
 
 /// Reuses the original eight acquisition/acknowledgment exchanges before one revoke and leave.
 pub(super) async fn start_revocation() -> (SocketAddr, JoinHandle<()>, Scenario) {
-    start_scenario(true).await
+    start_scenario(true, None).await
 }
 
-/// Selects only these two fixed sequences; original fourteen exchange assertions stay shared.
-async fn start_scenario(revocation: bool) -> (SocketAddr, JoinHandle<()>, Scenario) {
+/// Adds the selected build's single unauthenticated discovery read to the fixed revocation sequence.
+pub(super) async fn start_world(version: &str) -> (SocketAddr, JoinHandle<()>, Scenario) {
+    start_scenario(true, Some(version.to_owned())).await
+}
+
+/// Selects only fixed sequences; original fourteen exchange assertions stay shared.
+async fn start_scenario(
+    revocation: bool,
+    world_version: Option<String>,
+) -> (SocketAddr, JoinHandle<()>, Scenario) {
     let scenario = Scenario(Arc::new(Mutex::new(State {
         revocation,
         ..Default::default()
@@ -82,12 +90,27 @@ async fn start_scenario(revocation: bool) -> (SocketAddr, JoinHandle<()>, Scenar
     let mut step = 0;
     let mut fresh_proof = None;
     let mut snapshot = Value::Null;
+    let world = world_version.is_some();
     let (address, task) = fixture_headers(move |target, headers, body| {
         step += 1;
         let mut response_headers = vec![("Date", DATE)];
         let mut status = 200;
+        if let Some(version) = &world_version {
+            if step == 9 {
+                assert_eq!(target, format!("/api/v1.0/discovery/MinecraftPE/builds/{version}"));
+                assert!(headers.starts_with("GET "));
+                assert!(header(headers, "authorization").is_empty());
+                assert!(header(headers, "signature").is_empty());
+                assert_eq!(header(headers, "user-agent"), crate::minecraft::USER_AGENT);
+                assert!(body.is_empty());
+                return (200, response_headers, json!({"result":{"serviceEnvironments":{"auth":{"prod":{
+                    "serviceUri":"https://hosted-world-service.invalid/",
+                    "playFabTitleId":"AB12", "issuer":super::HOSTED_WORLD_ISSUER
+                }}}}}));
+            }
+        }
         if revocation && step > 8 {
-            return revocation::respond(step, target, headers, body, &state, &mut snapshot);
+            return revocation::respond(step - usize::from(world), target, headers, body, &state, &mut snapshot);
         }
         let response = match step {
             1 | 9 => {
@@ -186,6 +209,6 @@ async fn start_scenario(revocation: bool) -> (SocketAddr, JoinHandle<()>, Scenar
             _ => panic!("unexpected hosted authority exchange"),
         };
         (status, response_headers, response)
-    }, if revocation { 10 } else { HTTP_EXCHANGES }).await;
+    }, if revocation { 10 + usize::from(world) } else { HTTP_EXCHANGES }).await;
     (address, task, scenario)
 }

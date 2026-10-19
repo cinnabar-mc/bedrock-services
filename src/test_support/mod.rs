@@ -6,6 +6,9 @@
 
 mod script;
 
+/// Non-retail issuer returned only by the fixed hosted-world discovery response.
+pub const HOSTED_WORLD_ISSUER: &str = "https://hosted-world-fixture.invalid/tenant/";
+
 use crate::{
     http::Http,
     minecraft::{self, Minecraft},
@@ -58,6 +61,27 @@ pub struct HostedPeer {
 }
 
 impl HostedAuthority {
+    /// Adds one actual public discovery response before the original revoke/refresh/leave sequence.
+    /// Only this synthetic Minecraft account's private HTTP owner uses the fixed fixture route.
+    pub async fn acquire_world(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
+        let (address, task, scenario) = script::start_world(&minecraft.game_version).await;
+        let mut peer = HostedPeer {
+            address,
+            http: Some(task),
+            server: None,
+            scenario,
+            auth,
+            minecraft,
+        };
+        let (mut account, identity) = peer.acquire_account().await;
+        account.http = Http::fixture_agent(address, minecraft::USER_AGENT);
+        Self {
+            account,
+            identity,
+            peer,
+        }
+    }
+
     /// Acquires the finite revocation sibling; call host, acknowledge, revoke, refresh, leave and finish.
     pub async fn acquire_revocation(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
         let (address, task, scenario) = script::start_revocation().await;
@@ -308,3 +332,6 @@ mod tests;
 
 #[cfg(test)]
 mod revocation_tests;
+
+#[cfg(test)]
+mod world_tests;
