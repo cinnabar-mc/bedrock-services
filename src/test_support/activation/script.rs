@@ -21,7 +21,8 @@ pub(super) fn service_header() -> String {
 
 /// Serves exactly the retained original HTTP task through verified fixture TLS.
 pub(super) async fn serve(listener: TcpListener, state: Shared, version: String) {
-    for step in 1..=EXCHANGES {
+    let renewal = state.lock().unwrap().renewal.is_some();
+    for step in 1..=EXCHANGES + usize::from(renewal) {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut stream = rta::websocket::test_support::acceptor()
             .accept(tcp)
@@ -32,14 +33,25 @@ pub(super) async fn serve(listener: TcpListener, state: Shared, version: String)
         let target = headers.split_whitespace().nth(1).unwrap();
         let (status, extra, response) = {
             let mut state = state.lock().unwrap();
+            let mint = renewal && step == EXCHANGES - 1;
+            let original_public_key = mint.then(|| state.minted_public_key.clone());
+            let oracle_step = if mint {
+                9
+            } else {
+                step - usize::from(renewal && step > EXCHANGES - 1)
+            };
             let response = respond(
-                step,
+                oracle_step,
                 target,
                 headers,
                 &bytes[end..end + length],
                 &mut state,
                 &version,
             );
+            if let Some(original_public_key) = original_public_key {
+                assert_eq!(state.minted_public_key, original_public_key);
+                state.renewal.as_mut().unwrap().minted_public_key = Some(original_public_key);
+            }
             state.verified_http_requests = step;
             response
         };

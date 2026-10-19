@@ -97,7 +97,7 @@ pub(super) async fn rta(listener: TcpListener, state: Shared) -> HostedSocketTer
 }
 
 /// Provides actual correlated TURN frames on the same protected service socket, without creating a session.
-pub(super) async fn messaging(listener: TcpListener) -> HostedSocketTerminal {
+pub(super) async fn messaging(listener: TcpListener, state: Shared) -> HostedSocketTerminal {
     let (tcp, _) = listener.accept().await.unwrap();
     let stream = tls::acceptor().accept(tcp).await.unwrap();
     let (request, mut socket) = ServerBuilder::new()
@@ -134,5 +134,42 @@ pub(super) async fn messaging(listener: TcpListener) -> HostedSocketTerminal {
         ))
         .await
         .unwrap();
+    let original_request = message["id"].as_u64().unwrap();
+    let renewal = {
+        let mut state = state.lock().unwrap();
+        if let Some(renewal) = &mut state.renewal {
+            renewal.original_turn_request = Some(original_request);
+            true
+        } else {
+            false
+        }
+    };
+    if renewal {
+        let message = socket.next().await.unwrap().unwrap();
+        assert!(message.is_text());
+        let message: Value = serde_json::from_slice(message.as_payload()).unwrap();
+        assert_eq!(
+            message["method"],
+            crate::signaling::websocket::test_support::turn_method()
+        );
+        let refreshed_request = message["id"].as_u64().unwrap();
+        assert_ne!(refreshed_request, original_request);
+        socket
+            .send(Message::text(
+                json!({"jsonrpc":"2.0", "id":message["id"], "result":{
+                    "ExpirationInSeconds":super::renewal::REFRESH_SECONDS, "TurnAuthServers":[],
+                }})
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        state
+            .lock()
+            .unwrap()
+            .renewal
+            .as_mut()
+            .unwrap()
+            .refreshed_turn_request = Some(refreshed_request);
+    }
     terminal(&mut socket).await
 }

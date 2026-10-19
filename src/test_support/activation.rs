@@ -1,7 +1,9 @@
 //! One finite original-account/public-activation service scenario, entirely caller-runtime owned.
 
+mod renewal;
 mod script;
 mod sockets;
+pub use renewal::HostedRenewalObservation;
 pub(crate) mod transport;
 
 use super::*;
@@ -74,6 +76,7 @@ struct State {
     headers: Vec<String>,
     session_id: Option<Uuid>,
     verified_http_requests: usize,
+    renewal: Option<renewal::Observed>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -159,6 +162,7 @@ pub(super) async fn acquire(
     max_members: NonZeroU32,
     title_id: String,
     audience: String,
+    renewal: bool,
 ) -> HostedAuthority {
     assert!(usize::try_from(max_members.get()).is_ok_and(|limit| limit <= mpsd::MAX_MEMBERS));
     assert!(
@@ -196,12 +200,16 @@ pub(super) async fn acquire(
         headers,
         session_id: None,
         verified_http_requests: 0,
+        renewal: renewal.then(renewal::Observed::default),
     }));
     let peer = Peer {
         public_key,
         state: Arc::clone(&state),
         rta: Some(tokio::spawn(sockets::rta(rta, Arc::clone(&state)))),
-        messaging: Some(tokio::spawn(sockets::messaging(messaging))),
+        messaging: Some(tokio::spawn(sockets::messaging(
+            messaging,
+            Arc::clone(&state),
+        ))),
     };
     let game_version = minecraft.game_version.clone();
     let task = tokio::spawn(script::serve(http, Arc::clone(&state), game_version));
