@@ -78,12 +78,17 @@ pub(super) struct Peer {
 
 impl Peer {
     /// Joins every retained original server before interpreting any completion result.
-    pub(super) async fn finish(mut self, http: JoinHandle<()>) -> HostedActivationObservation {
+    pub(super) async fn finish(
+        &mut self,
+        http: &mut JoinHandle<()>,
+    ) -> HostedActivationObservation {
         let (http, rta, messaging) = tokio::join!(
             http,
-            self.rta.take().unwrap(),
-            self.messaging.take().unwrap()
+            self.rta.as_mut().unwrap(),
+            self.messaging.as_mut().unwrap()
         );
+        self.rta = None;
+        self.messaging = None;
         http.unwrap();
         let rta = rta.unwrap();
         let messaging = messaging.unwrap();

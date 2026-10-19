@@ -229,12 +229,15 @@ impl HostedPeer {
     /// Observes original server retirement after the caller closes its actual public active owner.
     /// Joins the same finite HTTP/RTA/Messaging tasks; it never creates or closes a replacement socket.
     pub async fn finish_activation(mut self) -> HostedActivationObservation {
-        let http = self.http.take().expect("actual activation HTTP owner");
-        self.activation
-            .take()
+        let observed = self
+            .activation
+            .as_mut()
             .expect("public activation scenario")
-            .finish(http)
-            .await
+            .finish(self.http.as_mut().expect("actual activation HTTP owner"))
+            .await;
+        self.http = None;
+        self.activation = None;
+        observed
     }
 
     /// Retains the actual next RTA Resync on the original socket before the fixed unchanged304 read.
