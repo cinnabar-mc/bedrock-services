@@ -188,7 +188,8 @@ fn respond(
         10 => {
             assert_eq!(target, "/api/v1.0/configuration");
             assert!(headers.starts_with("GET ") && body.is_empty());
-            service_request(headers, state);
+            assert_eq!(header(headers, "authorization"), service_header());
+            assert!(header(headers, "session-id").is_empty());
             json!({"result":{"signalingUri":SIGNALING_ORIGIN.replace("https://","wss://"),"pingFrequency":"00:01:00"}})
         }
         13..=19 => return directory(step, target, headers, body, state),
