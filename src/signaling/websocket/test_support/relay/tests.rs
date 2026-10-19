@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::signaling::{Event, ReceivedSignal, RequestId, websocket::SocketError};
+use futures_util::FutureExt;
 use std::{
     panic::AssertUnwindSafe,
     time::{Duration, Instant},
