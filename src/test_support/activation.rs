@@ -185,7 +185,7 @@ pub(super) async fn acquire(
 enum Scenario {
     Base,
     Renewal,
-    Visitors(visitors::Services),
+    Visitors(Box<visitors::Services>),
 }
 
 /// Shares the original three service tasks with the fixed optional guest service sockets.
@@ -200,7 +200,7 @@ async fn acquire_inner(
     let (renewal, visitors) = match scenario {
         Scenario::Base => (false, None),
         Scenario::Renewal => (true, None),
-        Scenario::Visitors(services) => (false, Some(services)),
+        Scenario::Visitors(services) => (false, Some(*services)),
     };
     assert!(usize::try_from(max_members.get()).is_ok_and(|limit| limit <= mpsd::MAX_MEMBERS));
     assert!(

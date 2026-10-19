@@ -87,7 +87,7 @@ pub(in crate::test_support) async fn acquire(
     audience: String,
     deadline: Instant,
 ) -> HostedActivationVisitors {
-    assert!(max_members.get() >= u32::try_from(XUIDS.len()).unwrap() + 1);
+    assert!(max_members.get() > u32::try_from(XUIDS.len()).unwrap());
     assert!(deadline > Instant::now());
     tokio::time::timeout_at(deadline.into(), async {
         let (first, first_peer) = messaging::pair(NETWORK_IDS[0]).await;
@@ -98,10 +98,10 @@ pub(in crate::test_support) async fn acquire(
             max_members,
             title_id,
             audience,
-            Scenario::Visitors(Services {
+            Scenario::Visitors(Box::new(Services {
                 peers: [first_peer, second_peer],
                 deadline,
-            }),
+            })),
         )
         .await;
         let mut sockets = [first, second].into_iter();
