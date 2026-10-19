@@ -7,6 +7,7 @@ fn publication(binding: Binding) -> Publish {
         binding,
         member: MemberData::default(),
         constants: None,
+        max_members: None,
         properties: None,
         join: Restriction::Followed,
         read: Restriction::Followed,
