@@ -60,10 +60,10 @@ pub struct CatalogItem {
     #[serde(rename = "IsHidden", deserialize_with = "null_default")]
     pub hidden: bool,
     /// Original locale keys and text, without guessed fallback.
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "localized_text")]
     pub title: BTreeMap<String, String>,
     /// Original locale keys and description text.
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "localized_text")]
     pub description: BTreeMap<String, String>,
     /// Untrusted image URLs; this service never fetches them.
     #[serde(deserialize_with = "object_list")]
@@ -267,11 +267,22 @@ fn null_object<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(
         .unwrap_or_default())
 }
 
-/// Decodes only object-shaped list members; null lists are empty, as in the baseline.
-fn object_list<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
-    Ok(Option::<Vec<Object<T>>>::deserialize(d)?
+/// Retains null struct entries as defaults while refusing positional arrays or unrelated scalars.
+fn object_list<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(
+    d: D,
+) -> Result<Vec<T>, D::Error> {
+    Ok(Option::<Vec<Option<Object<T>>>>::deserialize(d)?
         .unwrap_or_default()
         .into_iter()
-        .map(|value| value.0)
+        .map(|value| value.map(|value| value.0).unwrap_or_default())
+        .collect())
+}
+
+/// Preserves locale keys and null string values as empty text without accepting other value types.
+fn localized_text<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, String>, D::Error> {
+    Ok(Option::<BTreeMap<String, Option<String>>>::deserialize(d)?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(locale, value)| (locale, value.unwrap_or_default()))
         .collect())
 }
