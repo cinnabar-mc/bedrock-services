@@ -248,3 +248,6 @@ mod tests {
         .unwrap();
     }
 }
+
+#[cfg(feature = "test-support")]
+pub(crate) mod relay;

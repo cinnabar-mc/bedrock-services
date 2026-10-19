@@ -8,7 +8,8 @@ pub(crate) mod activation;
 mod script;
 pub use activation::{
     HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedActivationPrefix,
-    HostedRenewalObservation, HostedSocketTerminal,
+    HostedActivationVisitors, HostedRenewalObservation, HostedSocketTerminal, HostedVisitor,
+    HostedVisitorsObservation,
 };
 
 /// Non-retail issuer returned only by the fixed hosted-world discovery response.
@@ -91,6 +92,21 @@ impl HostedAuthority {
         audience: String,
     ) -> Self {
         activation::acquire(auth, minecraft, max_members, title_id, audience, false).await
+    }
+
+    /// Adds exactly two synthetic guest service sockets to the original protected host scenario.
+    /// Game identity and admission must still be verified by the application's real signed Login path.
+    /// The supplied original deadline bounds the fixed service relay; no retail guest account is acquired.
+    pub async fn acquire_activation_visitors(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+        max_members: std::num::NonZeroU32,
+        title_id: String,
+        audience: String,
+        deadline: Instant,
+    ) -> HostedActivationVisitors {
+        activation::visitors::acquire(auth, minecraft, max_members, title_id, audience, deadline)
+            .await
     }
 
     /// Adds one actual same-key mint and fresh TURN request before the original activation cleanup.

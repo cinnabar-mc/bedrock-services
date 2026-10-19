@@ -97,7 +97,11 @@ pub(super) async fn rta(listener: TcpListener, state: Shared) -> HostedSocketTer
 }
 
 /// Provides actual correlated TURN frames on the same protected service socket, without creating a session.
-pub(super) async fn messaging(listener: TcpListener, state: Shared) -> HostedSocketTerminal {
+pub(super) async fn messaging(
+    listener: TcpListener,
+    state: Shared,
+    visitors: Option<super::visitors::Services>,
+) -> HostedSocketTerminal {
     let (tcp, _) = listener.accept().await.unwrap();
     let stream = tls::acceptor().accept(tcp).await.unwrap();
     let (request, mut socket) = ServerBuilder::new()
@@ -117,6 +121,9 @@ pub(super) async fn messaging(listener: TcpListener, state: Shared) -> HostedSoc
             .unwrap(),
         super::script::service_header()
     );
+    if let Some(visitors) = visitors {
+        return visitors.run(socket, state).await;
+    }
     let message = socket.next().await.unwrap().unwrap();
     assert!(message.is_text());
     let message: Value = serde_json::from_slice(message.as_payload()).unwrap();
