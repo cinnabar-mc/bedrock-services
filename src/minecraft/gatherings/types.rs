@@ -106,7 +106,7 @@ pub struct Image {
     pub url: String,
 }
 
-/// Known title properties; unknown metadata remains in the original card's raw JSON.
+/// Catalog display fields; unused metadata remains in the original card's raw JSON.
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DisplayProperties {
@@ -130,30 +130,6 @@ pub struct DisplayProperties {
     /// Advertised activities in original order.
     #[serde(deserialize_with = "object_list")]
     pub available_games: Vec<AvailableGame>,
-    /// Display creator name, not authenticated account identity.
-    #[serde(deserialize_with = "null_default")]
-    pub creator_name: String,
-    /// Original service creator identifier.
-    #[serde(deserialize_with = "null_default")]
-    pub original_creator_id: String,
-    /// Informational lower client-version label.
-    #[serde(deserialize_with = "null_default")]
-    pub min_client_version: String,
-    /// Informational upper client-version label, never a protocol acceptance rule.
-    #[serde(deserialize_with = "null_default")]
-    pub max_client_version: String,
-    /// Service's string-encoded Xbox requirement label.
-    #[serde(rename = "requireXBL", deserialize_with = "null_default")]
-    pub require_xbl: String,
-    /// Marketplace identifier, never opened by the SDK.
-    #[serde(rename = "storePageId", deserialize_with = "null_default")]
-    pub store_page_id: String,
-    /// Original optional allow-list metadata, not an SDK egress override.
-    #[serde(rename = "whitelistUrl", deserialize_with = "null_default")]
-    pub whitelist_url: String,
-    /// Original optional allow-list metadata.
-    #[serde(rename = "allowListUrl", deserialize_with = "null_default")]
-    pub allow_list_url: String,
 }
 
 /// One advertised mode/activity, without implicit image resolution.
