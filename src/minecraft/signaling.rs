@@ -57,6 +57,8 @@ impl Minecraft {
             authorization,
             ping_interval,
             legacy_network_id: None,
+            #[cfg(feature = "test-support")]
+            hosted_transport: self.http.hosted_transport(),
         })
     }
 
@@ -88,6 +90,8 @@ impl Minecraft {
             authorization,
             ping_interval: connection::ping_interval(None)?,
             legacy_network_id: Some(network_id),
+            #[cfg(feature = "test-support")]
+            hosted_transport: self.http.hosted_transport(),
         })
     }
 

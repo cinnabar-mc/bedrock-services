@@ -20,6 +20,8 @@ pub struct ConnectionRequest {
     authorization: Arc<Authorization>,
     scope: Scope,
     used: bool,
+    #[cfg(feature = "test-support")]
+    pub(crate) hosted_transport: Option<Arc<crate::test_support::activation::transport::Transport>>,
 }
 
 impl Account {
@@ -73,6 +75,8 @@ impl Account {
                 epoch: Epoch(Uuid::new_v4()),
             },
             used: false,
+            #[cfg(feature = "test-support")]
+            hosted_transport: self.http.hosted_transport(),
         })
     }
 

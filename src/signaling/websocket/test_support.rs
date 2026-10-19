@@ -14,6 +14,12 @@ use tokio::{
 };
 use tokio_websockets::{Config, Limits, MaybeTlsStream, Message, ServerBuilder, WebSocketStream};
 
+/// Shares the actual signaling method with the finite public-activation peer.
+#[cfg(feature = "test-support")]
+pub(crate) fn turn_method() -> &'static str {
+    super::super::wire::TURN
+}
+
 /// Owns one synthetic service peer; dropping it drops only its actual loopback socket.
 /// This is a test peer, not a configurable service client or verified account.
 pub struct Peer {

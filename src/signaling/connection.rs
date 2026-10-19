@@ -13,6 +13,8 @@ pub struct ConnectionRequest {
     pub(crate) authorization: Arc<Authorization>,
     pub(crate) ping_interval: Duration,
     pub(crate) legacy_network_id: Option<u64>,
+    #[cfg(feature = "test-support")]
+    pub(crate) hosted_transport: Option<Arc<crate::test_support::activation::transport::Transport>>,
 }
 
 impl ConnectionRequest {

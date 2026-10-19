@@ -80,13 +80,27 @@ pub(super) async fn connect(
         .ok_or(SocketError::Configuration)?;
     let connector = crate::websocket_io::connector().map_err(|_| SocketError::Configuration)?;
     tokio::time::timeout(options.connect_timeout, async {
-        let tcp = TcpStream::connect((host, port))
-            .await
-            .map_err(|_| SocketError::Transport)?;
-        let tls = connector
-            .wrap(host, tcp)
-            .await
-            .map_err(SocketError::from_wire)?;
+        #[cfg(feature = "test-support")]
+        let fixture = match &request.hosted_transport {
+            Some(transport) => Some(
+                transport
+                    .socket(
+                        url,
+                        crate::test_support::activation::transport::SocketKind::Messaging,
+                    )
+                    .await
+                    .map_err(|_| SocketError::Transport)?,
+            ),
+            None => None,
+        };
+        #[cfg(feature = "test-support")]
+        let tls = if let Some(stream) = fixture {
+            stream
+        } else {
+            production_transport(&connector, host, port).await?
+        };
+        #[cfg(not(feature = "test-support"))]
+        let tls = production_transport(&connector, host, port).await?;
         let (mut socket, response) =
             builder
                 .connect_on(UpgradeIo::new(tls))
@@ -105,4 +119,19 @@ pub(super) async fn connect(
     })
     .await
     .map_err(|_| SocketError::TimedOut)?
+}
+
+/// Retains the original production DNS/TCP/verified TLS path when no explicit fixture route exists.
+async fn production_transport(
+    connector: &tokio_websockets::Connector,
+    host: &str,
+    port: u16,
+) -> Result<MaybeTlsStream<TcpStream>, SocketError> {
+    let tcp = TcpStream::connect((host, port))
+        .await
+        .map_err(|_| SocketError::Transport)?;
+    connector
+        .wrap(host, tcp)
+        .await
+        .map_err(SocketError::from_wire)
 }

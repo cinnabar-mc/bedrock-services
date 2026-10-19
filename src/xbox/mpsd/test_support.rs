@@ -105,3 +105,7 @@ pub(crate) fn inherit_fixture_base(account: &mut super::Account, address: std::n
     assert!(address.ip().is_loopback());
     account.fixture_mpsd_base = Some(url::Url::parse(&format!("http://{address}")).unwrap());
 }
+
+/// Derives the original protected origin for the finite verified transport scenario.
+#[cfg(feature = "test-support")]
+pub(crate) const DIRECTORY_ENDPOINT: &str = super::ENDPOINT;

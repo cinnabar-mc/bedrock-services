@@ -50,6 +50,8 @@ pub(crate) struct Http {
     user_agent: HeaderValue,
     pub endpoints: Endpoints,
     clock: Option<(SystemTime, Instant)>,
+    #[cfg(feature = "test-support")]
+    hosted_transport: Option<std::sync::Arc<crate::test_support::activation::transport::Transport>>,
 }
 
 pub(crate) struct Response {
@@ -78,6 +80,8 @@ impl Http {
             user_agent,
             endpoints: Endpoints::default(),
             clock: None,
+            #[cfg(feature = "test-support")]
+            hosted_transport: None,
         })
     }
 
@@ -134,6 +138,11 @@ impl Http {
         request: Request,
         response_limit: usize,
     ) -> Result<Response, Error> {
+        #[cfg(feature = "test-support")]
+        let request = match &self.hosted_transport {
+            Some(transport) => transport.request(request)?,
+            None => request,
+        };
         let mut response = self.client.execute(request).await?;
         if let Some(date) = response
             .headers()
@@ -179,6 +188,24 @@ impl Http {
             .build()?)
     }
 
+    /// Retains only the finite opt-in fixture's metadata, with no socket/task ownership.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn hosted_transport(
+        &self,
+    ) -> Option<std::sync::Arc<crate::test_support::activation::transport::Transport>> {
+        self.hosted_transport.clone()
+    }
+
+    /// Installs verified loopback routing only on the actual explicitly acquired fixture Http owner.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn hosted_fixture_transport(
+        &mut self,
+        transport: std::sync::Arc<crate::test_support::activation::transport::Transport>,
+    ) {
+        self.client = transport.client();
+        self.hosted_transport = Some(transport);
+    }
+
     #[cfg(test)]
     /// Advances fixture UTC explicitly without sleeping or changing the host clock.
     pub(crate) fn set_fixture_time(&mut self, now: SystemTime) {
@@ -220,6 +247,8 @@ impl Http {
                 playfab: Some(format!("{base}/Client/LoginWithXbox")),
             },
             clock: None,
+            #[cfg(feature = "test-support")]
+            hosted_transport: None,
         }
     }
 }

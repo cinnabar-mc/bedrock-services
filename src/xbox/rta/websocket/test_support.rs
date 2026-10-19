@@ -31,6 +31,26 @@ const ROOT: &[u8] = include_bytes!("../../../../tests/fixtures/rta-tls/root.der"
 const CERT: &[u8] = include_bytes!("../../../../tests/fixtures/rta-tls/server.der");
 const KEY: &[u8] = include_bytes!("../../../../tests/fixtures/rta-tls/server.key.der");
 
+/// Borrows only the original committed public fixture root for the same verified loopback boundary.
+#[cfg(feature = "test-support")]
+pub(crate) fn root() -> &'static [u8] {
+    ROOT
+}
+
+/// Returns the existing required negotiated subprotocol for the same actual fixture transport.
+#[cfg(feature = "test-support")]
+pub(crate) fn subprotocol() -> &'static str {
+    super::super::connection::SUBPROTOCOL
+}
+
+/// Derives the original protected destination without duplicating the production endpoint.
+#[cfg(feature = "test-support")]
+pub(crate) fn endpoint() -> url::Url {
+    let mut url = url::Url::parse(super::super::connection::ENDPOINT).unwrap();
+    url.set_scheme("wss").unwrap();
+    url
+}
+
 /// Acquires real signed protected fields using only the existing original synthetic account server.
 #[cfg(test)]
 pub(super) async fn request() -> (Account, ConnectionRequest) {
@@ -68,7 +88,7 @@ pub(super) async fn request() -> (Account, ConnectionRequest) {
 }
 
 /// Creates verified fixture TLS with an explicit original root; never changes production trust.
-pub(super) fn connector() -> Connector {
+pub(crate) fn connector() -> Connector {
     let mut roots = RootCertStore::empty();
     roots.add(CertificateDer::from(ROOT.to_vec())).unwrap();
     let config = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
@@ -80,7 +100,7 @@ pub(super) fn connector() -> Connector {
 }
 
 /// Owns the original localhost-only server certificate and its intentionally public test key.
-pub(super) fn acceptor() -> TlsAcceptor {
+pub(crate) fn acceptor() -> TlsAcceptor {
     let config = ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
         .with_safe_default_protocol_versions()
         .unwrap()

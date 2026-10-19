@@ -149,6 +149,22 @@ transport names. Optional missing or malformed Realms discovery affects Realms
 requests without changing authentication-only behavior. QoS measurement, Stories
 and Realm administration remain outside this API.
 
+`Minecraft::gatherings()` borrows the same account and optional discovery for
+featured-server and creator-experience catalogs. `search_items` returns one page
+in service order, preserving raw title properties; callers choose localization,
+visibility, sorting, artwork and pagination. `CatalogItem::properties` decodes the
+consumed connection/display fields while leaving unrelated metadata opaque.
+Listing and player-count reads never allocate a server or open a game connection.
+
+`player_counts` retains its account-owned snapshot and throttles completed attempts
+for five minutes. Malformed or nil-ID rows are skipped; missing and negative counts
+stay distinct from zero. Envelope/HTTP failures preserve the previous snapshot,
+available through `cached_player_counts`; cancellation leaves the throttle unchanged.
+`join_experience` makes one explicit allocation request for a nonnil UUID and returns
+only the transport and destination supplied by that response. It never retries a
+possible allocation. The caller owns the deadline and observation of uncertain
+results, validates supported transports and establishes the actual game connection.
+
 These concrete HTTP clients use the caller's async runtime. Transport state machines
 belong to the separate networking libraries; service credentials do not create an
 internal runtime or per-account background tasks.
