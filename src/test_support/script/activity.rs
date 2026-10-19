@@ -8,6 +8,7 @@ pub(super) const HTTP_EXCHANGES: usize = 12;
 pub(super) struct Activity {
     pub(super) max_members: NonZeroU32,
     pub(super) title_id: String,
+    pub(super) publication: Option<Value>,
 }
 
 /// Independently checks transmitted original proof, handle metadata, validator and leave bytes.

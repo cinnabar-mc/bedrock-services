@@ -1,6 +1,7 @@
 //! Fixed original/fresh/restored proof sequence and independent signed directory oracle.
 
 mod activity;
+mod publication;
 mod revocation;
 mod unchanged;
 
@@ -52,6 +53,23 @@ impl Scenario {
     /// Identifies only the explicit finite activity/invite sibling.
     pub(super) fn activity(&self) -> bool {
         self.0.lock().unwrap().activity.is_some()
+    }
+
+    /// Identifies the explicit first-creation sibling without changing other finite scenarios.
+    pub(super) fn publication(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .activity
+            .as_ref()
+            .is_some_and(|mode| mode.publication.is_some())
+    }
+
+    /// Borrows expected public create metadata; it never creates a Session or account authority.
+    pub(super) fn publication_metadata(&self) -> (std::num::NonZeroU32, Value) {
+        let state = self.0.lock().unwrap();
+        let mode = state.activity.as_ref().unwrap();
+        (mode.max_members, mode.publication.as_ref().unwrap().clone())
     }
 
     /// Installs only public title-selected locator/member metadata before its first directory read.
@@ -109,6 +127,33 @@ pub(super) async fn start_activity(
         Some(activity::Activity {
             max_members,
             title_id,
+            publication: None,
+        }),
+        false,
+    )
+    .await
+}
+
+/// Reuses the actual protected acquisition before one conditional create/activity/invite sequence.
+pub(super) async fn start_publication(
+    max_members: std::num::NonZeroU32,
+    title_id: String,
+    properties: Value,
+) -> (SocketAddr, JoinHandle<()>, Scenario) {
+    assert!(usize::try_from(max_members.get()).is_ok_and(|limit| limit <= mpsd::MAX_MEMBERS));
+    assert!(
+        title_id
+            .parse::<u32>()
+            .is_ok_and(|id| id != 0 && id.to_string() == title_id)
+    );
+    assert!(properties.is_object());
+    start_scenario(
+        false,
+        None,
+        Some(activity::Activity {
+            max_members,
+            title_id,
+            publication: Some(properties),
         }),
         false,
     )
@@ -139,6 +184,7 @@ async fn start_scenario(
     let mut snapshot = Value::Null;
     let world = world_version.is_some();
     let activity = scenario.activity();
+    let publication = scenario.publication();
     let (address, task) = fixture_headers(move |target, headers, body| {
         step += 1;
         let mut response_headers = vec![("Date", DATE)];
@@ -154,6 +200,9 @@ async fn start_scenario(
                 "serviceUri":"https://hosted-world-service.invalid/",
                 "playFabTitleId":"AB12", "issuer":super::HOSTED_WORLD_ISSUER
             }}}}}));
+        }
+        if publication && step > 6 {
+            return publication::respond(step, target, headers, body, &state, &mut snapshot);
         }
         if unchanged && step > 8 {
             return unchanged::respond(step, target, headers, body, &state);
@@ -264,6 +313,6 @@ async fn start_scenario(
             _ => panic!("unexpected hosted authority exchange"),
         };
         (status, response_headers, response)
-    }, if activity { activity::HTTP_EXCHANGES } else if revocation { 10 + usize::from(world) } else { HTTP_EXCHANGES }).await;
+    }, if publication { publication::HTTP_EXCHANGES } else if activity { activity::HTTP_EXCHANGES } else if revocation { 10 + usize::from(world) } else { HTTP_EXCHANGES }).await;
     (address, task, scenario)
 }

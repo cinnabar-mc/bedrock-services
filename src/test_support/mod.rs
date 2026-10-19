@@ -108,6 +108,33 @@ impl HostedAuthority {
         }
     }
 
+    /// Acquires the finite conditional-create/activity/invite sibling on one original binding.
+    /// Expected properties and capacity are checked against the transmitted create request.
+    pub async fn acquire_publication(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+        max_members: std::num::NonZeroU32,
+        title_id: String,
+        properties: Value,
+    ) -> Self {
+        let (address, task, scenario) =
+            script::start_publication(max_members, title_id, properties).await;
+        let mut peer = HostedPeer {
+            address,
+            http: Some(task),
+            server: None,
+            scenario,
+            auth,
+            minecraft,
+        };
+        let (account, identity) = peer.acquire_account().await;
+        Self {
+            account,
+            identity,
+            peer,
+        }
+    }
+
     /// Acquires one unchanged-refresh sibling; original membership/nonces survive a real signed 304.
     /// Call host, acknowledge properties, resync_unchanged_ready, consume Resync, sync, leave and finish.
     pub async fn acquire_unchanged(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
@@ -208,6 +235,83 @@ impl HostedPeer {
         generation: rta::Generation,
         peer_xuid: &str,
     ) -> HostedMembership {
+        let (socket, subscription, binding) = self
+            .host_socket(
+                account,
+                reference,
+                session_subscription,
+                generation,
+                peer_xuid,
+            )
+            .await;
+        let session = xbox::mpsd::test_support::directory(account.mpsd(), self.address)
+            .read(reference)
+            .await
+            .unwrap();
+        assert!(session.is_bound(binding));
+        HostedMembership {
+            socket,
+            subscription,
+            binding,
+            session,
+        }
+    }
+
+    /// Creates through the actual conditional publication API after the original verified RTA binding.
+    /// Only this scenario's expected metadata supplies its finite request; no read-created Session is used.
+    pub async fn publish_host(
+        &mut self,
+        account: &mut Minecraft,
+        reference: &mpsd::Reference,
+        session_subscription: Uuid,
+        generation: rta::Generation,
+        peer_xuid: &str,
+    ) -> HostedMembership {
+        assert!(self.scenario.publication());
+        let (socket, subscription, binding) = self
+            .host_socket(
+                account,
+                reference,
+                session_subscription,
+                generation,
+                peer_xuid,
+            )
+            .await;
+        let (max_members, properties) = self.scenario.publication_metadata();
+        let mut directory = xbox::mpsd::test_support::directory(account.mpsd(), self.address);
+        let mut attempt = directory
+            .publish_attempt(
+                reference,
+                mpsd::Publish {
+                    binding,
+                    member: mpsd::MemberData::default(),
+                    constants: None,
+                    max_members: Some(max_members),
+                    properties: Some(properties),
+                    join: mpsd::Restriction::Followed,
+                    read: mpsd::Restriction::Followed,
+                },
+            )
+            .unwrap();
+        let session = directory.publish_retained(&mut attempt).await.unwrap();
+        assert!(session.is_bound(binding));
+        HostedMembership {
+            socket,
+            subscription,
+            binding,
+            session,
+        }
+    }
+
+    /// Opens only the original signed verified TLS/socket/subscription owner shared by read and create fixtures.
+    async fn host_socket(
+        &mut self,
+        account: &mut Minecraft,
+        reference: &mpsd::Reference,
+        session_subscription: Uuid,
+        generation: rta::Generation,
+        peer_xuid: &str,
+    ) -> (RtaSocket, rta::SubscriptionId, mpsd::Binding) {
         assert!(self.server.is_none());
         self.scenario
             .configure(reference, session_subscription, peer_xuid);
@@ -262,18 +366,8 @@ impl HostedPeer {
             .connection()
             .directory_binding(subscription, session_subscription)
             .unwrap();
-        let session = xbox::mpsd::test_support::directory(account.mpsd(), self.address)
-            .read(reference)
-            .await
-            .unwrap();
-        assert!(session.is_bound(binding));
         self.server = Some(server);
-        HostedMembership {
-            socket,
-            subscription,
-            binding,
-            session,
-        }
+        (socket, subscription, binding)
     }
 
     /// Executes one actual original-binding conditional custom-property write and decoded acknowledgment.
@@ -400,3 +494,6 @@ mod activity_tests;
 
 #[cfg(test)]
 mod unchanged_tests;
+
+#[cfg(test)]
+mod publication_tests;
