@@ -95,19 +95,17 @@ async fn start_scenario(
         step += 1;
         let mut response_headers = vec![("Date", DATE)];
         let mut status = 200;
-        if let Some(version) = &world_version {
-            if step == 9 {
-                assert_eq!(target, format!("/api/v1.0/discovery/MinecraftPE/builds/{version}"));
-                assert!(headers.starts_with("GET "));
-                assert!(header(headers, "authorization").is_empty());
-                assert!(header(headers, "signature").is_empty());
-                assert_eq!(header(headers, "user-agent"), crate::minecraft::USER_AGENT);
-                assert!(body.is_empty());
-                return (200, response_headers, json!({"result":{"serviceEnvironments":{"auth":{"prod":{
-                    "serviceUri":"https://hosted-world-service.invalid/",
-                    "playFabTitleId":"AB12", "issuer":super::HOSTED_WORLD_ISSUER
-                }}}}}));
-            }
+        if let Some(version) = &world_version && step == 9 {
+            assert_eq!(target, format!("/api/v1.0/discovery/MinecraftPE/builds/{version}"));
+            assert!(headers.starts_with("GET "));
+            assert!(header(headers, "authorization").is_empty());
+            assert!(header(headers, "signature").is_empty());
+            assert_eq!(header(headers, "user-agent"), crate::minecraft::USER_AGENT);
+            assert!(body.is_empty());
+            return (200, response_headers, json!({"result":{"serviceEnvironments":{"auth":{"prod":{
+                "serviceUri":"https://hosted-world-service.invalid/",
+                "playFabTitleId":"AB12", "issuer":super::HOSTED_WORLD_ISSUER
+            }}}}}));
         }
         if revocation && step > 8 {
             return revocation::respond(step - usize::from(world), target, headers, body, &state, &mut snapshot);
