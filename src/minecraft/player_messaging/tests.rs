@@ -75,7 +75,9 @@ async fn player_messaging_refresh_reports_retain_session_continuation_and_locale
                 "messageText":{"header":"Hello","body":null,"bannerText":"New"},
                 "images":{"hero":{"url":"https://images.example.test/art.png","imageSize":{"width":64,"height":32}},"absent":null},
                 "colors":{"ribbon":{"hexColor":{"r":255,"g":128,"b":0}}},
-                "messageItemList":[{"saleBanner":"50% off"},{"saleBanner":{"future":true}},null],
+                "messageItemList":[
+                    {"saleBanner":"50% off", "footerHeader":"Lower header", "footerBody":"Lower body", "footerCTA":{"caption":"Lower CTA"}},
+                    {"saleBanner":{"future":true}, "FooterHeader":"Upper header", "FooterBody":"Upper body", "FooterCTA":{"caption":"Upper CTA"}},null],
                 "style":{"unused":[1,2,3]},"unknown":{"ignored":true}}],
             "inboxSummary":{"totalNumberOfMessages":30,"categories":[{"totalNumberOfMessages":30,
                 "totalNumberOfUnreadMessages":-1,"categoryInfo":{"type":"News","name":"News"},"messages":[]}]},
@@ -108,6 +110,20 @@ async fn player_messaging_refresh_reports_retain_session_continuation_and_locale
         assert_eq!(message.items[0].sale_banner_text(), "50% off");
         assert!(message.items[1].sale_banner_text().is_empty());
         assert!(message.items[2].button.text.is_empty());
+        assert_eq!(message.items[0].footer_header, "Lower header");
+        assert_eq!(message.items[0].footer_body, "Lower body");
+        assert_eq!(
+            serde_json::from_str::<Value>(message.items[0].footer_cta.as_ref().unwrap().get())
+                .unwrap()["caption"],
+            "Lower CTA"
+        );
+        assert_eq!(message.items[1].footer_header, "Upper header");
+        assert_eq!(message.items[1].footer_body, "Upper body");
+        assert_eq!(
+            serde_json::from_str::<Value>(message.items[1].footer_cta.as_ref().unwrap().get())
+                .unwrap()["caption"],
+            "Upper CTA"
+        );
         assert_eq!(first.inbox_summary.total, 30);
         assert_eq!(first.inbox_summary.categories[0].unread, -1);
         assert!(messaging.refresh("pt-BR").await.is_err());
