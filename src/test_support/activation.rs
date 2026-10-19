@@ -160,11 +160,7 @@ pub(super) async fn acquire(
     title_id: String,
     audience: String,
 ) -> HostedAuthority {
-    assert_eq!(
-        max_members.get(),
-        2,
-        "one serialized visitor plus the original host"
-    );
+    assert!(usize::try_from(max_members.get()).is_ok_and(|limit| limit <= mpsd::MAX_MEMBERS));
     assert!(
         title_id
             .parse::<u32>()
