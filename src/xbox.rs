@@ -514,16 +514,83 @@ struct DeviceTokenResponse {
     display_claims: DeviceClaims,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default)]
 struct DeviceClaims {
-    #[serde(default, rename = "xdi")]
     device: Option<DeviceInfo>,
 }
 
-#[derive(Deserialize)]
 struct DeviceInfo {
-    #[serde(default, rename = "did")]
     id: String,
+}
+
+impl<'de> Deserialize<'de> for DeviceClaims {
+    /// Consumes only object-shaped issued-device claims, retaining missing/null optional identity.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Object;
+        impl<'de> serde::de::Visitor<'de> for Object {
+            type Value = DeviceClaims;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an Xbox device claims object")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut device = None;
+                let mut seen = false;
+                while let Some(field) = map.next_key::<String>()? {
+                    if field == "xdi" {
+                        if seen {
+                            return Err(serde::de::Error::duplicate_field("xdi"));
+                        }
+                        device = map.next_value()?;
+                        seen = true;
+                    } else {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                    }
+                }
+                Ok(DeviceClaims { device })
+            }
+        }
+        deserializer.deserialize_map(Object)
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceInfo {
+    /// Accepts the server's named device field only; positional JSON never supplies an issued ID.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Object;
+        impl<'de> serde::de::Visitor<'de> for Object {
+            type Value = DeviceInfo;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an Xbox device identity object")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut id = None;
+                while let Some(field) = map.next_key::<String>()? {
+                    if field == "did" {
+                        if id.is_some() {
+                            return Err(serde::de::Error::duplicate_field("did"));
+                        }
+                        id = Some(map.next_value()?);
+                    } else {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                    }
+                }
+                Ok(DeviceInfo {
+                    id: id.unwrap_or_default(),
+                })
+            }
+        }
+        deserializer.deserialize_map(Object)
+    }
 }
 
 #[derive(Deserialize)]

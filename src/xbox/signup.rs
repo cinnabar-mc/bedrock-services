@@ -101,6 +101,16 @@ pub(super) fn check(
 
 /// Validates the original challenge independently of device metadata before a legacy migration.
 pub(super) fn metadata(response: &Response) -> Result<(Url, &str), Error> {
+    // Keep full JSON/field decoding below, but never let Serde's positional struct form authenticate.
+    if response
+        .body
+        .iter()
+        .copied()
+        .find(|&byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        != Some(b'{')
+    {
+        return Err(Error::Invalid("SISU signup object"));
+    }
     let session = response
         .headers
         .get("x-sessionid")
