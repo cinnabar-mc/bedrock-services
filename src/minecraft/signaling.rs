@@ -56,6 +56,8 @@ impl Minecraft {
             url,
             authorization,
             ping_interval,
+            #[cfg(feature = "test-support")]
+            hosted_transport: self.http.hosted_transport(),
         })
     }
 

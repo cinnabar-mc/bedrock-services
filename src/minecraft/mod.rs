@@ -91,6 +91,15 @@ struct Environment {
 }
 
 impl Minecraft {
+    /// Keeps real service acquisition on the finite fixture's same verified loopback transport owner.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn hosted_activation_http(
+        &mut self,
+        transport: std::sync::Arc<crate::test_support::activation::transport::Transport>,
+    ) {
+        self.http = transport.account_http(USER_AGENT);
+    }
+
     /// Confines only the nondefault hosted fixture's discovery owner to its finite HTTP peer.
     #[cfg(feature = "test-support")]
     pub(crate) fn hosted_fixture_http(&mut self, address: std::net::SocketAddr) {
