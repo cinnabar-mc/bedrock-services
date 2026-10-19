@@ -85,6 +85,14 @@ impl State {
         }
     }
 
+    /// Retires only an actual JSON-RPC credential request; legacy pushed credentials have no such receipt.
+    pub(super) fn retire_credentials(&mut self, request: RequestId) -> bool {
+        match self {
+            Self::Messaging(state) => state.retire_credentials(request),
+            Self::Legacy(_) => false,
+        }
+    }
+
     /// Advances pure state with time sampled at the sole socket edge.
     pub(super) fn expire(&mut self, now: Instant) -> Vec<Event> {
         match self {
