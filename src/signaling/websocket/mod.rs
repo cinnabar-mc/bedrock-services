@@ -1,17 +1,20 @@
-//! Optional Tokio WebSocket edge for Player Messaging.
+//! Optional Tokio WebSocket edge for Player Messaging and legacy service signaling.
 //!
 //! One owner holds the socket, wire buffers and bounded event queue. There are no
 //! spawned tasks, internal runtimes or automatic reconnects. Call [`MessagingSocket::drive`]
 //! continuously: service pings, deadlines, control replies and close handshakes
 //! progress only while the caller polls it. Dropping a drive future preserves
 //! partially written frames; dropping the owner immediately drops the socket.
-//! Signal receipt acknowledgement remains an explicit caller decision.
+//! Player Messaging receipt acknowledgement remains an explicit caller decision;
+//! legacy network envelopes require no peer receipt callback.
 //!
 //! The SDK and selected WebSocket implementation do not log credentials or payloads.
 //! Neither owner implements Debug. Library/TLS buffers are not guaranteed to be
 //! erased on drop; do not log signals, TURN credentials or protected requests.
 
+mod state;
 mod upgrade;
+use state::{CredentialRequest, State};
 
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
@@ -96,7 +99,7 @@ pub enum SocketError {
     /// DNS, TCP, verified TLS or socket I/O failed.
     #[error("messaging socket transport failed")]
     Transport,
-    /// HTTP upgrade, WebSocket or JSON-RPC framing was malformed.
+    /// HTTP upgrade, WebSocket or signaling framing was malformed.
     #[error("invalid messaging socket protocol")]
     Protocol,
     /// A wire message or bounded queue exceeded its limit.
@@ -138,11 +141,13 @@ impl SocketError {
 /// A fresh connection always has fresh request IDs and an empty TURN cache.
 pub struct MessagingSocket {
     socket: Option<upgrade::Socket>,
-    state: Messaging,
+    state: State,
+    legacy_network_id: Option<u64>,
     outgoing: VecDeque<Outgoing>,
     queued_bytes: usize,
     events: VecDeque<Event>,
     write_active: bool,
+    write_request: Option<RequestId>,
     control_flush: bool,
     interval: Duration,
     next_ping: Instant,
@@ -167,14 +172,56 @@ impl MessagingSocket {
         options: Options,
     ) -> Result<Self, SocketError> {
         options.validate(Instant::now(), request.ping_interval())?;
+        if request
+            .legacy_network_id()
+            .is_some_and(|id| id != network_id)
+        {
+            return Err(SocketError::Configuration);
+        }
         let socket = upgrade::connect(request, options).await?;
-        Self::from_socket(socket, network_id, request.ping_interval(), options)
+        match request.legacy_network_id() {
+            Some(id) => Self::from_legacy_socket(socket, id, request.ping_interval(), options),
+            None => Self::from_socket(socket, network_id, request.ping_interval(), options),
+        }
     }
 
     /// Installs a completed, bounded upgrade without spawning a socket task.
     fn from_socket(
         socket: upgrade::Socket,
         network_id: u64,
+        interval: Duration,
+        options: Options,
+    ) -> Result<Self, SocketError> {
+        Self::from_state(
+            socket,
+            State::Messaging(Messaging::new(network_id)),
+            None,
+            interval,
+            options,
+        )
+    }
+
+    /// Installs only the explicit legacy dialect on the same bounded socket lifecycle.
+    fn from_legacy_socket(
+        socket: upgrade::Socket,
+        network_id: u64,
+        interval: Duration,
+        options: Options,
+    ) -> Result<Self, SocketError> {
+        Self::from_state(
+            socket,
+            State::Legacy(super::Legacy::new()),
+            Some(network_id),
+            interval,
+            options,
+        )
+    }
+
+    /// Captures exactly one selected core; both dialects retain the original socket, queues and timers.
+    fn from_state(
+        socket: upgrade::Socket,
+        state: State,
+        legacy_network_id: Option<u64>,
         interval: Duration,
         options: Options,
     ) -> Result<Self, SocketError> {
@@ -185,11 +232,13 @@ impl MessagingSocket {
             .ok_or(SocketError::Configuration)?;
         Ok(Self {
             socket: Some(socket),
-            state: Messaging::new(network_id),
+            state,
+            legacy_network_id,
             outgoing: VecDeque::new(),
             queued_bytes: 0,
             events: VecDeque::new(),
             write_active: false,
+            write_request: None,
             control_flush: false,
             interval,
             next_ping,
@@ -203,6 +252,11 @@ impl MessagingSocket {
         })
     }
 
+    /// Returns the actual local ID embedded in the legacy upgrade, or None for Player Messaging.
+    pub fn legacy_network_id(&self) -> Option<u64> {
+        self.legacy_network_id
+    }
+
     /// Borrows current TURN credentials without retaining an additional credential owner.
     pub fn credentials(&self) -> Option<&TurnCredentials> {
         self.state.credentials(Instant::now())
@@ -214,8 +268,16 @@ impl MessagingSocket {
     /// Returns core validation or local capacity/closed errors before any bytes are sent.
     pub fn request_credentials(&mut self, deadline: Instant) -> Result<RequestId, Error> {
         self.ensure_open()?;
-        let outgoing = self.state.request_credentials(deadline)?;
-        self.admit(outgoing)
+        match self.state.request_credentials(deadline)? {
+            CredentialRequest::Write(outgoing) => self.admit(outgoing),
+            CredentialRequest::Wait(request) => {
+                if self.events.len() + self.state.pending_requests() > MAX_QUEUED_EVENTS {
+                    self.state.cancel(request);
+                    return Err(Error::Limit);
+                }
+                Ok(request)
+            }
+        }
     }
 
     /// Admits an opaque signal; `wait_delivery` keeps service acceptance separate from peer receipt.
@@ -231,9 +293,37 @@ impl MessagingSocket {
         deadline: Instant,
     ) -> Result<RequestId, Error> {
         self.ensure_open()?;
-        let outgoing =
-            self.state
-                .send_signal(recipient, message, signal, wait_delivery, deadline)?;
+        let outgoing = self.state.messaging()?.send_signal(
+            recipient,
+            message,
+            signal,
+            wait_delivery,
+            deadline,
+        )?;
+        self.admit(outgoing)
+    }
+
+    /// Admits one legacy string-routed signal without changing its UUID or original completion cutoff.
+    /// Offer delivery waits require the actual service Delivered frame; other sends complete on flush.
+    ///
+    /// # Errors
+    /// Refuses a wrong socket dialect, invalid input or bounded admission before any write.
+    pub fn send_legacy_signal(
+        &mut self,
+        recipient: &str,
+        message: Uuid,
+        signal: &str,
+        wait_delivery: bool,
+        deadline: Instant,
+    ) -> Result<RequestId, Error> {
+        self.ensure_open()?;
+        let outgoing = self.state.legacy()?.send_signal(
+            recipient,
+            message,
+            signal,
+            wait_delivery,
+            deadline,
+        )?;
         self.admit(outgoing)
     }
 
@@ -249,7 +339,10 @@ impl MessagingSocket {
         deadline: Instant,
     ) -> Result<RequestId, Error> {
         self.ensure_open()?;
-        let outgoing = self.state.acknowledge(signal, message, deadline)?;
+        let outgoing = self
+            .state
+            .messaging()?
+            .acknowledge(signal, message, deadline)?;
         self.admit(outgoing)
     }
 
@@ -385,6 +478,7 @@ impl MessagingSocket {
         self.outgoing.clear();
         self.queued_bytes = 0;
         self.close_deadline = None;
+        self.write_request = None;
         if let Some(ping) = self.ping.take() {
             self.state.cancel(ping);
         }
@@ -428,14 +522,16 @@ impl MessagingSocket {
 
     /// Admits at most one application frame into the library sink until it is fully flushed.
     fn poll_write(&mut self, cx: &mut Context<'_>) {
-        let Some(socket) = self.socket.as_mut() else {
+        if self.socket.is_none() {
             return;
-        };
+        }
         if self.write_active || self.control_flush {
-            match Pin::new(&mut *socket).poll_flush(cx) {
+            match Pin::new(self.socket.as_mut().expect("live socket")).poll_flush(cx) {
                 Poll::Ready(Ok(())) => {
-                    self.write_active = false;
-                    self.control_flush = false;
+                    self.write_finished();
+                    if self.socket.is_none() {
+                        return;
+                    }
                 }
                 Poll::Ready(Err(error)) => {
                     self.finish(SocketError::from_wire(error));
@@ -447,6 +543,7 @@ impl MessagingSocket {
         if self.outgoing.is_empty() {
             return;
         }
+        let socket = self.socket.as_mut().expect("live socket");
         match Pin::new(&mut *socket).poll_ready(cx) {
             Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(error)) => {
@@ -463,10 +560,25 @@ impl MessagingSocket {
             return;
         }
         self.write_active = true;
+        self.write_request = if self.legacy_network_id.is_some() {
+            outgoing.request_id()
+        } else {
+            None
+        };
         match Pin::new(socket).poll_flush(cx) {
-            Poll::Ready(Ok(())) => self.write_active = false,
+            Poll::Ready(Ok(())) => self.write_finished(),
             Poll::Ready(Err(error)) => self.finish(SocketError::from_wire(error)),
             Poll::Pending => {}
+        }
+    }
+
+    /// Completes legacy writes only at the actual sink-flush boundary; JSON-RPC still waits for responses.
+    fn write_finished(&mut self) {
+        self.write_active = false;
+        self.control_flush = false;
+        if let Some(request) = self.write_request.take() {
+            let events = self.state.flushed(request, Instant::now());
+            self.accept_events(events);
         }
     }
 
@@ -556,5 +668,7 @@ impl MessagingSocket {
     }
 }
 
+#[cfg(test)]
+mod legacy_tests;
 #[cfg(test)]
 mod tests;
