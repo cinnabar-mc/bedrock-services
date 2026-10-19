@@ -98,3 +98,10 @@ pub(crate) fn directory(
 /// Uses the real directory's contract source when independently checking a transmitted fixture request.
 #[cfg(feature = "test-support")]
 pub(crate) const DIRECTORY_CONTRACT: &str = super::CONTRACT;
+
+/// Keeps one finite fixture's directory route on its actual account, across fresh borrows only.
+#[cfg(feature = "test-support")]
+pub(crate) fn inherit_fixture_base(account: &mut super::Account, address: std::net::SocketAddr) {
+    assert!(address.ip().is_loopback());
+    account.fixture_mpsd_base = Some(url::Url::parse(&format!("http://{address}")).unwrap());
+}

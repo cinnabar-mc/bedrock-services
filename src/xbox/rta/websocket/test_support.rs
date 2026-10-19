@@ -139,3 +139,12 @@ pub(crate) async fn pair(
         server,
     )
 }
+
+/// Retains the actual next Resync in the same queue after its wire/state effects ran once.
+#[cfg(feature = "test-support")]
+pub(crate) async fn retain_ready_resync(socket: &mut RtaSocket) {
+    let event = socket.drive().await.unwrap();
+    assert!(matches!(&event, super::Event::Resync { .. }));
+    assert!(socket.events.len() < super::MAX_QUEUED_EVENTS);
+    socket.events.push_front(event);
+}

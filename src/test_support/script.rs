@@ -1,5 +1,7 @@
 //! Fixed original/fresh/restored proof sequence and independent signed directory oracle.
 
+mod revocation;
+
 use crate::xbox::{
     XBOX_RELYING_PARTY, mpsd,
     mpsd::test_support::{DIRECTORY_CONTRACT, SIGNED_HEADERS, header, verify},
@@ -28,9 +30,15 @@ struct State {
     subscription: Option<Uuid>,
     peer: Option<String>,
     rta_headers: Vec<String>,
+    revocation: bool,
 }
 
 impl Scenario {
+    /// Identifies only the finite sibling scenario that exercises a real directory refresh.
+    pub(super) fn revocation(&self) -> bool {
+        self.0.lock().unwrap().revocation
+    }
+
     /// Installs only public title-selected locator/member metadata before its first directory read.
     pub(super) fn configure(&self, reference: &mpsd::Reference, subscription: Uuid, peer: &str) {
         assert!(!subscription.is_nil());
@@ -56,7 +64,20 @@ impl Scenario {
 
 /// Starts exactly the original account/host/write, fresh account, restore and leave exchanges.
 pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
-    let scenario = Scenario(Arc::new(Mutex::new(State::default())));
+    start_scenario(false).await
+}
+
+/// Reuses the original eight acquisition/acknowledgment exchanges before one revoke and leave.
+pub(super) async fn start_revocation() -> (SocketAddr, JoinHandle<()>, Scenario) {
+    start_scenario(true).await
+}
+
+/// Selects only these two fixed sequences; original fourteen exchange assertions stay shared.
+async fn start_scenario(revocation: bool) -> (SocketAddr, JoinHandle<()>, Scenario) {
+    let scenario = Scenario(Arc::new(Mutex::new(State {
+        revocation,
+        ..Default::default()
+    })));
     let state = scenario.clone();
     let mut step = 0;
     let mut fresh_proof = None;
@@ -65,6 +86,9 @@ pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
         step += 1;
         let mut response_headers = vec![("Date", DATE)];
         let mut status = 200;
+        if revocation && step > 8 {
+            return revocation::respond(step, target, headers, body, &state, &mut snapshot);
+        }
         let response = match step {
             1 | 9 => {
                 assert_eq!(target, "/device-token");
@@ -162,6 +186,6 @@ pub(super) async fn start() -> (SocketAddr, JoinHandle<()>, Scenario) {
             _ => panic!("unexpected hosted authority exchange"),
         };
         (status, response_headers, response)
-    }, HTTP_EXCHANGES).await;
+    }, if revocation { 10 } else { HTTP_EXCHANGES }).await;
     (address, task, scenario)
 }

@@ -106,10 +106,12 @@ pub struct Directory<'a> {
 impl Account {
     /// Borrows the concrete MPSD owner without acquiring credentials or starting subscriptions.
     pub fn mpsd(&mut self) -> Directory<'_> {
+        #[cfg(any(test, feature = "test-support"))]
+        let fixture_base = self.fixture_mpsd_base.clone();
         Directory {
             account: self,
             #[cfg(any(test, feature = "test-support"))]
-            fixture_base: None,
+            fixture_base,
         }
     }
 }

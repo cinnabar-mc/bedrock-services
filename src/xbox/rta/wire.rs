@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 pub(super) const SUBSCRIBE: u32 = 1;
 pub(super) const UNSUBSCRIBE: u32 = 2;
 const CHANGE: u32 = 3;
-const RESYNC: u32 = 4;
+pub(super) const RESYNC: u32 = 4;
 
 /// Caller-owned account generation. Retire it on sign-out or account replacement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
