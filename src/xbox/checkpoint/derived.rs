@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 pub(in crate::xbox) struct Derived {
     observed: SystemTime,
     device: Option<Token>,
+    device_id: Option<String>,
     session: Option<Session>,
     authorizations: HashMap<String, Arc<Authorization>>,
 }
@@ -20,6 +21,7 @@ pub(in crate::xbox) struct Derived {
 pub(super) struct View<'a> {
     observed: SystemTime,
     device: Option<TokenView<'a>>,
+    device_id: Option<&'a str>,
     session: Option<[TokenView<'a>; 2]>,
     authorizations: Vec<AuthorizationView<'a>>,
 }
@@ -51,6 +53,8 @@ impl Derived {
         let now = account.http.now();
         account.credentials.admit_access();
         account.device = self.device.filter(|token| token.valid(now));
+        account.device_id = account.device.as_ref().and(self.device_id);
+        account.legacy_device = account.device.is_some() && account.device_id.is_none();
         account.session = self
             .session
             .filter(|session| session.title.valid(now) && session.user.valid(now));
@@ -63,29 +67,32 @@ impl Derived {
 impl<'a> View<'a> {
     /// Borrows dormant or calibrated live state without copying secret strings.
     pub(super) fn of(account: &'a Account) -> Option<Self> {
-        let (observed, device, session, authorizations) = if let Some(cache) = &account.restored {
-            (
-                cache.observed,
-                &cache.device,
-                &cache.session,
-                &cache.authorizations,
-            )
-        } else {
-            if account.device.is_none()
-                && account.session.is_none()
-                && account.authorizations.is_empty()
-            {
-                return None;
-            }
-            // Keep the original Date sample; its process-local monotonic anchor cannot be restored.
-            let observed = account.http.response_time()?;
-            (
-                observed,
-                &account.device,
-                &account.session,
-                &account.authorizations,
-            )
-        };
+        let (observed, device, device_id, session, authorizations) =
+            if let Some(cache) = &account.restored {
+                (
+                    cache.observed,
+                    &cache.device,
+                    cache.device_id.as_deref(),
+                    &cache.session,
+                    &cache.authorizations,
+                )
+            } else {
+                if account.device.is_none()
+                    && account.session.is_none()
+                    && account.authorizations.is_empty()
+                {
+                    return None;
+                }
+                // Keep the original Date sample; its process-local monotonic anchor cannot be restored.
+                let observed = account.http.response_time()?;
+                (
+                    observed,
+                    &account.device,
+                    account.device_id.as_deref(),
+                    &account.session,
+                    &account.authorizations,
+                )
+            };
         let mut authorizations = authorizations
             .values()
             .map(|authorization| AuthorizationView {
@@ -100,11 +107,17 @@ impl<'a> View<'a> {
         Some(Self {
             observed,
             device: device.as_ref().map(TokenView::of),
+            device_id: device.as_ref().and(device_id),
             session: session
                 .as_ref()
                 .map(|session| [TokenView::of(&session.title), TokenView::of(&session.user)]),
             authorizations,
         })
+    }
+
+    /// Selects the cache extension only when its original device token has issued metadata.
+    pub(super) fn has_device_identity(&self) -> bool {
+        self.device_id.is_some()
     }
 
     /// Measures all optional bytes before the single bounded secret allocation.
@@ -124,6 +137,9 @@ impl<'a> View<'a> {
             ] {
                 length = length.checked_add(4)?.checked_add(field.len())?;
             }
+        }
+        if let Some(device_id) = self.device_id {
+            length = length.checked_add(4)?.checked_add(device_id.len())?;
         }
         (self.authorizations.len() <= MAX_RELYING_PARTIES).then_some(length)
     }
@@ -156,11 +172,14 @@ impl<'a> View<'a> {
                 append_field(bytes, field)?;
             }
         }
+        if let Some(device_id) = self.device_id {
+            append_field(bytes, device_id)?;
+        }
         Ok(())
     }
 
     /// Validates bounded borrowed cache framing before creating any owned credential copies.
-    pub(super) fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+    pub(super) fn parse(bytes: &'a [u8], device_identity: bool) -> Result<Self, Error> {
         let mut reader = Reader(bytes);
         let observed = reader.time()?;
         let device = if present(&mut reader)? {
@@ -204,12 +223,22 @@ impl<'a> View<'a> {
                 gamertag,
             });
         }
+        let device_id = if device_identity {
+            let id = reader.field()?;
+            if device.is_none() || id.is_empty() {
+                return Err(Error::Invalid("account checkpoint device identity"));
+            }
+            Some(id)
+        } else {
+            None
+        };
         if !reader.0.is_empty() {
             return Err(Error::Invalid("account checkpoint cache"));
         }
         Ok(Self {
             observed,
             device,
+            device_id,
             session,
             authorizations,
         })
@@ -220,6 +249,7 @@ impl<'a> View<'a> {
         Derived {
             observed: self.observed,
             device: self.device.map(TokenView::into_owned),
+            device_id: self.device_id.map(str::to_owned),
             session: self.session.map(|[title, user]| Session {
                 title: title.into_owned(),
                 user: user.into_owned(),

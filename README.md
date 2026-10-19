@@ -65,6 +65,19 @@ the dormant snapshot for a later attempt. Older version-one checkpoints remain
 readable, and optional cache bytes are omitted if they cannot fit the existing
 64 KiB bound, preserving refresh and proof durability.
 
+Version-three caches also retain the server-issued device identity with its original
+proof-bound device token. A recognized profile-creation challenge from an older
+cache can acquire one fresh device token and matching SISU challenge with the same
+proof; ordinary authorization does not add a migration request.
+
+An exact SISU profile-creation challenge returns
+`Error::AccountCreationRequired`. Its opaque payload exposes `signup_url()` only
+for the caller's sign-in UI/browser; Debug and Display redact this signed URL.
+Keep the same account owner and caller deadline while the user completes that
+page, then retry authorization. The SDK does not launch a browser or run a retry
+loop. Persist the same account checkpoint after canceled or failed acquisitions
+so credential rotations survive.
+
 At least one public policy request is required after restart. Minecraft and PlayFab
 credentials are not persisted. A caller must prevent restoration of stale
 checkpoints after rejection or account changes; this SDK does not reconcile

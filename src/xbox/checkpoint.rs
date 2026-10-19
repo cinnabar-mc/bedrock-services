@@ -8,6 +8,7 @@ use zeroize::Zeroizing;
 
 const PREFIX: &[u8] = b"BSAC\x01";
 const CACHED_PREFIX: &[u8] = b"BSAC\x02";
+const DEVICE_CACHED_PREFIX: &[u8] = b"BSAC\x03";
 const TIME_BYTES: usize = 12;
 
 mod derived;
@@ -94,7 +95,11 @@ impl Account {
         // Allocate once before exporting the scalar so secret bytes never move on growth.
         let mut bytes = Zeroizing::new(Vec::with_capacity(cached_length.unwrap_or(length)));
         bytes.extend_from_slice(if cached_length.is_some() {
-            CACHED_PREFIX
+            if cached.as_ref().is_some_and(View::has_device_identity) {
+                DEVICE_CACHED_PREFIX
+            } else {
+                CACHED_PREFIX
+            }
         } else {
             PREFIX
         });
@@ -204,7 +209,7 @@ impl<'a> Contents<'a> {
         }
         let mut reader = Reader(bytes);
         let prefix = reader.take(PREFIX.len())?;
-        if prefix != PREFIX && prefix != CACHED_PREFIX {
+        if prefix != PREFIX && prefix != CACHED_PREFIX && prefix != DEVICE_CACHED_PREFIX {
             return Err(Error::Invalid("account checkpoint version"));
         }
         let device = reader.take(1)?[0];
@@ -214,10 +219,10 @@ impl<'a> Contents<'a> {
         }
         let proof = reader.take(PROOF_BYTES)?;
         let refresh = reader.field()?;
-        let (access, expires, derived) = if prefix == CACHED_PREFIX {
+        let (access, expires, derived) = if prefix != PREFIX {
             let access = reader.field()?;
             let expires = reader.time()?;
-            let derived = View::parse(reader.bytes()?)?;
+            let derived = View::parse(reader.bytes()?, prefix == DEVICE_CACHED_PREFIX)?;
             (access, expires, Some(derived))
         } else {
             ("", UNIX_EPOCH, None)
