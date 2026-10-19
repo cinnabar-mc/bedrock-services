@@ -180,6 +180,10 @@ canceling a request retracts only frames that have not entered the socket sink.
 Drop or `abort()` for immediate shutdown, or call `close()` and keep driving to
 drain pending completions and finish the bounded close handshake.
 
+With `test-support` and `signaling-tokio`, the hidden
+`signaling::websocket::test_support::pair` supplies a real loopback socket and
+caller-owned text peer for integration tests. It supplies no account authority.
+
 Request admission returns `Error::Limit` without publishing a handle or frame when
 a queue is full; retry local admission after driving. A reserved callback-response
 slot prevents receipt/control replies from being silently lost under backpressure.
