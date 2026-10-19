@@ -10,8 +10,8 @@ use std::time::{Duration, Instant, SystemTime};
 use zeroize::Zeroizing;
 
 pub(crate) const RESPONSE_LIMIT: usize = 1024 * 1024;
-/// Shared response budget for rendered persona images and user statistics.
-pub(crate) const PROFILE_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
+/// Shared source-backed response budget for persona, statistics and Minecraft messaging.
+pub(crate) const SERVICE_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 const DEFAULT_ACCEPT: &str = "*/*";
 
 pub(crate) struct Endpoints {

@@ -2,8 +2,11 @@
 
 mod config;
 mod entity;
+pub mod player_messaging;
 pub mod profile;
 mod signaling;
+#[cfg(test)]
+mod test_support;
 mod token;
 
 pub use config::{Config, DeviceId};
@@ -36,6 +39,8 @@ pub struct Minecraft {
     signaling_environment: Option<serde_json::Value>,
     realms_environment: Option<serde_json::Value>,
     persona_environment: Option<serde_json::Value>,
+    messaging_environment: Option<serde_json::Value>,
+    messaging_state: player_messaging::State,
     realms_state: realms::State,
     playfab: Option<Arc<playfab::Session>>,
     entities: HashMap<playfab::EntityKind, Arc<playfab::Entity>>,
@@ -62,6 +67,8 @@ struct Environments {
     realms_frontend_bedrock_legacy: Option<serde_json::Value>,
     #[serde(default)]
     persona: Option<serde_json::Value>,
+    #[serde(default)]
+    messaging: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -97,6 +104,8 @@ impl Minecraft {
             signaling_environment: None,
             realms_environment: None,
             persona_environment: None,
+            messaging_environment: None,
+            messaging_state: player_messaging::State::new(),
             realms_state: realms::State::default(),
             session_id: uuid::Uuid::new_v4(),
             playfab: None,
@@ -173,6 +182,12 @@ impl Minecraft {
     /// Borrows discovered persona/gallery reads without starting acquisition or background work.
     pub fn profile(&mut self) -> profile::Profile<'_> {
         profile::Profile { minecraft: self }
+    }
+
+    /// Borrows the marketing message/inbox session without refreshing or reporting an interaction.
+    /// This service is distinct from Xbox game invitations and NetherNet signaling.
+    pub fn player_messaging(&mut self) -> player_messaging::PlayerMessaging<'_> {
+        player_messaging::PlayerMessaging { minecraft: self }
     }
 
     /// Borrows one-shot title presence writes using the same account, proof and XSTS cache.
@@ -412,6 +427,7 @@ impl Minecraft {
             .service_environments
             .realms_frontend_bedrock_legacy;
         self.persona_environment = discovery.service_environments.persona;
+        self.messaging_environment = discovery.service_environments.messaging;
         self.environment = Some(environment);
         Ok(())
     }

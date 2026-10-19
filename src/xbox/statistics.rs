@@ -181,7 +181,7 @@ impl Statistics<'_> {
         );
         let response = self
             .account
-            .send_service_with_limit(request, token, crate::http::PROFILE_RESPONSE_LIMIT)
+            .send_service_with_limit(request, token, crate::http::SERVICE_RESPONSE_LIMIT)
             .await?;
         if response.status != StatusCode::OK {
             return Err(Error::Status {
