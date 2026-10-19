@@ -74,7 +74,7 @@ impl HostedAuthority {
             minecraft,
         };
         let (mut account, identity) = peer.acquire_account().await;
-        account.http = Http::fixture_agent(address, minecraft::USER_AGENT);
+        account.hosted_fixture_http(address);
         Self {
             account,
             identity,
