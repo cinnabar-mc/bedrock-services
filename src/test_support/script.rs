@@ -36,9 +36,18 @@ struct State {
     revocation: bool,
     activity: Option<activity::Activity>,
     unchanged: bool,
+    two_visitors: bool,
 }
 
 impl Scenario {
+    /// Selects only the fixed two-member world sibling before its original directory read.
+    pub(super) fn two_visitors(&self) {
+        let mut state = self.0.lock().unwrap();
+        assert!(state.reference.is_none());
+        assert!(state.revocation && !state.unchanged && state.activity.is_none());
+        state.two_visitors = true;
+    }
+
     /// Retains no alternate authority for the separately scripted public-activation sibling.
     pub(super) fn activation() -> Self {
         Self(Arc::new(Mutex::new(State::default())))
@@ -83,6 +92,9 @@ impl Scenario {
         crate::xbox::social::validate_xuid(peer).unwrap();
         assert_ne!(peer, HOST_XUID);
         let mut state = self.0.lock().unwrap();
+        if state.two_visitors {
+            assert_eq!(peer, "456", "fixed original visitor in this sibling");
+        }
         assert!(state.reference.is_none());
         state.reference = Some(reference.clone());
         state.subscription = Some(subscription);
@@ -287,6 +299,12 @@ async fn start_scenario(
                                     "active":true,"connection":CONNECTION,"subscription":{"id":state.subscription.unwrap()}}}},
                                 "1":{"constants":{"system":{"xuid":state.peer.as_ref().unwrap()}},
                                     "properties":{"system":{"active":true}}}}});
+                        if state.two_visitors {
+                            snapshot["members"]["2"] = json!({
+                                "constants":{"system":{"xuid":super::HOSTED_WORLD_SECOND_VISITOR_XUID}},
+                                "properties":{"system":{"active":true}}
+                            });
+                        }
                         if let Some(activity) = &state.activity {
                             snapshot["constants"] = json!({"system":{"maxMembersCount":activity.max_members.get()}});
                         }

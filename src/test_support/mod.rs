@@ -14,6 +14,9 @@ pub use activation::{
 /// Non-retail issuer returned only by the fixed hosted-world discovery response.
 pub const HOSTED_WORLD_ISSUER: &str = "https://hosted-world-fixture.invalid/tenant/";
 
+/// Fixed second visitor in the two-visitor signed world scenario.
+pub const HOSTED_WORLD_SECOND_VISITOR_XUID: &str = "789";
+
 use crate::{
     http::Http,
     minecraft::{self, Minecraft},
@@ -67,6 +70,17 @@ pub struct HostedPeer {
 }
 
 impl HostedAuthority {
+    /// Reuses the original world acquisition, then admits fixed visitors 456 and 789 in its real read.
+    /// The ordinary revocation removes only 456; both members share the original RTA/session owner.
+    pub async fn acquire_world_two_visitors(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+    ) -> Self {
+        let authority = Self::acquire_world(auth, minecraft).await;
+        authority.peer.scenario.two_visitors();
+        authority
+    }
+
     /// Acquires the finite real public-activation sibling without creating membership or an accepting route.
     /// Its original service requests use only verified loopback TLS on this same account owner.
     pub async fn acquire_activation(
@@ -549,6 +563,9 @@ mod revocation_tests;
 
 #[cfg(test)]
 mod world_tests;
+
+#[cfg(test)]
+mod two_visitor_tests;
 
 #[cfg(test)]
 mod activity_tests;
