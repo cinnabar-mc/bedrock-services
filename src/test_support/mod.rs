@@ -58,6 +58,25 @@ pub struct HostedPeer {
 }
 
 impl HostedAuthority {
+    /// Acquires the finite revocation sibling; call host, acknowledge, revoke, refresh, leave and finish.
+    pub async fn acquire_revocation(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
+        let (address, task, scenario) = script::start_revocation().await;
+        let mut peer = HostedPeer {
+            address,
+            http: Some(task),
+            server: None,
+            scenario,
+            auth,
+            minecraft,
+        };
+        let (account, identity) = peer.acquire_account().await;
+        Self {
+            account,
+            identity,
+            peer,
+        }
+    }
+
     /// Acquires one original synthetic identity through actual device, NSAL and SISU exchanges.
     /// Call host, property acknowledgment, fresh-account, restore-account, leave and finish in order.
     pub async fn acquire(auth: xbox::Config, minecraft: minecraft::Config) -> Self {
@@ -80,6 +99,17 @@ impl HostedAuthority {
 }
 
 impl HostedPeer {
+    /// Sends one actual protocol resync so the owning host performs its real signed refresh.
+    pub async fn revoke_member(&mut self) {
+        assert!(self.scenario.revocation());
+        self.server
+            .as_mut()
+            .expect("actual hosted socket")
+            .send(Message::text(rta::fixture_resync_message()))
+            .await
+            .unwrap();
+    }
+
     /// Opens protected verified TLS, acknowledges the real subscription, then reads the bound session.
     pub async fn host(
         &mut self,
@@ -248,7 +278,10 @@ impl HostedPeer {
             UNIX_EPOCH + Duration::from_secs(4_000_000_000),
         )
         .unwrap();
-        let account = Account::new(self.http(), self.auth.clone(), credentials).unwrap();
+        let mut account = Account::new(self.http(), self.auth.clone(), credentials).unwrap();
+        if self.scenario.revocation() {
+            mpsd::test_support::inherit_fixture_base(&mut account, self.address);
+        }
         let mut account = Minecraft::new(account, self.minecraft.clone()).unwrap();
         let identity = account.xbox_authorization().await.unwrap();
         assert_eq!(identity.xuid(), script::HOST_XUID);
@@ -266,3 +299,6 @@ impl Drop for HostedPeer {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod revocation_tests;

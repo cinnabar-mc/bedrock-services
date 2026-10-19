@@ -20,6 +20,12 @@ mod state;
 pub mod websocket;
 mod wire;
 
+/// Encodes the real protocol's fixed resync message for its finite local service fixture.
+#[cfg(feature = "test-support")]
+pub(crate) fn fixture_resync_message() -> String {
+    serde_json::to_string(&[wire::RESYNC]).expect("fixed resync message")
+}
+
 pub use connection::ConnectionRequest;
 pub use state::Connection;
 pub use wire::{

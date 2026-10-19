@@ -165,6 +165,8 @@ pub struct Account {
     current_title_data: Option<TitleData>,
     authorizations: HashMap<String, Arc<Authorization>>,
     restored: Option<checkpoint::Derived>,
+    #[cfg(any(test, feature = "test-support"))]
+    fixture_mpsd_base: Option<url::Url>,
 }
 
 struct Session {
@@ -193,6 +195,8 @@ impl Account {
             current_title_data: None,
             authorizations: HashMap::new(),
             restored: None,
+            #[cfg(any(test, feature = "test-support"))]
+            fixture_mpsd_base: None,
         }
     }
 
