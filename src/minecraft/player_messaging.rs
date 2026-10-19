@@ -142,7 +142,9 @@ impl PlayerMessaging<'_> {
         if response.status == StatusCode::UNAUTHORIZED {
             self.minecraft.reject(&token);
         }
-        response.success()?;
+        if !response.status.is_success() {
+            response.success()?;
+        }
         Ok(response)
     }
 }
