@@ -63,12 +63,14 @@ impl PlayerMessaging<'_> {
         let response = self.send("session", "refresh", language, &body).await?;
         #[derive(Deserialize)]
         struct Envelope {
-            result: Option<Session>,
+            result: Option<types::Object<Session>>,
         }
         let session = response
-            .json::<Envelope>()?
+            .json::<types::Object<Envelope>>()?
+            .0
             .result
-            .ok_or(Error::Invalid("player messaging result"))?;
+            .ok_or(Error::Invalid("player messaging result"))?
+            .0;
         if !session.continuation_token.is_empty() {
             self.minecraft.messaging_state.continuation =
                 Zeroizing::new(session.continuation_token.clone());

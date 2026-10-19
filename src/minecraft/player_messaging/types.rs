@@ -1,6 +1,9 @@
-use serde::{Deserialize, Deserializer};
+use serde::{
+    Deserialize, Deserializer,
+    de::{MapAccess, Visitor, value::MapAccessDeserializer},
+};
 use serde_json::value::RawValue;
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt, marker::PhantomData};
 
 /// A successful marketing refresh, retaining original service order and category counts.
 /// No message metadata is authenticated game/session authority.
@@ -14,7 +17,7 @@ pub struct Session {
     #[serde(deserialize_with = "null_sequence")]
     pub messages: Vec<Message>,
     /// Service counts and the currently loaded per-category messages.
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "null_object")]
     pub inbox_summary: InboxSummary,
     /// Uninterpreted optional settings, never a replacement for caller policy.
     pub inbox_settings: Option<Box<RawValue>>,
@@ -46,7 +49,7 @@ pub struct Category {
     )]
     pub unread: i64,
     /// Reported category spelling and display metadata.
-    #[serde(rename = "categoryInfo", deserialize_with = "null_default")]
+    #[serde(rename = "categoryInfo", deserialize_with = "null_object")]
     pub info: CategoryInfo,
     /// Original category continuation, without an implicit follow-up request.
     #[serde(deserialize_with = "null_default")]
@@ -67,7 +70,7 @@ pub struct CategoryInfo {
     #[serde(deserialize_with = "null_default")]
     pub name: String,
     /// Display-only category image.
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "null_object")]
     pub image: Image,
 }
 
@@ -100,7 +103,7 @@ pub struct Message {
     #[serde(deserialize_with = "null_default")]
     pub allow_in_game: bool,
     /// Header, body and ribbon text.
-    #[serde(rename = "messageText", deserialize_with = "null_default")]
+    #[serde(rename = "messageText", deserialize_with = "null_object")]
     pub text: MessageText,
     /// Keyed button metadata, never an automatically opened URI.
     #[serde(deserialize_with = "null_map")]
@@ -177,7 +180,7 @@ pub struct Image {
     #[serde(deserialize_with = "null_default")]
     pub url: String,
     /// Reported dimensions, not image decoder authority.
-    #[serde(rename = "imageSize", deserialize_with = "null_default")]
+    #[serde(rename = "imageSize", deserialize_with = "null_object")]
     pub size: ImageSize,
 }
 
@@ -198,10 +201,10 @@ pub struct ImageSize {
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageItem {
     /// Optional button data.
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "null_object")]
     pub button: Button,
     /// Optional image data.
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "null_object")]
     pub image: Image,
     /// Text or other well-formed banner metadata.
     pub sale_banner: Option<Box<RawValue>>,
@@ -234,7 +237,7 @@ impl MessageItem {
 #[serde(default)]
 pub struct Color {
     /// RGB channels, not a CSS/hexadecimal string.
-    #[serde(rename = "hexColor", deserialize_with = "null_default")]
+    #[serde(rename = "hexColor", deserialize_with = "null_object")]
     pub rgb: Rgb,
 }
 
@@ -262,32 +265,69 @@ where
     Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
-/// Preserves the baseline's zero-valued null struct elements without losing valid neighbors.
+/// Admits named JSON records through their existing field decoder, never positional arrays.
+/// The map is streamed without a recursive value or a second record allocation.
+pub(super) struct Object<T>(pub(super) T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    /// Restricts only the container shape; the original decoder still owns fields and duplicates.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
+            type Value = T;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a player messaging object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+                T::deserialize(MapAccessDeserializer::new(map))
+            }
+        }
+
+        deserializer
+            .deserialize_map(ObjectVisitor(PhantomData))
+            .map(Self)
+    }
+}
+
+/// Preserves a null record as default while requiring every nonnull record to be an object.
+fn null_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<Object<T>>::deserialize(deserializer)
+        .map(|value| value.map(|Object(value)| value).unwrap_or_default())
+}
+
+/// Preserves zero-valued null struct elements without accepting positional records.
 fn null_sequence<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
 {
-    Option::<Vec<Option<T>>>::deserialize(deserializer).map(|values| {
+    Option::<Vec<Option<Object<T>>>>::deserialize(deserializer).map(|values| {
         values
             .unwrap_or_default()
             .into_iter()
-            .map(Option::unwrap_or_default)
+            .map(|value| value.map(|Object(value)| value).unwrap_or_default())
             .collect()
     })
 }
 
-/// Preserves null struct-valued map entries as zero metadata, not fabricated authority.
+/// Preserves null map entries as default metadata, without accepting positional records.
 fn null_map<'de, D, T>(deserializer: D) -> Result<HashMap<String, T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
 {
-    Option::<HashMap<String, Option<T>>>::deserialize(deserializer).map(|values| {
+    Option::<HashMap<String, Option<Object<T>>>>::deserialize(deserializer).map(|values| {
         values
             .unwrap_or_default()
             .into_iter()
-            .map(|(key, value)| (key, value.unwrap_or_default()))
+            .map(|(key, value)| (key, value.map(|Object(value)| value).unwrap_or_default()))
             .collect()
     })
 }
