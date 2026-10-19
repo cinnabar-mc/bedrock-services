@@ -69,3 +69,64 @@ async fn hosted_activation_routes_real_connectors_and_original_create() {
         assert!(matches!(observed.messaging,HostedSocketTerminal::Close|HostedSocketTerminal::Eof));
     }).await.unwrap();
 }
+
+/// Canceling the actual consuming finish retains abort ownership of every original pending service task.
+#[tokio::test]
+async fn cancelled_activation_fixture_finish_retires_all_original_servers() {
+    use std::{
+        future::Future,
+        task::{Context, Waker},
+    };
+    let HostedAuthority {
+        account: _account,
+        peer,
+        ..
+    } = HostedAuthority::acquire_activation(
+        xbox::Config::default(),
+        minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
+        NonZeroU32::new(2).unwrap(),
+        "42".into(),
+        "fixture-audience".into(),
+    )
+    .await;
+    let active = peer.activation.as_ref().unwrap();
+    let servers = [
+        peer.http.as_ref().unwrap().abort_handle(),
+        active.rta.as_ref().unwrap().abort_handle(),
+        active.messaging.as_ref().unwrap().abort_handle(),
+    ];
+    let mut finishing = Box::pin(peer.finish_activation());
+    let pending = finishing
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_pending();
+    drop(finishing);
+    let retired = finished(&servers).await;
+    for server in &servers {
+        server.abort();
+    }
+    let cleaned = finished(&servers).await;
+    assert!(
+        cleaned,
+        "original finite server tasks did not complete failure cleanup"
+    );
+    assert!(
+        pending,
+        "the actual unfinished HTTP/socket tasks unexpectedly completed"
+    );
+    assert!(
+        retired,
+        "canceling fixture finish detached an original server task"
+    );
+}
+
+/// Waits only for actual Tokio task completion; the finite guard also lets the RED run clean its owners.
+async fn finished(servers: &[tokio::task::AbortHandle]) -> bool {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !servers.iter().all(tokio::task::AbortHandle::is_finished) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok()
+}
