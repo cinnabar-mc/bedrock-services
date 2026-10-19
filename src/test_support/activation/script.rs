@@ -30,14 +30,19 @@ pub(super) async fn serve(listener: TcpListener, state: Shared, version: String)
         let (bytes, end, length) = read_request(&mut stream).await;
         let headers = std::str::from_utf8(&bytes[..end]).unwrap();
         let target = headers.split_whitespace().nth(1).unwrap();
-        let (status, extra, response) = respond(
-            step,
-            target,
-            headers,
-            &bytes[end..end + length],
-            &mut state.lock().unwrap(),
-            &version,
-        );
+        let (status, extra, response) = {
+            let mut state = state.lock().unwrap();
+            let response = respond(
+                step,
+                target,
+                headers,
+                &bytes[end..end + length],
+                &mut state,
+                &version,
+            );
+            state.verified_http_requests = step;
+            response
+        };
         let body = if status == 304 {
             Vec::new()
         } else {

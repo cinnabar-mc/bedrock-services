@@ -51,6 +51,14 @@ pub struct HostedActivationObservation {
     pub messaging: HostedSocketTerminal,
 }
 
+/// Observed request prefix after every original fixture server has been aborted and joined.
+pub struct HostedActivationPrefix {
+    /// Last sequential HTTP request whose complete original contract was verified, not inferred delivered responses.
+    pub verified_http_requests: usize,
+    /// Actual public SPKI from the original mint request; empty if that request never arrived.
+    pub minted_public_key: Vec<u8>,
+}
+
 struct State {
     issuer: RsaKeyPair,
     max_members: NonZeroU32,
@@ -65,6 +73,7 @@ struct State {
     invited_xuid: String,
     headers: Vec<String>,
     session_id: Option<Uuid>,
+    verified_http_requests: usize,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -77,6 +86,28 @@ pub(super) struct Peer {
 }
 
 impl Peer {
+    /// Aborts every original service task and retains all handles until every cancellation is joined.
+    pub(super) async fn abort(&mut self, http: &mut JoinHandle<()>) -> HostedActivationPrefix {
+        http.abort();
+        self.rta.as_ref().unwrap().abort();
+        self.messaging.as_ref().unwrap().abort();
+        let (http, rta, messaging) = tokio::join!(
+            http,
+            self.rta.as_mut().unwrap(),
+            self.messaging.as_mut().unwrap()
+        );
+        self.rta = None;
+        self.messaging = None;
+        joined_abort(http);
+        joined_abort(rta);
+        joined_abort(messaging);
+        let mut state = self.state.lock().unwrap();
+        HostedActivationPrefix {
+            verified_http_requests: state.verified_http_requests,
+            minted_public_key: std::mem::take(&mut state.minted_public_key),
+        }
+    }
+
     /// Joins every retained original server before interpreting any completion result.
     pub(super) async fn finish(
         &mut self,
@@ -103,6 +134,13 @@ impl Peer {
             rta,
             messaging,
         }
+    }
+}
+
+/// Cancellation is expected here; a server assertion/panic cannot become successful prefix evidence.
+fn joined_abort<T>(result: Result<T, tokio::task::JoinError>) {
+    if let Err(error) = result {
+        assert!(error.is_cancelled(), "original hosted fixture task failed");
     }
 }
 
@@ -161,6 +199,7 @@ pub(super) async fn acquire(
         invited_xuid: String::new(),
         headers,
         session_id: None,
+        verified_http_requests: 0,
     }));
     let peer = Peer {
         public_key,
