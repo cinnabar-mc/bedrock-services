@@ -220,3 +220,26 @@ fn flushed_writes_and_cancelled_waits_keep_deadlines_and_capacity() {
     assert!(matches!(state.ping(now), Err(Error::Closed)));
     assert!(state.close().is_empty());
 }
+
+/// Moving pushed credentials preserves their original lifetime without manufacturing another Server event.
+#[test]
+fn pushed_credential_transfer_clears_cache_without_extending_expiry() {
+    let now = Instant::now();
+    let mut state = Legacy::new();
+    let message = json!({"Type":2,"From":"Server","Message":json!({
+        "ExpirationInSeconds":30,"TurnAuthServers":[]}).to_string()});
+    let wire = serde_json::to_vec(&message).unwrap();
+    state.receive(&wire, now).unwrap();
+    let transferred = state
+        .take_credentials(now + Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(transferred.expires_at(), now + Duration::from_secs(30));
+    assert!(state.credentials(now).is_none());
+    assert!(state.take_credentials(now).is_none());
+    state.receive(&wire, now).unwrap();
+    assert!(
+        state
+            .take_credentials(now + Duration::from_secs(30))
+            .is_none()
+    );
+}

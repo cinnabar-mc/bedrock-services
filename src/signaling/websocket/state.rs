@@ -22,6 +22,14 @@ impl State {
         }
     }
 
+    /// Moves the actual selected cache owner without changing its original expiry.
+    pub(super) fn take_credentials(&mut self, now: Instant) -> Option<TurnCredentials> {
+        match self {
+            Self::Messaging(state) => state.take_credentials(now),
+            Self::Legacy(state) => state.take_credentials(now),
+        }
+    }
+
     /// Reserves a correlated TURN command or an actual legacy pushed-credential wait.
     pub(super) fn request_credentials(
         &mut self,

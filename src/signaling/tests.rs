@@ -325,3 +325,43 @@ fn turn_cache_and_delivery_errors_preserve_credential_and_request_ownership() {
     ));
     assert!(!format!("{:?}", Failure::DeliveryCode(2)).contains("SECRET"));
 }
+
+/// A correlated response may move out once, retaining its receipt-anchored expiry and sensitive fields.
+#[test]
+fn turn_credential_transfer_preserves_original_owner_and_expiry() {
+    let now = Instant::now();
+    let mut state = Messaging::new(7);
+    let result = json!({"ExpirationInSeconds":30,"TurnAuthServers":[{
+        "Username":"transfer-user","Password":"transfer-password","Urls":["turn:fixture.invalid:3478"]}]});
+    let request = state
+        .request_credentials(now + Duration::from_secs(5))
+        .unwrap();
+    let events = state
+        .receive(&accepted(&request, result.clone()), now)
+        .unwrap();
+    assert!(completed(&events, request.request_id().unwrap(), Ok(())));
+    let transferred = state
+        .take_credentials(now + Duration::from_secs(1))
+        .unwrap();
+    assert!(state.credentials(now).is_none());
+    assert!(state.take_credentials(now).is_none());
+    assert_eq!(transferred.expires_at(), now + Duration::from_secs(30));
+    assert_eq!(transferred.servers()[0].username(), "transfer-user");
+    assert_eq!(transferred.servers()[0].password(), "transfer-password");
+    assert_eq!(
+        transferred.servers()[0].urls(),
+        ["turn:fixture.invalid:3478"]
+    );
+    assert!(!transferred.valid(now + Duration::from_secs(30)));
+
+    let request = state
+        .request_credentials(now + Duration::from_secs(5))
+        .unwrap();
+    state.receive(&accepted(&request, result), now).unwrap();
+    assert!(
+        state
+            .take_credentials(now + Duration::from_secs(30))
+            .is_none()
+    );
+    assert!(state.credentials(now).is_none());
+}

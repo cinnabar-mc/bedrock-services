@@ -262,6 +262,12 @@ impl MessagingSocket {
         self.state.credentials(Instant::now())
     }
 
+    /// Transfers the current unexpired credential owner and clears the selected core's cache.
+    /// Match the original request completion first; this method alone proves no fresh response.
+    pub fn take_credentials(&mut self) -> Option<TurnCredentials> {
+        self.state.take_credentials(Instant::now())
+    }
+
     /// Admits a TURN request with an explicit response deadline.
     ///
     /// # Errors
