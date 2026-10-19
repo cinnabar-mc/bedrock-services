@@ -6,7 +6,10 @@
 
 pub(crate) mod activation;
 mod script;
-pub use activation::{HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedSocketTerminal};
+pub use activation::{
+    HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedActivationPrefix,
+    HostedSocketTerminal,
+};
 
 /// Non-retail issuer returned only by the fixed hosted-world discovery response.
 pub const HOSTED_WORLD_ISSUER: &str = "https://hosted-world-fixture.invalid/tenant/";
@@ -217,6 +220,20 @@ impl HostedAuthority {
 }
 
 impl HostedPeer {
+    /// Retires and joins the same three original tasks after any actual prefix of activation.
+    /// This never creates membership, sends missing requests or claims the full scenario completed.
+    pub async fn abort_activation(mut self) -> HostedActivationPrefix {
+        let observed = self
+            .activation
+            .as_mut()
+            .expect("public activation scenario")
+            .abort(self.http.as_mut().expect("actual activation HTTP owner"))
+            .await;
+        self.http = None;
+        self.activation = None;
+        observed
+    }
+
     /// Borrows only the independent public fixture issuer key for the existing application verifier cache.
     pub fn issuer_public_key_der(&self) -> &[u8] {
         &self

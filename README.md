@@ -186,9 +186,21 @@ contain no remote diagnostics. Cancel requests explicitly, drive `expire(now)` a
 `next_deadline()` and close the state when its socket closes. All time is supplied
 by the caller; the state owns no output queue, tasks, sockets or automatic retries.
 
+For a service route that explicitly selects legacy signaling, call
+`Minecraft::legacy_signaling_connection(local_network_id)`. Its `signaling`
+discovery endpoint is separate from Player Messaging's `signaling-afd` endpoint.
+`signaling::Legacy` accepts string recipients and the legacy envelope format;
+pass actual sink-flush completion to `flushed` and received messages to `receive`.
+A delivery wait completes only after both that flush and its correlated service
+outcome. The service outcome does not prove that a game peer received the signal.
+The same cancellation, caller-clock and bounded-state rules apply.
+
 The optional `signaling-tokio` feature adds `signaling::websocket::MessagingSocket`.
-It opens only the acquired WSS destination using verified Rustls, follows no
-redirects, and owns the socket, bounded wire/event queues and partial writes.
+It selects the acquired connection’s explicit wire dialect and opens only its WSS
+destination using verified Rustls, follows no redirects, and owns the socket,
+bounded wire/event queues and partial writes. Use `send_signal` for Player
+Messaging or `send_legacy_signal` for legacy string recipients; a mismatched call
+fails before changing the socket state.
 Call `drive().await` continuously to progress messages, application pings,
 deadlines and control/close frames. It creates no runtime, tasks or automatic
 reconnect loop. Canceling a drive future retains pending wire writes on the owner;

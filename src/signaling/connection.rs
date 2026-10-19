@@ -5,13 +5,14 @@ use std::{sync::Arc, time::Duration};
 use url::Url;
 use uuid::Uuid;
 
-/// One validated messaging upgrade, tied to its exact service credential issuance.
+/// One validated signaling upgrade, tied to its exact service credential issuance.
 /// It has no Debug or serialization implementation. Use promptly, reacquire on
 /// reconnect, and follow no WebSocket redirects.
 pub struct ConnectionRequest {
     pub(crate) url: Url,
     pub(crate) authorization: Arc<Authorization>,
     pub(crate) ping_interval: Duration,
+    pub(crate) legacy_network_id: Option<u64>,
     #[cfg(feature = "test-support")]
     pub(crate) hosted_transport: Option<Arc<crate::test_support::activation::transport::Transport>>,
 }
@@ -35,6 +36,11 @@ impl ConnectionRequest {
     /// Returns the service's application-ping interval; scheduling belongs to the caller.
     pub fn ping_interval(&self) -> Duration {
         self.ping_interval
+    }
+
+    /// Returns the actual local ID embedded in a legacy upgrade path, or None for Player Messaging.
+    pub fn legacy_network_id(&self) -> Option<u64> {
+        self.legacy_network_id
     }
 }
 

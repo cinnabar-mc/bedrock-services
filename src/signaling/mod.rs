@@ -1,13 +1,16 @@
-//! Authenticated Player Messaging acquisition and bounded, caller-driven JSON-RPC.
+//! Authenticated service acquisition and bounded, caller-driven signaling.
 //!
 //! [`crate::minecraft::Minecraft::messaging_connection`] prepares a protected
-//! WebSocket upgrade. [`Messaging`] operates on complete text messages without
+//! WebSocket upgrade; [`crate::minecraft::Minecraft::legacy_signaling_connection`]
+//! selects the original string-routed service. [`Messaging`] and [`Legacy`]
+//! operate on complete text messages without
 //! sockets, tasks, clocks or internal output queues. The caller drives WebSocket
 //! I/O, ping scheduling, deadlines, cancellation and reconnects. Feed messages
 //! only from the authenticated socket associated with this state owner.
 
 pub(crate) mod connection;
 mod credentials;
+mod legacy;
 mod messaging;
 mod wire;
 
@@ -16,10 +19,11 @@ pub mod websocket;
 
 pub use connection::ConnectionRequest;
 pub use credentials::{IceServer, TurnCredentials};
+pub use legacy::{Legacy, ReceivedLegacySignal};
 pub use messaging::{Event, Messaging, ReceivedSignal};
 pub use wire::{Failure, Outgoing, RequestId};
 
-/// Maximum complete incoming or outgoing JSON-RPC message size.
+/// Maximum complete incoming or outgoing signaling message size.
 pub const MAX_MESSAGE_BYTES: usize = crate::http::RESPONSE_LIMIT;
 /// Maximum simultaneously outstanding requests, including delivery waits.
 pub const MAX_PENDING_REQUESTS: usize = 128;
