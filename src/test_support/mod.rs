@@ -8,7 +8,7 @@ pub(crate) mod activation;
 mod script;
 pub use activation::{
     HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedActivationPrefix,
-    HostedSocketTerminal,
+    HostedRenewalObservation, HostedSocketTerminal,
 };
 
 /// Non-retail issuer returned only by the fixed hosted-world discovery response.
@@ -90,7 +90,19 @@ impl HostedAuthority {
         title_id: String,
         audience: String,
     ) -> Self {
-        activation::acquire(auth, minecraft, max_members, title_id, audience).await
+        activation::acquire(auth, minecraft, max_members, title_id, audience, false).await
+    }
+
+    /// Adds one actual same-key mint and fresh TURN request before the original activation cleanup.
+    /// This finite sibling retains the same account, protected sockets and original server tasks.
+    pub async fn acquire_activation_renewal(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+        max_members: std::num::NonZeroU32,
+        title_id: String,
+        audience: String,
+    ) -> Self {
+        activation::acquire(auth, minecraft, max_members, title_id, audience, true).await
     }
 
     /// Adds one actual public discovery response before the original revoke/refresh/leave sequence.
@@ -265,6 +277,20 @@ impl HostedPeer {
             .as_mut()
             .expect("public activation scenario")
             .finish(self.http.as_mut().expect("actual activation HTTP owner"))
+            .await;
+        self.http = None;
+        self.activation = None;
+        observed
+    }
+
+    /// Joins the same original tasks before returning actual mint and TURN renewal observations.
+    /// This never sends missing requests, manufactures membership or starts another socket reader.
+    pub async fn finish_activation_renewal(mut self) -> HostedRenewalObservation {
+        let observed = self
+            .activation
+            .as_mut()
+            .expect("public activation renewal scenario")
+            .finish_renewal(self.http.as_mut().expect("actual activation HTTP owner"))
             .await;
         self.http = None;
         self.activation = None;
