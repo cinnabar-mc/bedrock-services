@@ -209,13 +209,13 @@ pub struct MessageItem {
     #[serde(rename = "subTitle", deserialize_with = "null_default")]
     pub sub_title: String,
     /// Unused footer call-to-action metadata.
-    #[serde(rename = "FooterCTA")]
+    #[serde(rename = "footerCTA", alias = "FooterCTA")]
     pub footer_cta: Option<Box<RawValue>>,
     /// Footer header text.
-    #[serde(rename = "FooterHeader", deserialize_with = "null_default")]
+    #[serde(alias = "FooterHeader", deserialize_with = "null_default")]
     pub footer_header: String,
     /// Footer body text.
-    #[serde(rename = "FooterBody", deserialize_with = "null_default")]
+    #[serde(alias = "FooterBody", deserialize_with = "null_default")]
     pub footer_body: String,
 }
 
