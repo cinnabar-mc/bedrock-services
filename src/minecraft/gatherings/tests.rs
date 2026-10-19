@@ -57,7 +57,7 @@ async fn gatherings_requests_keep_catalog_metadata_counts_and_explicit_join_tran
                 assert_eq!(bytes, b"{}\n");
                 json!({"data":{"ContinuationToken":"next-page","Items":[
                     {"Id":"creator","ContentType":"3PP_V2.0","Title":{"en-US":"Creator"},
-                     "DisplayProperties":{"experienceId":EXPERIENCE,"news":"hello","availableGames":[{"title":"Game","imageTag":"mode"}],"unused":{"opaque":true}}},
+                     "DisplayProperties":{"experienceId":EXPERIENCE,"news":"hello","availableGames":[{"title":"Game","imageTag":"mode"}],"creatorName":false,"unused":{"opaque":true}}},
                     {"Id":"rank-zero","IsHidden":true,"ContentType":"3PP_V2.0","Title":{"NEUTRAL":"Zero"},
                      "Description":{"en_US":"Description"},"Images":[{"Id":"i","Tag":"Icon","Type":"Thumbnail","Url":"https://art.example/card"}],
                      "DisplayProperties":{"url":"play.example","port":19132,"rank":0}},
@@ -125,6 +125,14 @@ async fn gatherings_requests_keep_catalog_metadata_counts_and_explicit_join_tran
                 .unwrap()
                 .get()
                 .contains("opaque")
+        );
+        assert!(
+            catalog.items[0]
+                .display_properties
+                .as_ref()
+                .unwrap()
+                .get()
+                .contains("\"creatorName\":false")
         );
         assert_eq!(
             catalog.items[0].properties().unwrap().available_games[0].image_tag,
