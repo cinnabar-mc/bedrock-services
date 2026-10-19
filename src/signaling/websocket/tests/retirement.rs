@@ -1,5 +1,7 @@
 use super::*;
 
+const MARKER: &str = "original-turn-retirement-marker";
+
 /// Finite actual service credentials; the synthetic endpoint is never contacted.
 fn credentials(name: &str) -> Value {
     json!({"ExpirationInSeconds":60,"TurnAuthServers":[{
@@ -117,11 +119,29 @@ async fn credential_retirement_retracts_unsent_but_preserves_partial_written_pre
                     _ => panic!("unexpected credential retirement event"),
                 }
             }
+            let marker = client
+                .send_signal(
+                    Uuid::from_u128(4),
+                    Uuid::from_u128(5),
+                    MARKER,
+                    false,
+                    deadline,
+                )
+                .unwrap();
+            let marked = matches!(client.drive().await,
+                Ok(Event::Completed {request,result:Ok(())}) if request == marker);
             let owner = client.take_credentials().unwrap();
             let moved_once = client.take_credentials().is_none();
             client.close();
             let closed = client.drive().await;
-            (late_ignored, completed_original, owner, moved_once, closed)
+            (
+                late_ignored,
+                completed_original,
+                marked,
+                owner,
+                moved_once,
+                closed,
+            )
         };
         let service = async {
             let first = read_json(&mut server).await;
@@ -138,13 +158,24 @@ async fn credential_retirement_retracts_unsent_but_preserves_partial_written_pre
                 ))
                 .await
                 .unwrap();
+            let marker = read_json(&mut server).await;
+            assert_eq!(marker["method"], wire::SEND);
+            let inner: Value =
+                serde_json::from_str(marker["params"]["message"].as_str().unwrap()).unwrap();
+            assert_eq!(inner["params"]["message"], MARKER);
+            server
+                .send(Message::text(
+                    json!({"jsonrpc":"2.0","id":marker["id"],"result":null}).to_string(),
+                ))
+                .await
+                .unwrap();
             server.close().await
         };
         let (application, service) = tokio::join!(application, service);
-        let (late_ignored, completed_original, owner, moved_once, closed) = application;
+        let (late_ignored, completed_original, marked, owner, moved_once, closed) = application;
         assert!(service.is_ok() && matches!(closed, Err(SocketError::Closed)));
         assert!(unsent_retired && partial && retired && partial_retained);
-        assert!(late_ignored && !completed_original && moved_once);
+        assert!(late_ignored && !completed_original && marked && moved_once);
         assert_eq!(owner.servers()[0].username(), "successor");
     })
     .await
