@@ -42,28 +42,14 @@ async fn abort_original(admitted: bool) -> (HostedRtaReconnectObservation, bool)
         host.socket.as_mut().unwrap().abort();
         drop(host);
         recovery.stop();
-        for _ in 0..32 {
-            if peer
-                .activation
-                .as_ref()
-                .unwrap()
-                .rta
-                .as_ref()
-                .unwrap()
-                .is_finished()
-            {
-                break;
+        let retirement = peer.activation.as_ref().unwrap().rta.as_ref().unwrap();
+        let retired_while_armed = tokio::time::timeout_at(deadline.into(), async {
+            while !retirement.is_finished() {
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-        let retired_while_armed = peer
-            .activation
-            .as_ref()
-            .unwrap()
-            .rta
-            .as_ref()
-            .unwrap()
-            .is_finished();
+        })
+        .await
+        .is_ok();
         recovery.release_disconnect_wait();
         let observed = peer.finish_friend().await;
         let facts = recovery.observation();
