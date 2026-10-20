@@ -50,14 +50,15 @@ type phaseSpec struct {
 
 // persisted is what a Go client using these libraries can save across restarts.
 type persisted struct {
-	Elapsed   time.Duration
-	Peer      fake.State
-	MSA       *oauth2.Token
-	ProofKey  []byte
-	Device    *xasd.Token
-	Snapshot  *sisu.Snapshot
-	Service   *service.Token
-	SessionID string
+	Elapsed     time.Duration
+	Peer        fake.State
+	MSA         *oauth2.Token
+	ProofKey    []byte
+	Device      *xasd.Token
+	Snapshot    *sisu.Snapshot
+	Service     *service.Token
+	SessionID   string
+	Environment json.RawMessage
 }
 
 type phaseResult struct {
@@ -138,6 +139,13 @@ func TestPhase(t *testing.T) {
 			time.Sleep(st.Elapsed)
 			srv.Import(st.Peer)
 			d.restore(t, st)
+			if sc.CachedRoute && len(st.Environment) != 0 {
+				d.env = new(service.AuthorizationEnvironment)
+				if err := json.Unmarshal(st.Environment, d.env); err != nil {
+					t.Fatal(err)
+				}
+				d.env.HTTPClient = d.client
+			}
 		}
 		var res phaseResult
 		for _, step := range phases(sc.Plan)[spec.Phase] {
@@ -352,6 +360,11 @@ func (d *driver) xstsPair(rp string) error {
 
 func (d *driver) persist(t *testing.T, elapsed time.Duration) persisted {
 	st := persisted{Elapsed: elapsed, Peer: d.srv.Export(), Service: d.lastService, SessionID: d.sessionID}
+	if d.env != nil {
+		st.Environment, _ = json.Marshal(map[string]any{
+			"serviceUri": d.env.ServiceURI.String(), "issuer": d.env.Issuer.String(), "playFabTitleId": d.env.PlayFabTitleID,
+		})
+	}
 	if d.session == nil {
 		return st
 	}
