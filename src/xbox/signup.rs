@@ -21,6 +21,13 @@ pub struct AccountCreationRequired {
 }
 
 impl AccountCreationRequired {
+    /// Keeps the original signed challenge available during the short title-load failure cache.
+    pub(super) fn duplicate(&self) -> Self {
+        Self {
+            url: self.url.clone(),
+        }
+    }
+
     /// Borrows the validated signed HTTPS page for this original sign-in UI/browser only.
     #[must_use]
     pub fn signup_url(&self) -> &str {

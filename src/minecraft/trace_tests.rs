@@ -25,8 +25,6 @@ const GOLDENS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/service-trace/
 enum Kind {
     /// Fewer requests or a recovery Go lacks, with the same final correctness.
     Better,
-    /// A different trade-off with no strict ordering.
-    Different,
 }
 
 /// A known divergence from the Go baseline. The test asserts it still
@@ -55,23 +53,11 @@ const DIVERGENCES: &[Divergence] = &[
         kind: Kind::Better,
         why: "Go's local clock rejects every Xbox token from a lagging server; Rust uses the server Date",
     },
-    // Audit: NSAL resolver PARTIAL, Go's 15 s failure cache is missing.
-    Divergence {
-        scenario: "nsal-current-failure",
-        kind: Kind::Different,
-        why: "no NSAL failure cache: Rust retries NSAL current at once and recovers 16s sooner",
-    },
     // Audit: a response omitting the refresh token keeps the old one in Rust.
     Divergence {
         scenario: "refresh-rotation",
         kind: Kind::Better,
         why: "Rust keeps the previous refresh token; Go blanks it and cannot refresh again",
-    },
-    // Not in the audit: go-xsapi's NSAL failure cache also holds SISU errors.
-    Divergence {
-        scenario: "sisu-failure-cache",
-        kind: Kind::Different,
-        why: "Go replays a cached SISU error for 15s without a request; Rust asks SISU again",
     },
     // Audit: concurrent acquisition is serialized by `&mut` instead of deduplicated.
     Divergence {
