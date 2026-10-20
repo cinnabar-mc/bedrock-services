@@ -13,6 +13,8 @@ pub struct HostedRtaReconnect {
     stop: Option<oneshot::Sender<()>>,
     rebound: oneshot::Receiver<()>,
     observed: Arc<Mutex<HostedRtaReconnectObservation>>,
+    #[cfg(test)]
+    replacement_upgrade: oneshot::Receiver<()>,
 }
 
 /// Coarse actual wire facts, available without identities, credentials or payloads.
@@ -39,6 +41,8 @@ pub(super) struct Services {
     observed: Arc<Mutex<HostedRtaReconnectObservation>>,
     connection: Uuid,
     validator: Option<String>,
+    #[cfg(test)]
+    replacement_upgrade: Option<oneshot::Sender<()>>,
 }
 
 impl HostedPeer {
@@ -60,6 +64,8 @@ impl HostedPeer {
         let (close, closed) = oneshot::channel();
         let (stop, stopped) = oneshot::channel();
         let (rebound, observed_rebind) = oneshot::channel();
+        #[cfg(test)]
+        let (replacement_upgrade, upgraded) = oneshot::channel();
         let observed = Arc::new(Mutex::new(HostedRtaReconnectObservation::default()));
         state.reconnect = Some(Services {
             close: Some(closed),
@@ -68,12 +74,16 @@ impl HostedPeer {
             observed: Arc::clone(&observed),
             connection: Uuid::new_v4(),
             validator: None,
+            #[cfg(test)]
+            replacement_upgrade: Some(replacement_upgrade),
         });
         HostedRtaReconnect {
             close: Some(close),
             stop: Some(stop),
             rebound: observed_rebind,
             observed,
+            #[cfg(test)]
+            replacement_upgrade: upgraded,
         }
     }
 }
@@ -101,9 +111,29 @@ impl HostedRtaReconnect {
         }
     }
 
+    /// Observes the verified replacement upgrade before its first subscription arrives.
+    #[cfg(test)]
+    pub(super) async fn replacement_upgraded(&mut self) {
+        (&mut self.replacement_upgrade)
+            .await
+            .expect("verified original replacement upgrade");
+    }
+
     /// Captures bounded original observations after the caller has joined all fixture tasks.
     pub fn observation(&self) -> HostedRtaReconnectObservation {
         *self.observed.lock().unwrap()
+    }
+}
+
+/// Reports only an actual verified replacement upgrade, without consuming its input.
+#[cfg(test)]
+pub(super) fn upgraded(state: &Shared) {
+    let mut state = state.lock().unwrap();
+    if let Some(recovery) = state.reconnect.as_mut()
+        && recovery.observed.lock().unwrap().upgrades == 1
+        && let Some(upgraded) = recovery.replacement_upgrade.take()
+    {
+        let _ = upgraded.send(());
     }
 }
 

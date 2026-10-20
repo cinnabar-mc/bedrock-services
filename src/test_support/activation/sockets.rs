@@ -81,6 +81,8 @@ pub(super) async fn accept_rta(listener: &TcpListener, state: &Shared) -> (Socke
             "XBL3.0 x=synthetic;rta"
         );
     }
+    #[cfg(test)]
+    super::reconnect::upgraded(state);
     let message = socket.next().await.unwrap().unwrap();
     assert!(message.is_text());
     let message: Value = serde_json::from_slice(message.as_payload()).unwrap();
