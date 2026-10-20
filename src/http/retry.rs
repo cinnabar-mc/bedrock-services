@@ -128,6 +128,9 @@ fn transient(error: &Error) -> bool {
     let Error::Http(error) = error else {
         return false;
     };
+    if error.is_decode() {
+        return false;
+    }
     if error.is_timeout() {
         return true;
     }
