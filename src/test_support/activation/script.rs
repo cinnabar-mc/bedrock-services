@@ -23,6 +23,11 @@ pub(super) fn service_header() -> String {
 
 /// Serves exactly the retained original HTTP task through verified fixture TLS.
 pub(super) async fn serve(listener: TcpListener, state: Shared, version: String) {
+    let friend = state.lock().unwrap().friend.is_some();
+    if friend {
+        super::friend::service::serve(listener, state, version).await;
+        return;
+    }
     let renewal = state.lock().unwrap().renewal.is_some();
     let visitors = state.lock().unwrap().visitors.is_some();
     let catalog = state.lock().unwrap().catalog;
@@ -98,7 +103,7 @@ pub(super) async fn serve(listener: TcpListener, state: Shared, version: String)
 }
 
 /// Checks the actual method/body/issuance in each fixed phase before producing its ordinary response.
-fn respond(
+pub(super) fn respond(
     step: usize,
     target: &str,
     headers: &str,

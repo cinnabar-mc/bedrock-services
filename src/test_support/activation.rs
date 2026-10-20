@@ -1,5 +1,6 @@
 //! One finite original-account/public-activation service scenario, entirely caller-runtime owned.
 
+pub(super) mod friend;
 mod renewal;
 mod script;
 mod sockets;
@@ -85,6 +86,7 @@ struct State {
     subscription_hold: Option<subscription::SubscriptionHold>,
     initial_turn_seconds: u64,
     catalog: bool,
+    friend: Option<friend::Observed>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -194,6 +196,7 @@ enum Scenario {
     ExpiringRenewal,
     HeldSubscription(subscription::SubscriptionHold),
     Visitors(Box<visitors::Services>),
+    Friend(Box<friend::Services>),
 }
 
 /// Reuses original signed acquisition before the fixed two-page catalog, with no host membership.
@@ -262,6 +265,10 @@ async fn acquire_inner(
     scenario: Scenario,
 ) -> HostedAuthority {
     let catalog = matches!(&scenario, Scenario::Catalog);
+    let (mut friend, scenario) = match scenario {
+        Scenario::Friend(services) => (Some(*services), Scenario::Base),
+        scenario => (None, scenario),
+    };
     let (renewal, visitors, subscription_hold, initial_turn_seconds) = match scenario {
         Scenario::Base => (false, None, None, renewal::INITIAL_SECONDS),
         Scenario::Catalog => (false, None, None, renewal::INITIAL_SECONDS),
@@ -269,6 +276,7 @@ async fn acquire_inner(
         Scenario::ExpiringRenewal => (true, None, None, renewal::EXPIRING_SECONDS),
         Scenario::HeldSubscription(hold) => (false, None, Some(hold), renewal::INITIAL_SECONDS),
         Scenario::Visitors(services) => (false, Some(*services), None, renewal::INITIAL_SECONDS),
+        Scenario::Friend(_) => unreachable!("friend service ownership was extracted"),
     };
     assert!(usize::try_from(max_members.get()).is_ok_and(|limit| limit <= mpsd::MAX_MEMBERS));
     assert!(
@@ -280,11 +288,15 @@ async fn acquire_inner(
     let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let rta = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let messaging = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let transport = Arc::new(Transport::new(
+    let mut transport = Transport::new(
         http.local_addr().unwrap(),
         rta.local_addr().unwrap(),
         messaging.local_addr().unwrap(),
-    ));
+    );
+    if let Some(friend) = &friend {
+        transport.friend_legacy = friend.is_legacy();
+    }
+    let transport = Arc::new(transport);
     let issuer = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
     let public_key = issuer.public_key().as_ref().to_vec();
     let headers = rta::websocket::upgrade_headers().unwrap();
@@ -311,6 +323,9 @@ async fn acquire_inner(
         subscription_hold,
         initial_turn_seconds,
         catalog,
+        friend: friend
+            .as_mut()
+            .map(|services| services.observed(minecraft.network_protocol_version)),
     }));
     let peer = Peer {
         public_key,
@@ -320,6 +335,7 @@ async fn acquire_inner(
             messaging,
             Arc::clone(&state),
             visitors,
+            friend,
         ))),
     };
     let game_version = minecraft.game_version.clone();

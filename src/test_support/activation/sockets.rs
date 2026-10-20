@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_websockets::{Config, Limits, ServerBuilder, WebSocketStream};
 
 /// Preserves a specific wire termination without interpreting arbitrary errors as a clean close.
-async fn terminal<S>(socket: &mut WebSocketStream<S>) -> HostedSocketTerminal
+pub(super) async fn terminal<S>(socket: &mut WebSocketStream<S>) -> HostedSocketTerminal
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -86,6 +86,10 @@ pub(super) async fn rta(listener: TcpListener, state: Shared) -> HostedSocketTer
         message,
         json!([1, message[1], rta::Resource::session_directory().as_str()])
     );
+    let friend = state.lock().unwrap().friend.is_some();
+    if friend {
+        return super::friend::sockets::rta(socket, state, message[1].clone()).await;
+    }
     let hold = state.lock().unwrap().subscription_hold.take();
     if let Some(hold) = hold {
         hold.wait().await;
@@ -105,6 +109,7 @@ pub(super) async fn messaging(
     listener: TcpListener,
     state: Shared,
     visitors: Option<super::visitors::Services>,
+    friend: Option<super::friend::Services>,
 ) -> HostedSocketTerminal {
     let (tcp, _) = listener.accept().await.unwrap();
     let stream = tls::acceptor().accept(tcp).await.unwrap();
@@ -118,13 +123,36 @@ pub(super) async fn messaging(
         .accept(stream)
         .await
         .unwrap();
-    assert_eq!(request.uri().path(), "/ws/v1.0/messaging/connect");
+    let legacy = friend
+        .as_ref()
+        .is_some_and(super::friend::Services::is_legacy);
+    let local = if legacy {
+        let original = url::Url::parse(&format!(
+            "{}{}",
+            SIGNALING_ORIGIN.replace("https://", "wss://"),
+            request.uri().path().trim_start_matches('/')
+        ))
+        .unwrap();
+        super::friend::sockets::legacy_id(&original).unwrap()
+    } else {
+        0
+    };
+    let expected = if legacy {
+        format!("/ws/v1.0/signaling/{local}")
+    } else {
+        "/ws/v1.0/messaging/connect".to_owned()
+    };
+    assert_eq!(request.uri().path(), expected);
     assert_eq!(
         request.headers()[reqwest::header::AUTHORIZATION]
             .to_str()
             .unwrap(),
         super::script::service_header()
     );
+    if let Some(friend) = friend {
+        assert!(request.uri().query().is_none());
+        return friend.run(socket, state, local).await;
+    }
     if let Some(visitors) = visitors {
         return visitors.run(socket, state).await;
     }

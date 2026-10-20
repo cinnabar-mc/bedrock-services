@@ -6,6 +6,10 @@
 
 pub(crate) mod activation;
 mod script;
+pub use activation::friend::{
+    HostedFriend, HostedFriendDialect, HostedFriendHost, HostedFriendMembership,
+    HostedFriendObservation,
+};
 pub use activation::{
     HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedActivationPrefix,
     HostedActivationVisitors, HostedRenewalObservation, HostedSocketTerminal,

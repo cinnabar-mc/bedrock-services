@@ -12,6 +12,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_websockets::{Message, WebSocketStream};
 use uuid::Uuid;
 
+pub(crate) mod friend;
+
 enum Frame {
     Text(String),
     Control,
