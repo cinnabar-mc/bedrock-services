@@ -33,6 +33,21 @@ pub(in super::super) async fn rta<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    if let Err(terminal) = admit(&mut socket, state, sequence).await {
+        return terminal;
+    }
+    super::super::sockets::terminal(&mut socket).await
+}
+
+/// Flushes the original acknowledgment and service-owned nonce tap without replacing its socket.
+pub(in super::super) async fn admit<S>(
+    socket: &mut WebSocketStream<S>,
+    state: Shared,
+    sequence: Value,
+) -> Result<(), HostedSocketTerminal>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut admit = state
         .lock()
         .unwrap()
@@ -50,9 +65,10 @@ where
         ))
         .await
         .unwrap();
+    super::super::reconnect::acknowledged(&state);
     let admitted = tokio::select! {
         release = &mut admit => release.is_ok(),
-        terminal = super::super::sockets::terminal(&mut socket) => return terminal,
+        terminal = super::super::sockets::terminal(socket) => return Err(terminal),
     };
     if admitted {
         let tap = {
@@ -68,5 +84,5 @@ where
         };
         socket.send(Message::text(tap.to_string())).await.unwrap();
     }
-    super::super::sockets::terminal(&mut socket).await
+    Ok(())
 }

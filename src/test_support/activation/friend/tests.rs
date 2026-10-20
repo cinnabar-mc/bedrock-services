@@ -227,3 +227,122 @@ async fn closed(socket: &mut MessagingSocket) -> Option<SocketError> {
         }
     }
 }
+
+/// Verifies the finite reconnect service through actual signed upgrade, rebind, sync and original leave.
+#[tokio::test]
+async fn friend_fixture_reconnects_one_original_acknowledged_membership() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let HostedFriend { authority: HostedAuthority { mut account, mut peer, .. }, mut host, mut membership } =
+            HostedAuthority::acquire_friend(xbox::Config::default(),
+                minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)), HostedFriendDialect::Messaging,
+                "fixture-audience".into(), deadline).await;
+        let mut recovery = peer.hold_rta_reconnect();
+        let (mut socket, mut session, original, subscription) = listed_join(&mut account, deadline).await;
+        membership.joined().await;
+        membership.admit();
+        assert!(matches!(socket.drive().await.unwrap(), rta::Event::SessionsChanged { .. }));
+        account.mpsd().sync(&mut session).await.unwrap();
+        recovery.disconnect();
+        assert!(matches!(socket.drive().await.unwrap(), rta::Event::Disconnected));
+        let mut request = account.rta_connection(socket.connection().generation(), rta::websocket::upgrade_headers().unwrap()).await.unwrap();
+        socket.reconnect(&mut request, Default::default()).await.unwrap();
+        socket.resubscribe(subscription, deadline).unwrap();
+        assert!(matches!(socket.drive().await.unwrap(), rta::Event::Subscribed { subscription: got, .. } if got == subscription));
+        let binding = socket.connection().directory_binding(subscription, Uuid::from_u128(2)).unwrap();
+        assert!(session.is_bound(original));
+        let rebound = account.mpsd().bind(&mut session, binding).await;
+        let synchronized = account.mpsd().sync(&mut session).await;
+        let observed_rebind = recovery.rebound().await;
+        let original_replaced = !session.is_bound(original) && session.is_bound(binding);
+        let left = account.mpsd().leave_bound(&mut session, binding).await;
+        socket.abort();
+        host.socket.as_mut().unwrap().abort();
+        drop(host);
+        recovery.stop();
+        let observed = peer.finish_friend().await;
+        let facts = recovery.observation();
+        assert_eq!(rebound.unwrap(), mpsd::Update::Updated);
+        assert_eq!(synchronized.unwrap(), mpsd::Update::Unchanged);
+        assert!(original_replaced && observed_rebind && facts.first_retired && facts.synchronized);
+        assert_eq!((facts.upgrades, facts.acknowledgments, facts.rebinds), (2, 2, 1));
+        assert_eq!(left.unwrap(), mpsd::Update::Closed);
+        assert_eq!((observed.joins, observed.leaves), (1, 1));
+        assert_eq!(observed.rta, HostedSocketTerminal::Io(io::ErrorKind::UnexpectedEof));
+    }).await.expect("finite original reconnect fixture");
+}
+
+/// Cleanup may cancel an unused accept, but must retain an already verified replacement socket.
+#[tokio::test]
+async fn friend_fixture_stop_retains_accepted_replacement_until_physical_retirement() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let HostedFriend {
+            authority:
+                HostedAuthority {
+                    mut account,
+                    mut peer,
+                    ..
+                },
+            mut host,
+            mut membership,
+        } = HostedAuthority::acquire_friend(
+            xbox::Config::default(),
+            minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
+            HostedFriendDialect::Messaging,
+            "fixture-audience".into(),
+            deadline,
+        )
+        .await;
+        let mut recovery = peer.hold_rta_reconnect();
+        let (mut socket, mut session, binding, _) = listed_join(&mut account, deadline).await;
+        membership.joined().await;
+        membership.admit();
+        assert!(matches!(
+            socket.drive().await.unwrap(),
+            rta::Event::SessionsChanged { .. }
+        ));
+        account.mpsd().sync(&mut session).await.unwrap();
+        recovery.disconnect();
+        assert!(matches!(
+            socket.drive().await.unwrap(),
+            rta::Event::Disconnected
+        ));
+        let mut request = account
+            .rta_connection(
+                socket.connection().generation(),
+                rta::websocket::upgrade_headers().unwrap(),
+            )
+            .await
+            .unwrap();
+        socket
+            .reconnect(&mut request, Default::default())
+            .await
+            .unwrap();
+        recovery.replacement_upgraded().await;
+        let left = account.mpsd().leave_bound(&mut session, binding).await;
+        host.socket.as_mut().unwrap().abort();
+        drop(host);
+        recovery.stop();
+        socket.abort();
+        let observed = peer.finish_friend().await;
+        let facts = recovery.observation();
+        assert_eq!(left.unwrap(), mpsd::Update::Closed);
+        assert_eq!((observed.joins, observed.leaves), (1, 1));
+        assert!(facts.first_retired);
+        assert!(observed.signaling.is_none() && observed.host.is_none());
+        assert_eq!(
+            observed.rta,
+            HostedSocketTerminal::Io(io::ErrorKind::UnexpectedEof)
+        );
+        assert_eq!(facts.acknowledgments, 1, "replacement never resubscribed");
+        assert_eq!(
+            facts.upgrades, 2,
+            "verified replacement upgrade was discarded by cleanup"
+        );
+    })
+    .await
+    .expect("finite accepted replacement retirement fixture");
+}
+
+mod lifecycle;

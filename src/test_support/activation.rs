@@ -1,11 +1,13 @@
 //! One finite original-account/public-activation service scenario, entirely caller-runtime owned.
 
 pub(super) mod friend;
+mod reconnect;
 mod renewal;
 mod script;
 mod sockets;
 mod subscription;
 pub(super) mod visitors;
+pub use reconnect::{HostedRtaReconnect, HostedRtaReconnectObservation};
 pub use renewal::HostedRenewalObservation;
 pub use subscription::HostedSubscriptionHold;
 pub use visitors::{HostedActivationVisitors, HostedVisitor, HostedVisitorsObservation};
@@ -87,6 +89,7 @@ struct State {
     initial_turn_seconds: u64,
     catalog: bool,
     friend: Option<friend::Observed>,
+    reconnect: Option<reconnect::Services>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -323,6 +326,7 @@ async fn acquire_inner(
         subscription_hold,
         initial_turn_seconds,
         catalog,
+        reconnect: None,
         friend: friend
             .as_mut()
             .map(|services| services.observed(minecraft.network_protocol_version)),
