@@ -59,23 +59,11 @@ const DIVERGENCES: &[Divergence] = &[
         kind: Kind::Better,
         why: "Rust keeps the previous refresh token; Go blanks it and cannot refresh again",
     },
-    // Audit: no transient retry or Retry-After handling anywhere.
-    Divergence {
-        scenario: "retry-after",
-        kind: Kind::Worse,
-        why: "429/503 fail the join and presence update that Go retries after Retry-After",
-    },
     // Not in the audit: go-xsapi's NSAL failure cache also holds SISU errors.
     Divergence {
         scenario: "sisu-failure-cache",
         kind: Kind::Different,
         why: "Go replays a cached SISU error for 15s without a request; Rust asks SISU again",
-    },
-    // Audit: no transient retry or Retry-After handling anywhere.
-    Divergence {
-        scenario: "transient-failure",
-        kind: Kind::Worse,
-        why: "a 5xx on discovery and a reset mint each fail a join that Go retries",
     },
     // Audit: MCToken not persisted.
     Divergence {
