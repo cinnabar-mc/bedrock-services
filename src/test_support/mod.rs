@@ -71,6 +71,15 @@ pub struct HostedPeer {
 }
 
 impl HostedAuthority {
+    /// Acquires the original signed account for a fixed two-page catalog with cross-page neighbors.
+    /// Use `peer.abort_activation()` afterward to join every original finite fixture task.
+    pub async fn acquire_featured_catalog(
+        auth: xbox::Config,
+        minecraft: minecraft::Config,
+    ) -> Self {
+        activation::acquire_catalog(auth, minecraft).await
+    }
+
     /// Holds the original verified subscription acknowledgment until the returned hold is dropped.
     /// This finite sibling supports caller-cutoff checks without creating a fabricated RTA event.
     pub async fn acquire_activation_held_subscription(
