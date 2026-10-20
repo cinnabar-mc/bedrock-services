@@ -1,0 +1,13 @@
+# date-skew: server clock 20h behind the client
+> signin
+POST login.live.com/oauth20_connect.srf -> 200
+POST login.live.com/oauth20_token.srf grant=device_code -> 200
+= ok
+> join
+GET client.discovery.minecraft-services.net/api/v1.0/discovery/MinecraftPE/builds/* -> 200
+POST device.auth.xboxlive.com/device/authenticate signed -> 200
+GET title.mgt.xboxlive.com/titles/default/endpoints?type=1 -> 200
+POST sisu.xboxlive.com/authorize access=a1 signed -> 200
+= error
+> join
+= error

@@ -206,6 +206,12 @@ impl Account {
         }
     }
 
+    #[cfg(test)]
+    /// Simulates time passing for this account's service clock.
+    pub(crate) fn advance_fixture_time(&mut self, by: Duration) {
+        self.http.advance_fixture_time(by);
+    }
+
     /// Borrows the account's current Microsoft credentials for secure persistence.
     pub fn credentials(&self) -> &Credentials {
         &self.credentials
