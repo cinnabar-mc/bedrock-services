@@ -72,7 +72,7 @@ impl Account {
     /// generation and serialization boundary as refresh and sign-out. Access, device,
     /// SISU and XSTS entries may be included within the same size limit when their
     /// live owner has a service clock. Their original absolute expiry is preserved;
-    /// restore requires a fresh public policy or matching Minecraft discovery Date before use.
+    /// restore requires a fresh public policy or a validated Minecraft service Date before use.
     /// Optional cache bytes never prevent capturing the refresh credential and proof.
     ///
     /// # Errors

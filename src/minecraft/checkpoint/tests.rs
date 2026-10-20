@@ -36,6 +36,144 @@ fn acquired() -> Minecraft {
     owner
 }
 
+/// A bound cached route and unexpired credential can be reused before any discovery request.
+#[tokio::test]
+async fn checkpoint_warm_auth_needs_no_discovery() {
+    let owner = acquired();
+    let mut restored = restart(&owner, owner.config.clone());
+    restored.http = Http::fixture("127.0.0.1:9".parse().unwrap());
+    tokio::time::pause();
+    let token = restored.authorize().await.unwrap();
+    assert_eq!(
+        token.header_value().unwrap(),
+        owner
+            .authorization
+            .as_ref()
+            .unwrap()
+            .header_value()
+            .unwrap()
+    );
+    assert_eq!(restored.session_id(), owner.session_id());
+}
+
+/// Invalid bindings, unsafe routes, legacy clocks, rollback and expired credentials require discovery.
+#[test]
+fn checkpoint_cached_route_rejects_invalid_state() {
+    let owner = acquired();
+    for case in 0..10 {
+        let mut restored = restart(&owner, owner.config.clone());
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(restored.restored.as_ref().unwrap()).unwrap();
+        match case {
+            0 => saved["config"]["game_version"] = serde_json::json!("different"),
+            1 => saved["environment"]["serviceUri"] = serde_json::json!("http://service.invalid"),
+            2 => saved["environment"]["issuer"] = serde_json::json!("https://user@issuer.invalid"),
+            3 => saved["environment"]["playFabTitleId"] = serde_json::json!("invalid/title"),
+            4 => {
+                saved["saved_local"] =
+                    serde_json::to_value(restored.http.local_time() + Duration::from_secs(3600))
+                        .unwrap()
+            }
+            5 => saved["saved_local"] = serde_json::Value::Null,
+            6 => {
+                saved["saved_service"] =
+                    serde_json::json!({"secs_since_epoch":i64::MAX,"nanos_since_epoch":0})
+            }
+            7 => {
+                saved["saved_service"] =
+                    serde_json::to_value(owner.http.now() - Duration::from_secs(1)).unwrap()
+            }
+            8 => {
+                saved["authorization"]["expires"] =
+                    serde_json::to_value(owner.http.now() + Duration::from_secs(60)).unwrap()
+            }
+            _ => saved["session_id"] = serde_json::json!(uuid::Uuid::nil()),
+        }
+        restored.restored = Some(Zeroizing::new(serde_json::to_vec(&saved).unwrap()));
+        assert!(!restored.resume_service_checkpoint(), "case {case}");
+        assert!(restored.authorization.is_none(), "case {case}");
+        assert!(restored.restored.is_some(), "case {case}");
+    }
+}
+
+/// A resumed clock preserves server skew and advances expiry by actual host elapsed time.
+#[test]
+fn checkpoint_cached_clock_advances_without_reanchoring_expiry() {
+    let owner = acquired();
+    let mut restored = restart(&owner, owner.config.clone());
+    restored
+        .http
+        .advance_fixture_time(Duration::from_secs(3600));
+    assert!(restored.resume_service_checkpoint());
+    assert!(restored.http.now() >= owner.http.now() + Duration::from_secs(3599));
+    assert!(restored.playfab.is_some());
+    assert!(
+        restored.entities.is_empty()
+            || !restored.entities[&playfab::EntityKind::TitlePlayerAccount]
+                .valid(restored.http.now())
+    );
+}
+
+/// One real mint is enough, but missing, malformed or regressing Dates cannot admit its credential.
+#[tokio::test]
+async fn checkpoint_warm_mint_validates_its_own_date() {
+    for case in 0..4 {
+        let (address, server) = crate::xbox::test_support::fixture_headers(move |path, _, _| {
+            assert_eq!(path, "/api/v1.0/multiplayer/session/start");
+            let date = match case {
+                0 => vec![("Date", "Tue, 01 Jan 2030 00:00:10 GMT")],
+                1 => vec![],
+                2 => vec![("Date", "invalid")],
+                _ => vec![("Date", "Mon, 31 Dec 2029 23:59:59 GMT")],
+            };
+            (200, date, serde_json::json!({"result":{"signedToken":"synthetic-multiplayer","validUntil":"2099-01-01T00:00:00Z"}}))
+        }, 1).await;
+        let mut owner = acquired();
+        owner.environment.as_mut().unwrap().service_uri = format!("http://{address}");
+        let mut restored = restart(&owner, owner.config.clone());
+        restored.http = Http::fixture_agent(address, USER_AGENT);
+        let key = p384::ecdsa::SigningKey::from_slice(&[7; 48]).unwrap();
+        let result = restored.multiplayer_token(key.verifying_key()).await;
+        if case == 0 {
+            assert_eq!(result.unwrap().as_str(), "synthetic-multiplayer");
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::Invalid("restored service response Date"))
+                ),
+                "case {case}"
+            );
+        }
+        server.await.unwrap();
+    }
+}
+
+/// Auth-only route reuse still permits full discovery and invalidates credentials on route changes.
+#[tokio::test]
+async fn checkpoint_cached_auth_does_not_hide_full_discovery() {
+    let (address, server) = crate::xbox::test_support::fixture_headers(|_, _, _| {
+        (200, vec![("Date", "Tue, 01 Jan 2030 00:00:10 GMT")], serde_json::json!({"result":{"serviceEnvironments":{
+            "auth":{"prod":{"serviceUri":"https://replacement.invalid/", "playFabTitleId":"AB12", "issuer":"https://issuer.invalid/"}},
+            "realms_frontend_bedrock_legacy":{"prod":{"serviceUri":"https://realms.invalid/"}}
+        }}}))
+    }, 1).await;
+    let owner = acquired();
+    let mut restored = restart(&owner, owner.config.clone());
+    restored.http = Http::fixture_agent(address, USER_AGENT);
+    restored.authorize().await.unwrap();
+    restored.discover().await.unwrap();
+    server.await.unwrap();
+    assert!(!restored.restored_route);
+    assert!(restored.authorization.is_none());
+    assert!(restored.playfab.is_none());
+    assert_eq!(
+        restored.environment.unwrap().service_uri,
+        "https://replacement.invalid/"
+    );
+    assert!(restored.realms_environment.is_some());
+}
+
 /// Simulates the actual discovery admission boundary with an explicit server Date.
 fn admit(owner: &Minecraft, restored: &mut Minecraft, by: Duration) {
     restored.environment = owner.environment.clone();

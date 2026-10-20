@@ -38,6 +38,11 @@ struct Divergence {
 
 const DIVERGENCES: &[Divergence] = &[
     Divergence {
+        scenario: "warm-restart-join",
+        kind: Kind::Better,
+        why: "the bound saved auth route avoids the Go libraries' discovery request before the mint",
+    },
+    Divergence {
         scenario: "warm-restart-expiry",
         kind: Kind::Better,
         why: "restored PlayFab login replaces the expired Minecraft credential without Xbox or PlayFab acquisition",

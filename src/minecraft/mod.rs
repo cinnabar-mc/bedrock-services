@@ -51,6 +51,7 @@ pub struct Minecraft {
     entities: HashMap<playfab::EntityKind, Arc<playfab::Entity>>,
     authorization: Option<Arc<Authorization>>,
     restored: Option<zeroize::Zeroizing<Vec<u8>>>,
+    restored_route: bool,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +138,7 @@ impl Minecraft {
             entities: HashMap::new(),
             authorization: None,
             restored,
+            restored_route: false,
         })
     }
 
@@ -153,8 +155,8 @@ impl Minecraft {
     }
 
     /// Captures account credentials and bounded Minecraft/PlayFab caches without consuming this session.
-    /// Restore the account and construct Minecraft with the same config. A fresh discovery
-    /// response must admit saved service state before it can be reused.
+    /// Restore the account and construct Minecraft with the same config. A reusable saved
+    /// credential can retain its bound auth route and server-clock offset across restart.
     /// Protected storage, account generation and refresh serialization remain caller-owned.
     ///
     /// # Errors
@@ -323,7 +325,7 @@ impl Minecraft {
 
     /// Reuses a current service credential or replaces it with a fresh session.
     pub async fn authorize(&mut self) -> Result<Arc<Authorization>, Error> {
-        if self.restored.is_some() {
+        if self.restored.is_some() && !self.resume_service_checkpoint() {
             self.discover().await?;
         }
         if let Some(token) = self
@@ -416,6 +418,9 @@ impl Minecraft {
                 }
             }
             response.success()?;
+            if self.restored_route {
+                self.xbox.admit_service_clock(&self.http);
+            }
             return response
                 .json::<ResultBody<token::MintResponse>>()?
                 .result
@@ -435,7 +440,7 @@ impl Minecraft {
     /// # Errors
     /// Returns bounded HTTP/status/JSON or required service-route/title validation errors.
     pub async fn discover(&mut self) -> Result<(), Error> {
-        if self.environment.is_some() {
+        if self.environment.is_some() && !self.restored_route {
             return Ok(());
         }
         let url = append(
@@ -463,6 +468,12 @@ impl Minecraft {
         let environment = discovery.service_environments.auth.prod;
         validate_service_url(&environment.service_uri)?;
         playfab::login_url(&environment.play_fab_title_id)?;
+        if self.restored_route && self.environment.as_ref() != Some(&environment) {
+            self.authorization = None;
+            self.playfab = None;
+            self.entities.clear();
+        }
+        self.restored_route = false;
         self.signaling_environment = discovery.service_environments.signaling_afd;
         self.legacy_signaling_environment = discovery.service_environments.signaling;
         self.realms_environment = discovery
