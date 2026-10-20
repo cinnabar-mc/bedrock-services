@@ -134,6 +134,13 @@ fn transient(error: &Error) -> bool {
     let mut source = error.source();
     let mut retryable = false;
     while let Some(error) = source {
+        if let Some(error) = error.downcast_ref::<hyper::Error>() {
+            if error.is_parse() || error.is_user() {
+                return false;
+            }
+            // An HTTP peer can close before its response without an underlying IO error.
+            retryable |= error.is_incomplete_message();
+        }
         if let Some(error) = error.downcast_ref::<io::Error>() {
             match error.kind() {
                 io::ErrorKind::ConnectionReset

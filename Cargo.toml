@@ -19,6 +19,7 @@ base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"], optional = true }
 httparse = { version = "1", optional = true }
 httpdate = "1"
+hyper = { version = "1", default-features = false }
 ipnet = "2"
 p256 = { version = "0.14", default-features = false, features = ["std", "ecdsa"] }
 p384 = { version = "0.14", default-features = false, features = ["std", "ecdsa", "pkcs8"] }
