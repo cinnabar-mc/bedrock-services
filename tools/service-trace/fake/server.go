@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -60,11 +62,14 @@ type State struct {
 // Server answers and records requests. Its clock is supplied by the host:
 // the Go oracle passes the synctest bubble clock, serve mode a manual clock.
 type Server struct {
-	mu     sync.Mutex
-	script Script
-	now    func() time.Time
-	state  State
-	steps  []string
+	mu               sync.Mutex
+	script           Script
+	now              func() time.Time
+	state            State
+	steps            []string
+	rtaConns         map[io.ReadWriteCloser]bool
+	directoryMember  map[string]any
+	directoryChanged chan struct{}
 }
 
 const (
@@ -112,7 +117,11 @@ func (s *Server) Time() time.Time { return s.now().Add(s.script.Skew).UTC() }
 func (s *Server) Export() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state
+	state := s.state
+	state.Labels = maps.Clone(state.Labels)
+	state.Issued = maps.Clone(state.Issued)
+	state.FaultHits = slices.Clone(state.FaultHits)
+	return state
 }
 
 // Import restores memory exported by an earlier process.
@@ -166,6 +175,9 @@ func (s *Server) Handle(method, host string, u *url.URL, header http.Header, bod
 
 // route names the logical endpoint used by scripts and attribute extraction.
 func route(method, host, path string) string {
+	if endpoint := isDirectory(host, path); endpoint != "" {
+		return endpoint
+	}
 	switch {
 	case host == "login.live.com" && path == "/oauth20_connect.srf":
 		return "oauth.device"
@@ -193,6 +205,8 @@ func route(method, host, path string) string {
 		return "mint"
 	case host == "userpresence.xboxlive.com" && strings.HasSuffix(path, "/devices/current/titles/current") && method == http.MethodPost:
 		return "presence"
+	case host == "rta.xboxlive.com" && path == "/connect":
+		return "rta"
 	}
 	return "unknown"
 }
@@ -217,6 +231,8 @@ func (s *Server) attrs(endpoint string, header http.Header, body []byte) []strin
 	_ = json.Unmarshal(body, &fields)
 	text := func(key string) string { v, _ := fields[key].(string); return v }
 	switch endpoint {
+	case "mpsd.join", "mpsd.update":
+		attrs = append(attrs, s.directoryAttrs(endpoint, header, body)...)
 	case "oauth.token":
 		form, _ := url.ParseQuery(string(body))
 		grant := form.Get("grant_type")
@@ -293,6 +309,12 @@ func (s *Server) answer(endpoint string, header http.Header, body []byte) Reply 
 	}
 	user := map[string]any{"xui": []any{map[string]any{"uhs": userHash}}}
 	switch endpoint {
+	case "rta":
+		return upgradeReply(header)
+	case "mpsd.join", "mpsd.update":
+		return s.directoryReply(body)
+	case "mpsd.activity":
+		return reply(201, map[string]any{"id": "00000000-0000-0000-0000-000000000010"})
 	case "oauth.device":
 		return reply(200, map[string]any{"device_code": s.issue("dc"), "user_code": "FIXTURE",
 			"verification_uri": "https://www.microsoft.com/link", "expires_in": 900, "interval": 5})

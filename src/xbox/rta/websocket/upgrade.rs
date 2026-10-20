@@ -178,6 +178,37 @@ pub(super) async fn connect(
         .ok_or(SocketError::Configuration)?;
     let connector = crate::websocket_io::connector().map_err(|_| SocketError::Configuration)?;
     tokio::time::timeout(options.connect_timeout, async {
+        #[cfg(test)]
+        if let Some((address, ca)) = &request.trace_transport {
+            let pem = std::str::from_utf8(ca).map_err(|_| SocketError::Configuration)?;
+            let der = STANDARD
+                .decode(
+                    pem.lines()
+                        .filter(|line| !line.starts_with('-'))
+                        .collect::<String>(),
+                )
+                .map_err(|_| SocketError::Configuration)?;
+            let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+            roots
+                .add(tokio_rustls::rustls::pki_types::CertificateDer::from(der))
+                .map_err(|_| SocketError::Configuration)?;
+            let config = tokio_rustls::rustls::ClientConfig::builder_with_provider(
+                std::sync::Arc::new(tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()),
+            )
+            .with_safe_default_protocol_versions()
+            .map_err(|_| SocketError::Configuration)?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+            let connector = tokio_websockets::Connector::Rustls(std::sync::Arc::new(config).into());
+            let tcp = TcpStream::connect(address)
+                .await
+                .map_err(|_| SocketError::Transport)?;
+            let stream = connector
+                .wrap(host, tcp)
+                .await
+                .map_err(SocketError::from_wire)?;
+            return handshake(stream, request).await;
+        }
         #[cfg(feature = "test-support")]
         if let Some(transport) = &request.hosted_transport {
             let stream = transport

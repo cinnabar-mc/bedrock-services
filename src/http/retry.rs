@@ -123,8 +123,11 @@ fn response_delay(response: &Response, utc: SystemTime) -> Result<Option<Duratio
     Ok((!delay.is_zero()).then_some(delay))
 }
 
-/// Keeps TLS validation, HTTP/JSON decoding and non-transport failures terminal.
-fn transient(error: &Error) -> bool {
+/// Retries temporary service statuses and transport failures, preserving authentication and decode errors.
+pub(crate) fn transient(error: &Error) -> bool {
+    if let Error::Status { status, .. } = error {
+        return matches!(status.as_u16(), 408 | 429 | 500..=599 | 999);
+    }
     let Error::Http(error) = error else {
         return false;
     };

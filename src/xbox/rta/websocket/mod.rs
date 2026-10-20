@@ -4,13 +4,18 @@
 //! then [`RtaSocket::connect`] transmits those final headers unchanged. Continuously
 //! poll [`RtaSocket::drive`] to process messages, automatic Pongs and deadlines.
 //! There is no spawned task, internal runtime, heartbeat policy or automatic retry.
+//! After disconnection, [`RtaSocket::recover`] can reacquire and restore desired
+//! subscriptions with backoff inside the caller's deadline. Apply its returned snapshots
+//! before processing later changes and rebind any affected MPSD memberships.
 //! Dropping drive preserves partial writes; dropping this owner drops the socket.
 //! Cancellation/expiry retires the whole socket as required by the pure owner.
 //!
 //! Protected requests and payloads are never logged. HTTP/TLS/WebSocket library
 //! buffers can retain copies and are not guaranteed erased on drop.
 
+mod recovery;
 mod upgrade;
+pub use recovery::RecoveryError;
 
 use super::{
     Connection, ConnectionRequest, Error, Event, MAX_MESSAGE_BYTES, MAX_PENDING_REQUESTS,
@@ -69,7 +74,7 @@ impl Options {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SocketError {
-    /// The protected request or edge options cannot be used.
+    /// The protected request, TLS validation or edge options cannot be used.
     #[error("invalid RTA socket configuration")]
     Configuration,
     /// The protected issuance was already used or the lifecycle cannot be resumed.
@@ -106,6 +111,19 @@ impl SocketError {
                 Self::Protocol
             }
             tokio_websockets::Error::AlreadyClosed => Self::Closed,
+            tokio_websockets::Error::Rustls(_) | tokio_websockets::Error::InvalidDNSName(_) => {
+                Self::Configuration
+            }
+            tokio_websockets::Error::Io(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::InvalidData
+                        | std::io::ErrorKind::InvalidInput
+                        | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                Self::Configuration
+            }
             _ => Self::Transport,
         }
     }
@@ -141,6 +159,8 @@ pub struct RtaSocket {
     close_deadline: Option<Instant>,
     terminal: SocketError,
     timer: Pin<Box<Sleep>>,
+    recovery: recovery::Backoff,
+    recovery_events: VecDeque<Event>,
 }
 
 impl RtaSocket {
@@ -175,6 +195,8 @@ impl RtaSocket {
             close_deadline: None,
             terminal: SocketError::Closed,
             timer: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            recovery: recovery::Backoff::default(),
+            recovery_events: VecDeque::new(),
         }
     }
 
@@ -324,6 +346,9 @@ impl RtaSocket {
     /// # Errors
     /// Returns the same redacted terminal cause after retained events/completions drain.
     pub async fn drive(&mut self) -> Result<Event, SocketError> {
+        if let Some(event) = self.recovery_events.pop_front() {
+            return Ok(event);
+        }
         poll_fn(|cx| self.poll_drive(cx)).await
     }
 

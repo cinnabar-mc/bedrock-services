@@ -45,6 +45,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.Before(req, body)
 	}
 	r := t.Server.Handle(req.Method, req.URL.Host, req.URL, req.Header, body)
+	if r.Status == 101 {
+		return t.Server.rtaTransport(req, r), nil
+	}
 	if r.Reset {
 		return nil, &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
 	}
@@ -63,6 +66,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r := s.Handle(req.Method, req.Host, req.URL, req.Header, body)
+	if r.Status == 101 {
+		s.rtaHTTP(w, r)
+		return
+	}
 	if r.Reset {
 		conn, _, err := http.NewResponseController(w).Hijack()
 		if err == nil {
@@ -138,7 +145,11 @@ func Serve(in io.Reader, out io.Writer) error {
 				steps = []string{}
 			}
 			resp = map[string]any{"steps": steps}
+		case req.Op == "drop-rta":
+			s.server.DropRTA()
+			resp = map[string]any{}
 		case req.Op == "close":
+			s.server.DropRTA()
 			_ = s.http.Close()
 			delete(sessions, req.Session)
 			resp = map[string]any{}

@@ -462,6 +462,16 @@ XUID/proof/generation before touching current I/O, drops the old socket and
 queued work, then attempts one freshly acquired upgrade. Failure or cancellation
 keeps disconnected desired state. After success, explicitly `resubscribe` and
 install initial snapshots before applying changes or rebinding MPSD sessions.
+
+After draining old disconnection completions, `RtaSocket::recover` or
+`Minecraft::recover_rta` reacquires a protected upgrade and restores desired
+subscriptions within the caller's deadline. Failed attempts use capped exponential
+backoff with jitter. Canceling recovery closes partial transport work while retaining
+desired handles and the scheduled wait. Apply returned snapshots in order, then
+rebind affected MPSD sessions. Connection rebinding updates only this member and
+uses `If-Match: *` so unrelated member changes cannot force another round trip.
+Rejected resources produce Failed events; other desired subscriptions continue restoring.
+Those failures survive cancellation and retries until returned by recovery or drained through drive.
 `into_connection` drops I/O/queued work and transfers disconnected pure state
 to another caller driver. Sign-out retires the owner and its account generation.
 

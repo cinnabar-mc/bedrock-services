@@ -169,8 +169,11 @@ pub struct Account {
     title_data: Option<TitleData>,
     current_title_data: Option<TitleData>,
     title_failures: [Option<failure::Failure>; 2],
+    replayed_title_failure: Option<bool>,
     authorizations: HashMap<String, Arc<Authorization>>,
     restored: Option<checkpoint::Derived>,
+    #[cfg(test)]
+    pub(crate) trace_rta_transport: Option<(std::net::SocketAddr, Vec<u8>)>,
     pub(crate) service_checkpoint: Option<zeroize::Zeroizing<Vec<u8>>>,
     #[cfg(any(test, feature = "test-support"))]
     fixture_mpsd_base: Option<url::Url>,
@@ -211,8 +214,11 @@ impl Account {
             title_data: None,
             current_title_data: None,
             title_failures: [None, None],
+            replayed_title_failure: None,
             authorizations: HashMap::new(),
             restored: None,
+            #[cfg(test)]
+            trace_rta_transport: None,
             service_checkpoint: None,
             #[cfg(any(test, feature = "test-support"))]
             fixture_mpsd_base: None,
@@ -305,10 +311,14 @@ impl Account {
 
     /// Replays a still-live title failure without extending its retry window.
     fn check_title_failure(&mut self, slot: usize) -> Result<(), Error> {
+        self.replayed_title_failure = None;
         if let Some(error) = self.title_failures[slot]
             .as_ref()
             .and_then(|failure| failure.get(self.http.retry_time()))
         {
+            self.replayed_title_failure = self.title_failures[slot]
+                .as_ref()
+                .map(|failure| failure.transient());
             return Err(error);
         }
         self.title_failures[slot] = None;
@@ -317,10 +327,9 @@ impl Account {
 
     /// Installs only completed failures; cancellation before completion leaves no cache entry.
     fn record_title_failure<T>(&mut self, slot: usize, result: &Result<T, Error>) {
-        self.title_failures[slot] = result
-            .as_ref()
-            .err()
-            .map(|error| failure::Failure::new(error, self.http.retry_time()));
+        self.title_failures[slot] = result.as_ref().err().map(|error| {
+            failure::Failure::new(error, self.http.retry_time(), self.replayed_title_failure)
+        });
     }
 
     /// Resolves the loaded title tables in the same order for acquisition and signing.

@@ -1,0 +1,17 @@
+# mpsd-412: explicit ETag conflicts replay one stable join intent at most three times
+> signin
+POST login.live.com/oauth20_connect.srf -> 200
+POST login.live.com/oauth20_token.srf grant=device_code -> 200
+= ok
+> mpsd-join
+POST device.auth.xboxlive.com/device/authenticate signed -> 200
+GET title.mgt.xboxlive.com/titles/default/endpoints?type=1 -> 200
+POST sisu.xboxlive.com/authorize access=a1 signed -> 200
+GET title.mgt.xboxlive.com/titles/current/endpoints auth=x1 signed -> 200
+GET rta.xboxlive.com/connect auth=x1 signed -> 101
+RTA subscribe https://sessiondirectory.xboxlive.com/connections/ -> connection=1
+PUT sessiondirectory.xboxlive.com/handles/00000000-0000-0000-0000-000000000009/session auth=x1 if-match=* connection=00000000-0000-0000-0000-000000000001 intent=intent1 signed -> 412
+PUT sessiondirectory.xboxlive.com/handles/00000000-0000-0000-0000-000000000009/session auth=x1 if-match="raced1" connection=00000000-0000-0000-0000-000000000001 intent=intent1 signed -> 412
+PUT sessiondirectory.xboxlive.com/handles/00000000-0000-0000-0000-000000000009/session auth=x1 if-match="raced2" connection=00000000-0000-0000-0000-000000000001 intent=intent1 signed -> 200
+POST sessiondirectory.xboxlive.com/handles auth=x1 signed -> 201
+= ok
