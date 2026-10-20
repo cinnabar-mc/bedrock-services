@@ -370,3 +370,5 @@ async fn friend_fixture_stop_retains_accepted_replacement_until_physical_retirem
     .await
     .expect("finite accepted replacement retirement fixture");
 }
+
+mod lifecycle;

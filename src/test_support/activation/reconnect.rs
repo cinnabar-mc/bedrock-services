@@ -43,6 +43,8 @@ pub(super) struct Services {
     validator: Option<String>,
     #[cfg(test)]
     replacement_upgrade: Option<oneshot::Sender<()>>,
+    #[cfg(test)]
+    ack_accounting_hold: Option<super::subscription::SubscriptionHold>,
 }
 
 impl HostedPeer {
@@ -76,6 +78,8 @@ impl HostedPeer {
             validator: None,
             #[cfg(test)]
             replacement_upgrade: Some(replacement_upgrade),
+            #[cfg(test)]
+            ack_accounting_hold: None,
         });
         HostedRtaReconnect {
             close: Some(close),
@@ -85,6 +89,17 @@ impl HostedPeer {
             #[cfg(test)]
             replacement_upgrade: upgraded,
         }
+    }
+
+    /// Holds only telemetry after the replacement acknowledgment has actually flushed.
+    #[cfg(test)]
+    pub(super) fn hold_replacement_ack_accounting(&mut self) -> HostedSubscriptionHold {
+        let (hold, service) = super::subscription::hold();
+        let mut state = self.activation.as_ref().unwrap().state.lock().unwrap();
+        let recovery = state.reconnect.as_mut().unwrap();
+        assert!(recovery.ack_accounting_hold.is_none());
+        recovery.ack_accounting_hold = Some(service);
+        hold
     }
 }
 
@@ -117,6 +132,12 @@ impl HostedRtaReconnect {
         (&mut self.replacement_upgrade)
             .await
             .expect("verified original replacement upgrade");
+    }
+
+    /// Releases only the retained unused close request after a cancellation observation.
+    #[cfg(test)]
+    pub(super) fn release_disconnect_wait(&mut self) {
+        self.close.take();
     }
 
     /// Captures bounded original observations after the caller has joined all fixture tasks.
@@ -204,6 +225,20 @@ pub(super) async fn run(
         ))
         .await
         .unwrap();
+    #[cfg(test)]
+    {
+        let hold = state
+            .lock()
+            .unwrap()
+            .reconnect
+            .as_mut()
+            .unwrap()
+            .ack_accounting_hold
+            .take();
+        if let Some(hold) = hold {
+            hold.wait().await;
+        }
+    }
     observed.lock().unwrap().acknowledgments += 1;
     super::sockets::terminal(&mut replacement).await
 }
