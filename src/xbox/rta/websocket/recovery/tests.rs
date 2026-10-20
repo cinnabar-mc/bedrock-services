@@ -68,6 +68,71 @@ async fn empty_recovery_is_network_free_and_wrong_account_is_fenced() {
     );
 }
 
+/// Expired credentials without refresh material require sign-in before any recovery backoff.
+#[tokio::test]
+async fn terminal_sign_in_failure_survives_recovery() {
+    let (mut account, mut socket) = disconnected(1).await;
+    account.credentials = crate::oauth::Credentials::from_tokens(
+        account.config.client_id.clone(),
+        "expired-access".into(),
+        String::new(),
+        std::time::UNIX_EPOCH,
+    )
+    .unwrap();
+    account.session = None;
+    account.authorizations.clear();
+    tokio::time::pause();
+    let result = socket
+        .recover(&mut account, Instant::now() + Duration::from_secs(60))
+        .await;
+    assert!(matches!(
+        result,
+        Err(RecoveryError::State(Error::Service(
+            crate::Error::SignInRequired
+        )))
+    ));
+    assert_eq!(socket.state.subscriptions().count(), 1);
+    assert!(socket.socket.is_none());
+    assert!(socket.recovery.next.is_none());
+}
+
+/// Only temporary HTTP acquisition statuses and interrupted socket work authorize recovery retries.
+#[test]
+fn terminal_failures_are_not_retryable() {
+    for error in [
+        crate::Error::SignInRequired,
+        crate::Error::AuthorizationDeclined,
+        crate::Error::Invalid("response"),
+        crate::Error::ResponseTooLarge,
+        crate::Error::TimeRange,
+    ] {
+        assert!(!crate::http::retry::transient(&error));
+    }
+    for status in [400, 401, 403, 404, 408, 429, 500, 503, 999] {
+        let temporary = matches!(status, 408 | 429 | 500 | 503 | 999);
+        assert_eq!(
+            crate::http::retry::transient(&crate::Error::Status {
+                status: reqwest::StatusCode::from_u16(status).unwrap(),
+                xerr: None,
+            }),
+            temporary
+        );
+        assert_eq!(
+            retryable_socket(SocketError::UpgradeStatus(status)),
+            temporary
+        );
+    }
+    for error in [
+        SocketError::Configuration,
+        SocketError::State,
+        SocketError::WrongAccount,
+        SocketError::Protocol,
+        SocketError::Capacity,
+    ] {
+        assert!(!retryable_socket(error));
+    }
+}
+
 /// Replaces only the test transport while retaining the real account, generation and desired handles.
 async fn replacement(
     account: &mut Account,
@@ -90,6 +155,25 @@ async fn replacement(
         peer,
         epoch,
     )
+}
+
+/// A malformed restoration reply remains a protocol failure instead of starting another epoch.
+#[tokio::test]
+async fn malformed_restoration_is_terminal() {
+    let (mut account, socket) = disconnected(1).await;
+    let (mut socket, mut peer, _) = replacement(&mut account, socket).await;
+    let (result, ()) = tokio::join!(
+        socket.restore_subscriptions(Instant::now() + Duration::from_secs(15)),
+        async {
+            peer.next().await.unwrap().unwrap();
+            peer.send(Message::text("invalid-json")).await.unwrap();
+        }
+    );
+    assert!(matches!(
+        result,
+        Err(RecoveryError::Socket(SocketError::Protocol))
+    ));
+    assert_eq!(socket.state.subscriptions().count(), 1);
 }
 
 /// A rejection survives cancellation during its sibling's real handshake and is delivered exactly once.

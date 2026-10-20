@@ -13,6 +13,9 @@ pub enum RecoveryError {
     /// The supplied account, generation or subscription lifecycle cannot be recovered.
     #[error(transparent)]
     State(#[from] Error),
+    /// A terminal upgrade, framing or capacity failure prevents recovery.
+    #[error(transparent)]
+    Socket(#[from] SocketError),
 }
 
 #[derive(Default)]
@@ -54,7 +57,7 @@ impl RtaSocket {
     /// Rejections survive interruption; drive can deliver them if recovery is canceled.
     ///
     /// # Errors
-    /// Returns account/lifecycle mismatches or the caller's deadline.
+    /// Returns terminal authentication, account/lifecycle or socket failures, or the caller's deadline.
     /// Transient acquisition, upgrade and interrupted-resubscribe failures retry until that deadline.
     pub async fn recover(
         &mut self,
@@ -105,7 +108,7 @@ impl RtaSocket {
                 let headers =
                     upgrade_headers().map_err(|_| Error::Invalid("recovery upgrade fields"))?;
                 match account.rta_connection(generation, headers).await {
-                    Err(Error::Service(_)) => {}
+                    Err(Error::Service(error)) if crate::http::retry::transient(&error) => {}
                     Err(error) => return Err(error.into()),
                     Ok(mut request) => {
                         guard.socket.state.check_reconnect(&request)?;
@@ -125,7 +128,8 @@ impl RtaSocket {
                             Err(SocketError::UpgradeStatus(401)) => {
                                 account.reject_rta(&request);
                             }
-                            Err(_) => {}
+                            Err(error) if retryable_socket(error) => {}
+                            Err(error) => return Err(error.into()),
                         }
                     }
                 }
@@ -168,14 +172,18 @@ impl RtaSocket {
             let request = self.resubscribe(subscription, until)?;
             loop {
                 let event = match poll_fn(|cx| self.poll_drive(cx)).await {
-                    Ok(Event::Disconnected) | Err(_) => return Ok(None),
+                    Ok(Event::Disconnected) if retryable_socket(self.terminal) => return Ok(None),
+                    Ok(Event::Disconnected) => return Err(self.terminal.into()),
+                    Err(error) if retryable_socket(error) => return Ok(None),
+                    Err(error) => return Err(error.into()),
                     Ok(
                         event @ Event::Failed {
                             cause: crate::xbox::rta::Failure::Status(_),
                             ..
                         },
                     ) => event,
-                    Ok(Event::Failed { .. }) => return Ok(None),
+                    Ok(Event::Failed { .. }) if retryable_socket(self.terminal) => return Ok(None),
+                    Ok(Event::Failed { .. }) => return Err(self.terminal.into()),
                     Ok(event) => event,
                 };
                 let ready = matches!(&event,Event::Subscribed { request:received,.. } | Event::Failed {request:received,..} if *received == request);
@@ -199,6 +207,17 @@ impl RtaSocket {
         }
         Ok(Some(self.recovery_events.drain(..).collect()))
     }
+}
+
+/// Retries interrupted transport and temporary upgrade refusals without hiding terminal socket errors.
+fn retryable_socket(error: SocketError) -> bool {
+    matches!(
+        error,
+        SocketError::Transport
+            | SocketError::TimedOut
+            | SocketError::Closed
+            | SocketError::UpgradeStatus(408 | 429 | 500..=599 | 999)
+    )
 }
 
 #[cfg(test)]
