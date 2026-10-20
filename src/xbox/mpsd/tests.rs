@@ -204,7 +204,7 @@ async fn lifecycle_preserves_validators_membership_identity_and_uncertain_write_
                 let mut result=snapshot(2);result["members"]=Value::Null; (200,vec![("ETag","\"v2\"")],result) }
             5 => { assert_eq!(header(headers,"if-none-match"),"\"v2\""); (304,vec![],Value::Null) }
             6 => { assert_eq!(header(headers,"if-match"),"\"v2\""); assert_eq!(value,json!({"members":{"me":{"properties":{"custom":{"ready":true}}}}})); (412,vec![("ETag","\"v3\"")],json!({"secret":"SENSITIVE"})) }
-            7 => { assert_eq!(header(headers,"if-none-match"),""); (200,vec![],snapshot(3)) }
+            7 => { assert_eq!(header(headers,"if-none-match"),""); (200,vec![("ETag","\"v3\"")],snapshot(3)) }
             8 => { assert_eq!(header(headers,"if-match"),"*"); assert_eq!(value["members"]["me"]["properties"]["system"]["connection"],Uuid::from_u128(4).to_string()); (200,vec![("ETag","\"v4\"")],snapshot(4)) }
             9 => { assert_eq!(header(headers,"if-none-match"),"\"v4\""); (200,vec![("ETag","\"stale\"")],snapshot(2)) }
             10 => { assert_eq!(header(headers,"if-match"),"\"v4\""); assert_eq!(value,json!({"members":{"me":null}})); (204,vec![],Value::Null) }

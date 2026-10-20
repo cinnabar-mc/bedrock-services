@@ -243,6 +243,21 @@ impl Minecraft {
         connection.owns_account_proof(&self.xbox)
     }
 
+    /// Recovers this account's disconnected RTA socket within the caller's original deadline.
+    /// Apply returned subscription snapshots in order and rebind affected MPSD memberships.
+    /// Cancellation retains desired handles and retry backoff while dropping partial transport work.
+    ///
+    /// # Errors
+    /// Returns account/lifecycle mismatch, subscription rejection or deadline expiry.
+    #[cfg(feature = "rta-tokio")]
+    pub async fn recover_rta(
+        &mut self,
+        socket: &mut xbox::rta::websocket::RtaSocket,
+        deadline: std::time::Instant,
+    ) -> Result<Vec<xbox::rta::Event>, xbox::rta::websocket::RecoveryError> {
+        socket.recover(&mut self.xbox, deadline).await
+    }
+
     /// Returns the game-session identifier shared by credential exchange and every mint.
     pub fn session_id(&self) -> uuid::Uuid {
         self.session_id

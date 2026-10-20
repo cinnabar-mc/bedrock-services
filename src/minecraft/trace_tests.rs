@@ -21,6 +21,9 @@ use std::{
 const ORACLE_ENV: &str = "BEDROCK_SERVICES_TRACE_ORACLE";
 const GOLDENS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/service-trace/testdata");
 
+#[cfg(feature = "rta-tokio")]
+mod rta;
+
 #[derive(Debug)]
 enum Kind {
     /// Fewer requests or a recovery Go lacks, with the same final correctness.
@@ -135,6 +138,8 @@ struct Peer<'a> {
     /// Client clock: the peer's skew is only visible through its Date headers.
     now: SystemTime,
     elapsed: Duration,
+    #[cfg(feature = "rta-tokio")]
+    rta: rta::Trace,
 }
 
 impl Peer<'_> {
@@ -146,6 +151,8 @@ impl Peer<'_> {
             ca: reply["ca"].as_str().unwrap().as_bytes().to_vec(),
             now: unix(&reply["now"]),
             elapsed: Duration::ZERO,
+            #[cfg(feature = "rta-tokio")]
+            rta: rta::Trace::default(),
             oracle,
         }
     }
@@ -220,6 +227,8 @@ async fn run(peer: &mut Peer<'_>, client: &mut Option<Minecraft>, step: &str) ->
     }
     let owner = client.as_mut().expect("plan step before signin");
     match verb {
+        #[cfg(feature = "rta-tokio")]
+        "rta-subscribe" | "mpsd-join" | "rta-drop" => rta::run(peer, owner, verb).await,
         "join" => {
             let key = p384::ecdsa::SigningKey::from_slice(&[7; 48]).unwrap();
             owner.multiplayer_token(key.verifying_key()).await.map(drop)
@@ -306,6 +315,18 @@ async fn service_traces_match_go_goldens() {
     for scenario in &scenarios {
         let golden =
             std::fs::read_to_string(Path::new(GOLDENS).join(format!("{scenario}.trace"))).unwrap();
+        if !cfg!(feature = "rta-tokio")
+            && golden.lines().any(|line| {
+                line.strip_prefix("> ").is_some_and(|step| {
+                    matches!(
+                        step.split_whitespace().next(),
+                        Some("rta-subscribe" | "rta-drop" | "mpsd-join")
+                    )
+                })
+            })
+        {
+            continue;
+        }
         let rust = replay(&mut oracle, scenario, &golden).await;
         if matches!(scenario.as_str(), "retry-after" | "transient-failure") {
             let operations = golden.lines().filter(|line| line.starts_with("> ")).count();

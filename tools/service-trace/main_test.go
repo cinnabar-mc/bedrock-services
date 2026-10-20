@@ -26,7 +26,9 @@ import (
 	"github.com/cinnabar-mc/bedrock-services/tools/service-trace/fake"
 	"github.com/df-mc/go-playfab/v2"
 	"github.com/df-mc/go-xsapi/v2"
+	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/presence"
+	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/sisu"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
@@ -201,6 +203,9 @@ type driver struct {
 	playfab     *playfab.Client
 	xbl         *xsapi.Client
 	closers     []func() error
+	rtaConn     *rta.Conn
+	rtaReady    chan struct{}
+	directory   *mpsd.Client
 }
 
 var quiet = slog.New(slog.DiscardHandler)
@@ -251,6 +256,12 @@ func (d *driver) run(step string) error {
 		return nil
 	case "xsts-pair":
 		return d.xstsPair(arg)
+	case "rta-subscribe":
+		return d.subscribeRTA()
+	case "rta-drop":
+		return d.dropRTA()
+	case "mpsd-join":
+		return d.joinDirectory()
 	}
 	return fmt.Errorf("unknown step %q", step)
 }

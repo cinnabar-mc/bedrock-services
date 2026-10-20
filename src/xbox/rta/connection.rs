@@ -20,6 +20,8 @@ pub struct ConnectionRequest {
     authorization: Arc<Authorization>,
     scope: Scope,
     used: bool,
+    #[cfg(test)]
+    pub(crate) trace_transport: Option<(std::net::SocketAddr, Vec<u8>)>,
     #[cfg(feature = "test-support")]
     pub(crate) hosted_transport: Option<Arc<crate::test_support::activation::transport::Transport>>,
 }
@@ -75,6 +77,8 @@ impl Account {
                 epoch: Epoch(Uuid::new_v4()),
             },
             used: false,
+            #[cfg(test)]
+            trace_transport: self.trace_rta_transport.clone(),
             #[cfg(feature = "test-support")]
             hosted_transport: self.http.hosted_transport(),
         })

@@ -271,8 +271,8 @@ impl Directory<'_> {
     /// # Errors
     /// Returns redacted lifecycle/service failures. Conflict or uncertain writes require sync.
     pub async fn bind(&mut self, session: &mut Session, binding: Binding) -> Result<Update, Error> {
-        self.update(session, encode(&json!({"members":{"me":{"properties":{"system":{
-            "active":true,"connection":binding.connection,"subscription":{"id":binding.subscription.to_string().to_uppercase(),"changeTypes":[CHANGE_EVERYTHING]}}}}}}))?, false).await
+        self.update_with_condition(session, encode(&json!({"members":{"me":{"properties":{"system":{
+            "active":true,"connection":binding.connection,"subscription":{"id":binding.subscription.to_string().to_uppercase(),"changeTypes":[CHANGE_EVERYTHING]}}}}}}))?, false, HeaderValue::from_static("*")).await
     }
 
     /// Removes only this account's membership using members.me:null. Success closes the local owner.
@@ -380,13 +380,25 @@ impl Directory<'_> {
         bytes: Vec<u8>,
         leave: bool,
     ) -> Result<Update, Error> {
-        self.check(session, true)?;
-        let url = self.session_url(&session.reference)?;
-        let token = self.token(&url, Some(&session.owner)).await?;
         let condition = session
             .etag
             .clone()
             .unwrap_or_else(|| HeaderValue::from_static("*"));
+        self.update_with_condition(session, bytes, leave, condition)
+            .await
+    }
+
+    /// Applies one guarded mutation; a member-only connection rebind does not depend on other members' ETags.
+    async fn update_with_condition(
+        &mut self,
+        session: &mut Session,
+        bytes: Vec<u8>,
+        leave: bool,
+        condition: HeaderValue,
+    ) -> Result<Update, Error> {
+        self.check(session, true)?;
+        let url = self.session_url(&session.reference)?;
+        let token = self.token(&url, Some(&session.owner)).await?;
         let request = self.request(
             Method::PUT,
             url,

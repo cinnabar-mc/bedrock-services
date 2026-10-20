@@ -4,13 +4,18 @@
 //! then [`RtaSocket::connect`] transmits those final headers unchanged. Continuously
 //! poll [`RtaSocket::drive`] to process messages, automatic Pongs and deadlines.
 //! There is no spawned task, internal runtime, heartbeat policy or automatic retry.
+//! After disconnection, [`RtaSocket::recover`] can reacquire and restore desired
+//! subscriptions with backoff inside the caller's deadline. Apply its returned snapshots
+//! before processing later changes and rebind any affected MPSD memberships.
 //! Dropping drive preserves partial writes; dropping this owner drops the socket.
 //! Cancellation/expiry retires the whole socket as required by the pure owner.
 //!
 //! Protected requests and payloads are never logged. HTTP/TLS/WebSocket library
 //! buffers can retain copies and are not guaranteed erased on drop.
 
+mod recovery;
 mod upgrade;
+pub use recovery::RecoveryError;
 
 use super::{
     Connection, ConnectionRequest, Error, Event, MAX_MESSAGE_BYTES, MAX_PENDING_REQUESTS,
@@ -141,6 +146,7 @@ pub struct RtaSocket {
     close_deadline: Option<Instant>,
     terminal: SocketError,
     timer: Pin<Box<Sleep>>,
+    recovery: recovery::Backoff,
 }
 
 impl RtaSocket {
@@ -175,6 +181,7 @@ impl RtaSocket {
             close_deadline: None,
             terminal: SocketError::Closed,
             timer: Box::pin(tokio::time::sleep(Duration::ZERO)),
+            recovery: recovery::Backoff::default(),
         }
     }
 

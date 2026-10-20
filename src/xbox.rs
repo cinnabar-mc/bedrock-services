@@ -169,6 +169,8 @@ pub struct Account {
     current_title_data: Option<TitleData>,
     authorizations: HashMap<String, Arc<Authorization>>,
     restored: Option<checkpoint::Derived>,
+    #[cfg(test)]
+    pub(crate) trace_rta_transport: Option<(std::net::SocketAddr, Vec<u8>)>,
     #[cfg(any(test, feature = "test-support"))]
     fixture_mpsd_base: Option<url::Url>,
 }
@@ -201,6 +203,8 @@ impl Account {
             current_title_data: None,
             authorizations: HashMap::new(),
             restored: None,
+            #[cfg(test)]
+            trace_rta_transport: None,
             #[cfg(any(test, feature = "test-support"))]
             fixture_mpsd_base: None,
         }
