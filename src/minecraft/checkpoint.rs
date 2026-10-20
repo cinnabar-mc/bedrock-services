@@ -1,4 +1,4 @@
-//! Optional service cache admitted only by a fresh discovery response and matching policy.
+//! Optional service cache bound to account policy, validated routes and original expiry.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,10 @@ struct Snapshot<'a> {
     environment: Environment,
     session_id: uuid::Uuid,
     observed: SystemTime,
+    #[serde(default)]
+    saved_local: Option<SystemTime>,
+    #[serde(default)]
+    saved_service: Option<SystemTime>,
     #[serde(borrow)]
     playfab: Option<playfab::checkpoint::Snapshot<'a>>,
     #[serde(borrow)]
@@ -31,11 +35,14 @@ impl Minecraft {
         else {
             return Ok(account);
         };
+        let saved_local = self.http.local_time();
         let snapshot = Snapshot {
             config: self.config.clone(),
             environment: environment.clone(),
             session_id: self.session_id,
             observed,
+            saved_local: Some(saved_local),
+            saved_service: Some(self.http.now()),
             playfab: self.playfab.as_ref().map(|session| session.snapshot()),
             authorization: self.authorization.as_ref().map(|token| token.snapshot()),
         };
@@ -46,6 +53,56 @@ impl Minecraft {
             return Ok(account);
         }
         account.with_services(&bytes)
+    }
+
+    /// Reuses a policy-bound auth route only while its saved credential and clock remain valid.
+    pub(super) fn resume_service_checkpoint(&mut self) -> bool {
+        let Some(bytes) = self.restored.as_ref() else {
+            return false;
+        };
+        let Ok(snapshot) = serde_json::from_slice::<Snapshot<'_>>(bytes) else {
+            return false;
+        };
+        if snapshot.config != self.config
+            || snapshot.session_id.is_nil()
+            || validate_service_url(&snapshot.environment.service_uri).is_err()
+            || validate_service_url(&snapshot.environment.issuer).is_err()
+            || playfab::login_url(&snapshot.environment.play_fab_title_id).is_err()
+        {
+            return false;
+        }
+        let (Some(local), Some(service)) = (snapshot.saved_local, snapshot.saved_service) else {
+            return false;
+        };
+        let Some(now) = self.http.resumed_time(service, local) else {
+            return false;
+        };
+        if service < snapshot.observed {
+            return false;
+        }
+        let Some(authorization) = snapshot
+            .authorization
+            .and_then(|saved| saved.restore(now).ok())
+        else {
+            return false;
+        };
+        self.playfab = snapshot
+            .playfab
+            .and_then(|saved| saved.restore(now))
+            .map(Arc::new);
+        if let Some(session) = &self.playfab {
+            self.entities.insert(
+                playfab::EntityKind::TitlePlayerAccount,
+                Arc::clone(&session.entity),
+            );
+        }
+        self.authorization = Some(Arc::new(authorization));
+        self.environment = Some(snapshot.environment);
+        self.session_id = snapshot.session_id;
+        self.restored_route = true;
+        self.http.resume_clock(now, snapshot.observed);
+        self.restored = None;
+        true
     }
 
     /// Admits matching entries after discovery supplies a new service clock observation.

@@ -8,10 +8,11 @@ import (
 // Scenario pairs the peer's script with the client plan both languages run.
 // Plan steps: signin, join, presence, restart, advance <seconds>, xsts-pair <relying party>.
 type Scenario struct {
-	Name   string
-	Note   string
-	Script Script
-	Plan   []string
+	Name        string
+	Note        string
+	Script      Script
+	Plan        []string
+	CachedRoute bool
 }
 
 const realmsRP = "https://pocket.realms.minecraft.net/"
@@ -26,6 +27,11 @@ var Scenarios = []Scenario{
 	{
 		Name: "warm-restart-join", Note: "restart from persisted state, then the first join",
 		Plan: []string{"signin", "join", "restart", "join"},
+	},
+	{
+		Name: "warm-restart-cached-route", Note: "restart with a version-bound auth route and a reusable service token",
+		Plan:        []string{"signin", "join", "restart", "join"},
+		CachedRoute: true,
 	},
 	{
 		Name: "warm-restart-expiry", Note: "a restarted service token expires while its PlayFab login remains reusable",

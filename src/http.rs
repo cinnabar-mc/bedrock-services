@@ -54,6 +54,7 @@ pub(crate) struct Http {
     user_agent: HeaderValue,
     pub endpoints: Endpoints,
     clock: Option<(SystemTime, Instant)>,
+    minimum_date: Option<SystemTime>,
     #[cfg(test)]
     elapsed: FixtureElapsed,
     #[cfg(feature = "test-support")]
@@ -102,6 +103,7 @@ impl Http {
             user_agent,
             endpoints: Endpoints::default(),
             clock: None,
+            minimum_date: None,
             #[cfg(test)]
             elapsed: FixtureElapsed::default(),
             #[cfg(feature = "test-support")]
@@ -157,6 +159,7 @@ impl Http {
     #[cfg(feature = "test-support")]
     pub(crate) fn inherit_fixture_clock(&mut self, source: &Self) {
         self.clock = Some(source.clock.expect("original fixture response has a Date"));
+        self.minimum_date = source.minimum_date;
         #[cfg(test)]
         {
             self.elapsed = source.elapsed;
@@ -165,12 +168,46 @@ impl Http {
 
     /// Borrows the original response UTC sample without persisting its monotonic anchor.
     pub(crate) fn response_time(&self) -> Option<SystemTime> {
-        self.clock.map(|(server, _)| server)
+        self.minimum_date
+            .or_else(|| self.clock.map(|(server, _)| server))
+    }
+
+    /// Captures host UTC at the HTTP edge, including explicitly simulated fixture elapsed time.
+    pub(crate) fn local_time(&self) -> SystemTime {
+        #[cfg(test)]
+        let elapsed = self.elapsed.total;
+        #[cfg(not(test))]
+        let elapsed = Duration::ZERO;
+        SystemTime::now() + elapsed
+    }
+
+    /// Advances saved service time by host elapsed time, rejecting a host-clock rollback or overflow.
+    pub(crate) fn resumed_time(
+        &self,
+        service: SystemTime,
+        local: SystemTime,
+    ) -> Option<SystemTime> {
+        let now = service.checked_add(self.local_time().duration_since(local).ok()?)?;
+        let nanos =
+            i128::try_from(now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_nanos()).ok()?;
+        time::OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
+        Some(now)
+    }
+
+    /// Starts a validated restart estimate; the next successful response must supply a nonregressing Date.
+    pub(crate) fn resume_clock(&mut self, now: SystemTime, observed: SystemTime) {
+        self.clock = Some((now, Instant::now()));
+        self.minimum_date = Some(observed);
+        #[cfg(test)]
+        {
+            self.elapsed.at_response = self.elapsed.total;
+        }
     }
 
     /// Shares a fresh authenticated transport observation without reanchoring its lifetime.
     pub(crate) fn inherit_clock(&mut self, source: &Self) {
         self.clock = source.clock;
+        self.minimum_date = source.minimum_date;
         #[cfg(test)]
         {
             self.elapsed = source.elapsed;
@@ -223,11 +260,12 @@ impl Http {
             request.headers_mut().remove(HOST);
         }
         let mut response = self.client.execute(request).await?;
-        if let Some(date) = response
+        let date = response
             .headers()
             .get("date")
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| httpdate::parse_http_date(value).ok())
+            .and_then(|value| httpdate::parse_http_date(value).ok());
+        if let Some(date) = date.filter(|date| self.minimum_date.is_none_or(|floor| *date >= floor))
         {
             self.clock = Some((date, Instant::now()));
             #[cfg(test)]
@@ -249,6 +287,14 @@ impl Http {
                 return Err(Error::ResponseTooLarge);
             }
             body.extend_from_slice(&chunk);
+        }
+        if status.is_success()
+            && let Some(floor) = self.minimum_date
+        {
+            if date.is_none_or(|date| date < floor) {
+                return Err(Error::Invalid("restored service response Date"));
+            }
+            self.minimum_date = None;
         }
         Ok(Response {
             status,
@@ -344,6 +390,7 @@ impl Http {
             user_agent: HeaderValue::from_str(user_agent).unwrap(),
             endpoints: Endpoints::default(),
             clock: None,
+            minimum_date: None,
             #[cfg(test)]
             elapsed: FixtureElapsed::default(),
             #[cfg(feature = "test-support")]
@@ -380,6 +427,7 @@ impl Http {
                 playfab: Some(format!("{base}/Client/LoginWithXbox")),
             },
             clock: None,
+            minimum_date: None,
             #[cfg(test)]
             elapsed: FixtureElapsed::default(),
             #[cfg(feature = "test-support")]
