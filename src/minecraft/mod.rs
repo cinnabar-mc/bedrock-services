@@ -102,6 +102,7 @@ impl Minecraft {
         transport: std::sync::Arc<crate::test_support::activation::transport::Transport>,
     ) {
         self.http = transport.account_http(USER_AGENT);
+        self.xbox.inherit_hosted_clock(&mut self.http);
     }
 
     /// Confines only the nondefault hosted fixture's discovery owner to its finite HTTP peer.

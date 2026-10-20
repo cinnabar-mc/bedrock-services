@@ -212,6 +212,12 @@ impl Account {
         self.http.advance_fixture_time(by);
     }
 
+    /// Transfers only the sealed acquisition's original Date/Instant observation, without I/O.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn inherit_hosted_clock(&self, target: &mut Http) {
+        target.inherit_fixture_clock(&self.http);
+    }
+
     /// Borrows the account's current Microsoft credentials for secure persistence.
     pub fn credentials(&self) -> &Credentials {
         &self.credentials

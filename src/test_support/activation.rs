@@ -364,8 +364,8 @@ async fn acquire_inner(
     )
     .unwrap();
     let mut account = Minecraft::new(account, fixture_peer.minecraft.clone()).unwrap();
-    account.hosted_activation_http(transport);
     let identity = account.xbox_authorization().await.unwrap();
+    account.hosted_activation_http(transport);
     assert_eq!(identity.xuid(), super::script::HOST_XUID);
     HostedAuthority {
         account,
