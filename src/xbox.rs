@@ -21,6 +21,7 @@ const MAX_RELYING_PARTIES: usize = 64;
 const MAX_RELYING_PARTY_BYTES: usize = 4096;
 
 mod checkpoint;
+mod failure;
 pub use checkpoint::{Checkpoint, MAX_CHECKPOINT_BYTES};
 mod signup;
 pub use signup::AccountCreationRequired;
@@ -167,6 +168,7 @@ pub struct Account {
     session: Option<Session>,
     title_data: Option<TitleData>,
     current_title_data: Option<TitleData>,
+    title_failures: [Option<failure::Failure>; 2],
     authorizations: HashMap<String, Arc<Authorization>>,
     restored: Option<checkpoint::Derived>,
     #[cfg(test)]
@@ -210,6 +212,7 @@ impl Account {
             session: None,
             title_data: None,
             current_title_data: None,
+            title_failures: [None, None],
             authorizations: HashMap::new(),
             restored: None,
             #[cfg(test)]
@@ -262,6 +265,7 @@ impl Account {
         self.session = None;
         self.title_data = None;
         self.current_title_data = None;
+        self.title_failures = [None, None];
         self.authorizations.clear();
         Ok(())
     }
@@ -272,20 +276,10 @@ impl Account {
         url: &url::Url,
     ) -> Result<Arc<Authorization>, Error> {
         if self.current_title_data.is_none() {
-            let token = self.authorize(XBOX_RELYING_PARTY).await?;
-            let mut request = self
-                .http
-                .request(reqwest::Method::GET, &self.http.endpoints.nsal_current)
-                .header("x-xbl-contract-version", "1")
-                .header("authorization", token.header_value()?)
-                .build()?;
-            SignaturePolicy::default().sign(&mut request, &self.key, self.http.now())?;
-            let response = self.http.send(request).await?;
-            if response.status == reqwest::StatusCode::UNAUTHORIZED {
-                self.reject(&token);
-            }
-            response.success()?;
-            self.current_title_data = Some(response.json()?);
+            self.check_title_failure(1)?;
+            let result = self.load_current_title_data().await;
+            self.record_title_failure(1, &result);
+            self.current_title_data = Some(result?);
         }
         self.ensure_title_data().await?;
         let party = self
@@ -293,6 +287,44 @@ impl Account {
             .map(|(party, _)| party.to_owned())
             .ok_or(Error::Invalid("unmatched service endpoint"))?;
         self.authorize(&party).await
+    }
+
+    /// Loads authenticated current-title policy, including the SISU acquisition it depends on.
+    async fn load_current_title_data(&mut self) -> Result<TitleData, Error> {
+        let token = self.authorize(XBOX_RELYING_PARTY).await?;
+        let mut request = self
+            .http
+            .request(reqwest::Method::GET, &self.http.endpoints.nsal_current)
+            .header("x-xbl-contract-version", "1")
+            .header("authorization", token.header_value()?)
+            .build()?;
+        SignaturePolicy::default().sign(&mut request, &self.key, self.http.now())?;
+        let response = self.http.send(request).await?;
+        if response.status == reqwest::StatusCode::UNAUTHORIZED {
+            self.reject(&token);
+        }
+        response.success()?;
+        response.json()
+    }
+
+    /// Replays a still-live title failure without extending its retry window.
+    fn check_title_failure(&mut self, slot: usize) -> Result<(), Error> {
+        if let Some(error) = self.title_failures[slot]
+            .as_ref()
+            .and_then(|failure| failure.get(self.http.retry_time()))
+        {
+            return Err(error);
+        }
+        self.title_failures[slot] = None;
+        Ok(())
+    }
+
+    /// Installs only completed failures; cancellation before completion leaves no cache entry.
+    fn record_title_failure<T>(&mut self, slot: usize, result: &Result<T, Error>) {
+        self.title_failures[slot] = result
+            .as_ref()
+            .err()
+            .map(|error| failure::Failure::new(error, self.http.retry_time()));
     }
 
     /// Resolves the loaded title tables in the same order for acquisition and signing.
@@ -379,7 +411,10 @@ impl Account {
     /// Caches public default title policy for this account's lifetime.
     async fn ensure_title_data(&mut self) -> Result<(), Error> {
         if self.title_data.is_none() {
-            let (data, calibrated) = TitleData::load(&mut self.http).await?;
+            self.check_title_failure(0)?;
+            let result = TitleData::load(&mut self.http).await;
+            self.record_title_failure(0, &result);
+            let (data, calibrated) = result?;
             self.title_data = Some(data);
             if let Some(restored) = self.restored.take()
                 && calibrated

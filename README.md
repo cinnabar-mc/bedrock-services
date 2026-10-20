@@ -106,6 +106,12 @@ Use `Minecraft::xbox_authorization()` to recheck the XUID after adopting externa
 OAuth credentials, before publishing them to a saved account. This reuses the same
 proof-key and game-session owner.
 
+Failed NSAL title loads are cached for 15 seconds of monotonic time, including
+SISU failures encountered while loading the authenticated title. Repeated calls
+preserve service status and Xbox codes without extending that window. Canceled
+loads are not cached. Transport failures retain their original cause on the
+first call; cached transport replays return a redacted `Error::Invalid`.
+
 ```rust,no_run
 use bedrock_services::minecraft::{Minecraft, Config};
 
