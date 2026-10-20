@@ -6,15 +6,15 @@ use crate::xbox::{
     test_support::{read_request, token, write_response},
 };
 
-pub(super) struct Reply {
-    pub(super) status: u16,
-    pub(super) headers: Vec<(String, String)>,
-    pub(super) body: Value,
+pub(in super::super) struct Reply {
+    pub(in super::super) status: u16,
+    pub(in super::super) headers: Vec<(String, String)>,
+    pub(in super::super) body: Value,
 }
 
 impl Reply {
     /// Owns only this finite response's framing fields until the original write completes.
-    pub(super) fn json(status: u16, body: Value) -> Self {
+    pub(in super::super) fn json(status: u16, body: Value) -> Self {
         Self {
             status,
             headers: Vec::new(),
@@ -64,6 +64,7 @@ pub(in super::super) async fn serve(listener: TcpListener, state: Shared, versio
         write_response(&mut stream, reply.status, response_headers, &body).await;
         let finished = {
             let mut state = state.lock().unwrap();
+            super::super::reconnect::flushed(target, headers, &reply, &mut state);
             let friend = state.friend.as_mut().unwrap();
             if target == format!("/handles/{HANDLE}/session") {
                 let _ = friend.joined.take().unwrap().send(());

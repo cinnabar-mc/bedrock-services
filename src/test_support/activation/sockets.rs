@@ -38,8 +38,10 @@ fn failure(error: tokio_websockets::Error) -> HostedSocketTerminal {
     }
 }
 
-/// Independently verifies original protected fields and acknowledges the actual desired subscription.
-pub(super) async fn rta(listener: TcpListener, state: Shared) -> HostedSocketTerminal {
+pub(super) type Socket = WebSocketStream<tokio_rustls::server::TlsStream<tokio::net::TcpStream>>;
+
+/// Verifies one actual signed upgrade and desired subscription before any service acknowledgment.
+pub(super) async fn accept_rta(listener: &TcpListener, state: &Shared) -> (Socket, Value) {
     let (tcp, _) = listener.accept().await.unwrap();
     let stream = tls::acceptor().accept(tcp).await.unwrap();
     let (request, mut socket) = ServerBuilder::new()
@@ -86,9 +88,19 @@ pub(super) async fn rta(listener: TcpListener, state: Shared) -> HostedSocketTer
         message,
         json!([1, message[1], rta::Resource::session_directory().as_str()])
     );
+    (socket, message[1].clone())
+}
+
+/// Independently verifies original protected fields and acknowledges the actual desired subscription.
+pub(super) async fn rta(listener: TcpListener, state: Shared) -> HostedSocketTerminal {
+    let (mut socket, sequence) = accept_rta(&listener, &state).await;
+    let recovery = state.lock().unwrap().reconnect.is_some();
+    if recovery {
+        return super::reconnect::run(listener, state, socket, sequence).await;
+    }
     let friend = state.lock().unwrap().friend.is_some();
     if friend {
-        return super::friend::sockets::rta(socket, state, message[1].clone()).await;
+        return super::friend::sockets::rta(socket, state, sequence).await;
     }
     let hold = state.lock().unwrap().subscription_hold.take();
     if let Some(hold) = hold {
@@ -96,7 +108,7 @@ pub(super) async fn rta(listener: TcpListener, state: Shared) -> HostedSocketTer
     }
     socket
         .send(Message::text(
-            json!([1, message[1], 0, 19, {"ConnectionId":super::super::script::CONNECTION}])
+            json!([1, sequence, 0, 19, {"ConnectionId":super::super::script::CONNECTION}])
                 .to_string(),
         ))
         .await

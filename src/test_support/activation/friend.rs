@@ -134,6 +134,18 @@ pub(super) struct Observed {
     signaling_open: bool,
 }
 
+impl Observed {
+    /// Allows the opt-in recovery control only before the actual original upgrade and join.
+    pub(super) fn reconnect_can_arm(&self) -> bool {
+        self.joins == 0 && self.admit.is_some()
+    }
+
+    /// Requires the same actual joined member and original flushed nonce before physical interruption.
+    pub(super) fn reconnect_can_close(&self) -> bool {
+        self.joins == 1 && self.leaves == 0 && self.nonce_published
+    }
+}
+
 pub(super) struct Services {
     dialect: HostedFriendDialect,
     host: messaging::Peer,

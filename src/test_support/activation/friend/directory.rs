@@ -50,6 +50,9 @@ fn location() -> String {
 pub(super) fn respond(target: &str, headers: &str, body: &[u8], state: &mut State) -> Reply {
     super::super::script::verify_directory(target, headers, body, state);
     assert!(state.friend.as_ref().unwrap().listed_friends);
+    if let Some(reply) = super::super::reconnect::respond(target, headers, body, state) {
+        return reply;
+    }
     if target == format!("/handles/{HANDLE}/session") {
         assert!(headers.starts_with("PUT "));
         assert_eq!(header(headers, "if-match"), "*");
