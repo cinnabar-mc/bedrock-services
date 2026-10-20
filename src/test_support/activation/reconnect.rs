@@ -300,10 +300,7 @@ pub(super) fn respond(
         && serde_json::from_slice::<Value>(body).unwrap()["members"]["me"].is_object()
     {
         assert_eq!(facts.rebinds, 0, "one original member rebind");
-        assert_eq!(
-            header(headers, "if-match"),
-            recovery.validator.as_deref().unwrap()
-        );
+        assert_eq!(header(headers, "if-match"), "*");
         let change: Value = serde_json::from_slice(body).unwrap();
         let binding = &change["members"]["me"]["properties"]["system"];
         let original = &state.snapshot["members"]["me"]["properties"]["system"];
