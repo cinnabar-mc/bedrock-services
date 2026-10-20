@@ -179,8 +179,8 @@ async fn exchange(
         host,
     );
     let response = http.send_with_limit(request, RESPONSE_LIMIT).await;
-    drop(http);
     let received = server.await.expect("original TLS fixture task joined");
+    drop(http);
     (response, received, authority, signature)
 }
 
