@@ -84,6 +84,7 @@ struct State {
     visitors: Option<visitors::Observed>,
     subscription_hold: Option<subscription::SubscriptionHold>,
     initial_turn_seconds: u64,
+    catalog: bool,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -188,10 +189,27 @@ pub(super) async fn acquire(
 
 enum Scenario {
     Base,
+    Catalog,
     Renewal,
     ExpiringRenewal,
     HeldSubscription(subscription::SubscriptionHold),
     Visitors(Box<visitors::Services>),
+}
+
+/// Reuses original signed acquisition before the fixed two-page catalog, with no host membership.
+pub(super) async fn acquire_catalog(
+    auth: xbox::Config,
+    minecraft: minecraft::Config,
+) -> HostedAuthority {
+    acquire_inner(
+        auth,
+        minecraft,
+        NonZeroU32::MIN,
+        "1".into(),
+        "catalog-fixture".into(),
+        Scenario::Catalog,
+    )
+    .await
 }
 
 /// Holds only the original verified subscription acknowledgment in a fixed opt-in activation sibling.
@@ -243,8 +261,10 @@ async fn acquire_inner(
     audience: String,
     scenario: Scenario,
 ) -> HostedAuthority {
+    let catalog = matches!(&scenario, Scenario::Catalog);
     let (renewal, visitors, subscription_hold, initial_turn_seconds) = match scenario {
         Scenario::Base => (false, None, None, renewal::INITIAL_SECONDS),
+        Scenario::Catalog => (false, None, None, renewal::INITIAL_SECONDS),
         Scenario::Renewal => (true, None, None, renewal::INITIAL_SECONDS),
         Scenario::ExpiringRenewal => (true, None, None, renewal::EXPIRING_SECONDS),
         Scenario::HeldSubscription(hold) => (false, None, Some(hold), renewal::INITIAL_SECONDS),
@@ -290,6 +310,7 @@ async fn acquire_inner(
         visitors: visitors.as_ref().map(|_| visitors::Observed::default()),
         subscription_hold,
         initial_turn_seconds,
+        catalog,
     }));
     let peer = Peer {
         public_key,

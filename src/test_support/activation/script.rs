@@ -13,6 +13,8 @@ use base64::{
 };
 use p384::pkcs8::DecodePublicKey;
 
+mod catalog;
+
 /// Emits the same actual service credential metadata consumed by the protected Messaging upgrade.
 pub(super) fn service_header() -> String {
     let claims = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"pmid":MESSAGING_ID})).unwrap());
@@ -23,7 +25,13 @@ pub(super) fn service_header() -> String {
 pub(super) async fn serve(listener: TcpListener, state: Shared, version: String) {
     let renewal = state.lock().unwrap().renewal.is_some();
     let visitors = state.lock().unwrap().visitors.is_some();
-    for step in 1..=EXCHANGES + usize::from(renewal) + 4 * usize::from(visitors) {
+    let catalog = state.lock().unwrap().catalog;
+    let exchanges = if catalog {
+        catalog::HTTP_EXCHANGES
+    } else {
+        EXCHANGES + usize::from(renewal) + 4 * usize::from(visitors)
+    };
+    for step in 1..=exchanges {
         let (tcp, _) = listener.accept().await.unwrap();
         let mut stream = rta::websocket::test_support::acceptor()
             .accept(tcp)
@@ -41,7 +49,9 @@ pub(super) async fn serve(listener: TcpListener, state: Shared, version: String)
             } else {
                 step - usize::from(renewal && step > EXCHANGES - 1)
             };
-            let mut response = if visitors && step >= 18 {
+            let mut response = if catalog && step >= catalog::FIRST_SEARCH {
+                catalog::respond(step, target, headers, &bytes[end..end + length], &state)
+            } else if visitors && step >= 18 {
                 super::visitors::respond(
                     step,
                     target,
@@ -126,10 +136,15 @@ fn respond(
             );
             assert!(headers.starts_with("GET ") && body.is_empty());
             assert!(header(headers, "authorization").is_empty());
-            json!({"result":{"serviceEnvironments":{
+            let mut response = json!({"result":{"serviceEnvironments":{
                 "auth":{"prod":{"serviceUri":AUTH_ORIGIN,"playFabTitleId":TITLE,"issuer":super::super::HOSTED_WORLD_ISSUER}},
                 "signaling-afd":{"prod":{"serviceUri":SIGNALING_ORIGIN}},
-            }}})
+            }}});
+            if state.catalog {
+                response["result"]["serviceEnvironments"]["gatherings"] =
+                    json!({"prod":{"serviceUri":AUTH_ORIGIN}});
+            }
+            response
         }
         5 => {
             assert_eq!(target, "/nsal-current");
