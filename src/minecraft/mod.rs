@@ -338,7 +338,10 @@ impl Minecraft {
                 .config
                 .start(&environment.play_fab_title_id, &playfab.ticket),
         )?;
-        let response = self.http.send(request).await?;
+        let response = self
+            .http
+            .send_retrying(request, crate::http::retry::Policy::Credential)
+            .await?;
         response.success()?;
         let token = Arc::new(
             response
@@ -391,7 +394,10 @@ impl Minecraft {
             request
                 .headers_mut()
                 .insert("authorization", authorization.header_value()?);
-            let response = self.http.send(request).await?;
+            let response = self
+                .http
+                .send_retrying(request, crate::http::retry::Policy::Credential)
+                .await?;
             if response.status == reqwest::StatusCode::UNAUTHORIZED {
                 self.reject(&authorization);
                 if !retried {
@@ -438,7 +444,10 @@ impl Minecraft {
             .request(Method::GET, url.as_str())
             .header("content-type", "application/json")
             .build()?;
-        let response = self.http.send(request).await?;
+        let response = self
+            .http
+            .send_retrying(request, crate::http::retry::Policy::Discovery)
+            .await?;
         response.success()?;
         let discovery = response.json::<ResultBody<Discovery>>()?.result;
         let environment = discovery.service_environments.auth.prod;

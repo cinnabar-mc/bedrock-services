@@ -1,17 +1,20 @@
-//! One-shot authenticated title presence publication and removal.
+//! Bounded authenticated title presence updates and one-shot removal.
 //!
 //! The caller owns activity selection, heartbeat scheduling, deadlines and cleanup.
-//! No retry, task, timer or remote operation on Drop exists. A canceled or failed
-//! write may have applied remotely; explicitly remove presence on shutdown, even
-//! when an earlier update did not complete. Keep account generation and persistence
-//! fenced in the caller, as with other account-borrowed service operations.
+//! Throttled updates retry within the original HTTP budget without background work.
+//! A canceled or failed write may have applied remotely; explicitly remove presence
+//! on shutdown, even when an earlier update did not complete. Keep account generation
+//! and persistence fenced in the caller, as with other account-borrowed operations.
 
 mod types;
 
 pub use types::{MAX_PARAMETERS, MAX_TEXT_BYTES, Placement, RichPresence, State, TitleUpdate};
 
 use super::{Account, DEFAULT_LANGUAGE, XBOX_RELYING_PARTY, social::validate_xuid};
-use crate::{Error, http::Response};
+use crate::{
+    Error,
+    http::{Response, retry},
+};
 use reqwest::{Method, StatusCode};
 use std::time::Duration;
 use url::Url;
@@ -46,12 +49,13 @@ impl Account {
 }
 
 impl TitlePresence<'_> {
-    /// Publishes one update or heartbeat for the authenticated title, with no title-ID override.
+    /// Publishes an update or heartbeat for the authenticated title, with no title-ID override.
+    /// Retries only throttled/unavailable responses, up to three sends in one HTTP budget.
     /// Repeat explicitly with the current activity after the returned heartbeat delay.
-    /// Cancellation may leave active presence; it never schedules another request.
+    /// Cancellation may leave active presence; dropping the future ends its retries.
     ///
     /// # Errors
-    /// Returns redacted acquisition, transport or service-status errors, without retrying.
+    /// Returns redacted acquisition, transport or final service-status errors.
     pub async fn update(&mut self, update: &TitleUpdate<'_>) -> Result<UpdateResult, Error> {
         self.update_with_dispatch(update, || {}).await
     }
@@ -87,7 +91,7 @@ impl TitlePresence<'_> {
         require_success(&self.send(Method::DELETE, None, || {}).await?)
     }
 
-    /// Acquires policy once, binds the path to its XUID, then signs the final request once.
+    /// Acquires policy once and binds the path to its XUID; each update retry is signed anew.
     async fn send(
         &mut self,
         method: Method,
@@ -116,6 +120,7 @@ impl TitlePresence<'_> {
         if token.xuid() != identity.xuid() {
             return Err(Error::Invalid("presence account identity"));
         }
+        let retry_update = method == Method::POST;
         let mut request = self
             .account
             .http
@@ -129,9 +134,31 @@ impl TitlePresence<'_> {
             request = request.body(body);
         }
         let request = request.build()?;
-        self.account
-            .send_service_with_dispatch(request, token, dispatched)
-            .await
+        if !retry_update {
+            return self
+                .account
+                .send_service_with_dispatch(request, token, dispatched)
+                .await;
+        }
+        let mut retry = retry::Retry::new(retry::Policy::Presence);
+        let mut dispatched = Some(dispatched);
+        loop {
+            let mut attempt = request
+                .try_clone()
+                .ok_or(Error::Invalid("non-replayable presence update"))?;
+            retry.begin(&mut attempt);
+            let result = self
+                .account
+                .send_service_with_dispatch(attempt, token.clone(), || {
+                    if let Some(dispatched) = dispatched.take() {
+                        dispatched();
+                    }
+                })
+                .await;
+            if !retry.wait(&result, self.account.http.now()).await {
+                return result;
+            }
+        }
     }
 }
 
