@@ -17,7 +17,7 @@ struct Endpoint {
     protocol: String,
     host: String,
     host_type: String,
-    relying_party: String,
+    relying_party: Option<String>,
     #[serde(default)]
     port: u16,
     #[serde(default)]
@@ -44,10 +44,17 @@ impl TitleData {
         Ok((data, calibrated))
     }
 
-    /// Selects the first exact host or last wildcard/CIDR match in server order.
+    /// Selects the first exact host or last wildcard/CIDR match with a nonempty relying party.
     pub fn resolve(&self, url: &Url) -> Option<(&str, SignaturePolicy)> {
         let mut found = None;
         for endpoint in &self.endpoints {
+            let Some(party) = endpoint
+                .relying_party
+                .as_deref()
+                .filter(|party| !party.is_empty())
+            else {
+                continue;
+            };
             if endpoint.matches(url) {
                 let policy = endpoint
                     .signature_policy_index
@@ -55,7 +62,7 @@ impl TitleData {
                     .and_then(|index| self.signature_policies.get(index))
                     .cloned()
                     .unwrap_or_default();
-                found = Some((endpoint.relying_party.as_str(), policy));
+                found = Some((party, policy));
                 if endpoint.host_type == "fqdn" {
                     break;
                 }
@@ -68,8 +75,7 @@ impl TitleData {
 impl Endpoint {
     /// Compares advertised scheme, host, effective port and decoded path.
     fn matches(&self, url: &Url) -> bool {
-        if self.relying_party.is_empty()
-            || self.protocol != url.scheme()
+        if self.protocol != url.scheme()
             || (self.port != 0 && url.port_or_known_default() != Some(self.port))
         {
             return false;
