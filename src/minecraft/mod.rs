@@ -1,5 +1,6 @@
 //! Discovery, PlayFab login and Minecraft credentials owned by one account session.
 
+mod checkpoint;
 mod config;
 mod entity;
 pub mod gatherings;
@@ -49,6 +50,7 @@ pub struct Minecraft {
     playfab: Option<Arc<playfab::Session>>,
     entities: HashMap<playfab::EntityKind, Arc<playfab::Entity>>,
     authorization: Option<Arc<Authorization>>,
+    restored: Option<zeroize::Zeroizing<Vec<u8>>>,
 }
 
 #[derive(Deserialize)]
@@ -84,7 +86,7 @@ struct Retail {
     prod: Environment,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, PartialEq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Environment {
     service_uri: String,
@@ -113,8 +115,9 @@ impl Minecraft {
     }
 
     /// Binds one Xbox account to stable Minecraft device/version policy without network I/O.
-    pub fn new(xbox: xbox::Account, config: Config) -> Result<Self, Error> {
+    pub fn new(mut xbox: xbox::Account, config: Config) -> Result<Self, Error> {
         config.validate()?;
+        let restored = xbox.service_checkpoint.take();
         Ok(Self {
             xbox,
             http: Http::new(USER_AGENT)?,
@@ -133,6 +136,7 @@ impl Minecraft {
             playfab: None,
             entities: HashMap::new(),
             authorization: None,
+            restored,
         })
     }
 
@@ -148,13 +152,15 @@ impl Minecraft {
         self.xbox.authorize(xbox::XBOX_RELYING_PARTY).await
     }
 
-    /// Captures the current refresh credential and proof key without consuming this session.
+    /// Captures account credentials and bounded Minecraft/PlayFab caches without consuming this session.
+    /// Restore the account and construct Minecraft with the same config. A fresh discovery
+    /// response must admit saved service state before it can be reused.
     /// Protected storage, account generation and refresh serialization remain caller-owned.
     ///
     /// # Errors
     /// Returns the account checkpoint's bounded encoding or missing-refresh error.
     pub fn checkpoint(&self) -> Result<xbox::Checkpoint, Error> {
-        self.xbox.checkpoint()
+        self.service_checkpoint()
     }
 
     /// Adopts a same-account OAuth rotation while retaining proof and game-session identity.
@@ -173,6 +179,7 @@ impl Minecraft {
         self.playfab = None;
         self.entities.clear();
         self.authorization = None;
+        self.restored = None;
         Ok(())
     }
 
@@ -316,6 +323,9 @@ impl Minecraft {
 
     /// Reuses a current service credential or replaces it with a fresh session.
     pub async fn authorize(&mut self) -> Result<Arc<Authorization>, Error> {
+        if self.restored.is_some() {
+            self.discover().await?;
+        }
         if let Some(token) = self
             .authorization
             .as_ref()
@@ -462,6 +472,12 @@ impl Minecraft {
         self.messaging_environment = discovery.service_environments.messaging;
         self.gatherings_environment = discovery.service_environments.gatherings;
         self.environment = Some(environment);
+        let response_date = response
+            .headers
+            .get("date")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| httpdate::parse_http_date(value).ok());
+        self.admit_service_checkpoint(response_date);
         Ok(())
     }
 

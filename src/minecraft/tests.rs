@@ -24,7 +24,7 @@ fn service_token(label: &str) -> Value {
 }
 
 /// Creates one original SDK account whose HTTP routes remain confined to the existing local fixture.
-fn discovery_owner(address: std::net::SocketAddr) -> Minecraft {
+pub(super) fn discovery_owner(address: std::net::SocketAddr) -> Minecraft {
     let config = xbox::Config::default();
     let credentials = Credentials::from_tokens(
         config.client_id.clone(),

@@ -28,6 +28,10 @@ var Scenarios = []Scenario{
 		Plan: []string{"signin", "join", "restart", "join"},
 	},
 	{
+		Name: "warm-restart-expiry", Note: "a restarted service token expires while its PlayFab login remains reusable",
+		Plan: []string{"signin", "join", "restart", advance(4*time.Hour - 59*time.Second), "join"},
+	},
+	{
 		Name: "later-join", Note: "later joins in the same process reuse every cached credential",
 		Plan: []string{"signin", "join", "join", advance(10 * time.Minute), "join"},
 	},
