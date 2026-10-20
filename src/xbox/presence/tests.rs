@@ -87,17 +87,18 @@ fn verify(target: &str, headers: &str, body: &[u8], proof: &Value) {
 
 /// Exercises authenticated title selection, actual signed bytes, reuse, failure and cleanup.
 #[tokio::test]
-async fn title_updates_and_removal_share_exact_account_policy_without_retrying() {
+async fn title_updates_retry_without_repeating_dispatch_or_removal() {
     let dispatches = Arc::new(AtomicUsize::new(0));
     let observed_dispatches = Arc::clone(&dispatches);
-    let mut posts = 0;
+    let mut updates = 0;
+    let mut update_body = None;
     let mut step = 0;
     let mut proof = None;
     let (address, server) = fixture_headers(
         move |target, headers, body| {
             step += 1;
             if step <= 5 || step == 10 {
-                assert_eq!(observed_dispatches.load(Ordering::SeqCst), posts,
+                assert_eq!(observed_dispatches.load(Ordering::SeqCst), updates,
                     "acquiring credentials must not report a title POST");
             }
             let mut extra = Vec::new();
@@ -137,11 +138,14 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
                 _ => {
                     assert_eq!(target, "/users/xuid(123)/devices/current/titles/current");
                     verify(target, headers, body, proof.as_ref().unwrap());
-                    if headers.starts_with("POST ") {
-                        posts += 1;
+                    if headers.starts_with("POST ") && !matches!(step, 12 | 13) {
+                        updates += 1;
                     }
-                    assert_eq!(observed_dispatches.load(Ordering::SeqCst), posts,
-                        "each actual signed POST has exactly one dispatch callback");
+                    if matches!(step, 11..=13) {
+                        assert_eq!(body, update_body.as_deref().unwrap());
+                    }
+                    assert_eq!(observed_dispatches.load(Ordering::SeqCst), updates,
+                        "one logical update reports dispatch once across all its signed attempts");
                     assert_eq!(header(headers, "x-xbl-contract-version"), CONTRACT);
                     assert_eq!(header(headers, "accept"), "*/*");
                     assert_eq!(header(headers, "accept-language"), DEFAULT_LANGUAGE);
@@ -164,6 +168,7 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
                                     "scid":uuid::Uuid::from_u128(1),"params":["alpha", ""]}}}));
                             assert!(request.get("id").is_none());
                             if step == 6 {
+                                update_body = Some(body.to_vec());
                                 extra.push(("X-Heartbeat-After", "79"));
                             }
                             (if step == 6 { 201 } else { 200 }, json!({"ignored":"data"}))
@@ -178,14 +183,18 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
                             extra.push(("Retry-After", "1"));
                             (if step == 11 { 429 } else { 503 }, json!({"error":"SENSITIVE-response"}))
                         }
-                        13 | 14 | 17 => {
+                        13 => (200, Value::Null),
+                        14 | 15 | 18 | 19 => {
                             assert!(headers.starts_with("DELETE "));
                             assert!(body.is_empty());
                             assert_eq!(header(headers, "content-length"), "0");
-                            (match step { 13 => 200, 14 => 201, _ => 202 }, Value::Null)
+                            if step == 19 {
+                                extra.push(("Retry-After", "1"));
+                            }
+                            (match step { 14 => 200, 15 => 201, 18 => 202, _ => 503 }, Value::Null)
                         }
-                        15 => (202, Value::Null),
-                        16 => {
+                        16 => (202, Value::Null),
+                        17 => {
                             assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), json!({"state":"inactive"}));
                             extra.extend([("X-Heartbeat-After", "5"), ("X-Heartbeat-After", "6")]);
                             (200, Value::Null)
@@ -196,7 +205,7 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
             };
             (status, extra, response)
         },
-        17,
+        19,
     )
     .await;
     let config = Config::default();
@@ -237,7 +246,7 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
             .heartbeat_after,
         None
     );
-    for expected in [401, 401, 429, 503] {
+    for expected in [401, 401] {
         let error = presence
             .update_with_dispatch(&update, dispatched)
             .await
@@ -245,6 +254,14 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
         assert!(matches!(error, Error::Status { status, .. } if status.as_u16() == expected));
         assert!(!format!("{error:?} {error}").contains("SENSITIVE"));
     }
+    assert_eq!(
+        presence
+            .update_with_dispatch(&update, dispatched)
+            .await
+            .unwrap()
+            .heartbeat_after,
+        None
+    );
     // Cleanup remains explicit even after an update error; no success flag suppresses it.
     presence.remove().await.unwrap();
     presence.remove().await.unwrap();
@@ -270,7 +287,14 @@ async fn title_updates_and_removal_share_exact_account_policy_without_retrying()
             ..
         })
     ));
-    assert_eq!(dispatches.load(Ordering::SeqCst), 8);
+    assert!(matches!(
+        presence.remove().await,
+        Err(Error::Status {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            ..
+        })
+    ));
+    assert_eq!(dispatches.load(Ordering::SeqCst), 7);
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()

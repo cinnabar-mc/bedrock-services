@@ -13,6 +13,7 @@ use tokio::{io::AsyncWriteExt, net::TcpListener, task::JoinHandle};
 #[cfg(feature = "rta-tokio")]
 mod authority;
 mod framing_retry;
+mod retry;
 
 const FIXTURE_DATE: &str = "Wed, 01 Jan 2025 00:00:00 GMT";
 const LIMITS: [Option<usize>; 3] = [

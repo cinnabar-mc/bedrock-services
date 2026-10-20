@@ -41,6 +41,11 @@ struct Divergence {
 }
 
 const DIVERGENCES: &[Divergence] = &[
+    Divergence {
+        scenario: "retry-after",
+        kind: Kind::Better,
+        why: "the same successful recovery reuses NSAL instead of repeating Go's current-endpoints lookup",
+    },
     // Audit: Rust judges token validity on the server Date; Go uses the local clock.
     Divergence {
         scenario: "date-skew",
@@ -302,6 +307,15 @@ async fn service_traces_match_go_goldens() {
         let golden =
             std::fs::read_to_string(Path::new(GOLDENS).join(format!("{scenario}.trace"))).unwrap();
         let rust = replay(&mut oracle, scenario, &golden).await;
+        if matches!(scenario.as_str(), "retry-after" | "transient-failure") {
+            let operations = golden.lines().filter(|line| line.starts_with("> ")).count();
+            let outcomes: Vec<_> = rust.lines().filter(|line| line.starts_with("= ")).collect();
+            if outcomes != vec!["= ok"; operations] {
+                failures.push(format!(
+                    "{scenario}: every original operation must recover successfully"
+                ));
+            }
+        }
         let same = comparable(&rust) == comparable(&golden);
         match DIVERGENCES.iter().find(|entry| entry.scenario == scenario) {
             None if !same => failures.push(format!(

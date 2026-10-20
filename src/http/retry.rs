@@ -162,3 +162,6 @@ fn transient(error: &Error) -> bool {
     }
     retryable
 }
+
+#[cfg(test)]
+mod tests;

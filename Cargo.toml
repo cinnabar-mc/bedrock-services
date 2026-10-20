@@ -43,7 +43,7 @@ zeroize = "1"
 h2 = "0.4"
 http = "1"
 tokio-websockets = { version = "0.13", default-features = false, features = ["server", "aws_lc_rs"] }
-tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync", "test-util"] }
 
 [lints.rust]
 unsafe_code = "forbid"
