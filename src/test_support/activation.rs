@@ -1,6 +1,7 @@
 //! One finite original-account/public-activation service scenario, entirely caller-runtime owned.
 
 pub(super) mod friend;
+mod host_reconnect;
 mod reconnect;
 mod renewal;
 mod script;

@@ -1,4 +1,4 @@
-//! One opt-in physical RTA interruption on the existing signed friend service owner.
+//! One opt-in physical RTA interruption on the existing signed service owners.
 
 use super::*;
 use crate::xbox::mpsd::test_support::header;
@@ -32,15 +32,19 @@ pub struct HostedRtaReconnectObservation {
     pub rebinds: usize,
     /// Explicit subsequent sync responses flushed by the original HTTP owner.
     pub synchronized: bool,
+    /// Original host publication responses fully flushed by the fixed host sibling.
+    pub publications: usize,
+    /// Original host member removals fully flushed by that same HTTP task.
+    pub leaves: usize,
 }
 
 pub(super) struct Services {
     close: Option<oneshot::Receiver<()>>,
     stop: Option<oneshot::Receiver<()>>,
     rebound: Option<oneshot::Sender<()>>,
-    observed: Arc<Mutex<HostedRtaReconnectObservation>>,
+    pub(super) observed: Arc<Mutex<HostedRtaReconnectObservation>>,
     connection: Uuid,
-    validator: Option<String>,
+    pub(super) validator: Option<String>,
     rebind_ready: bool,
     #[cfg(test)]
     replacement_upgrade: Option<oneshot::Sender<()>>,
@@ -63,34 +67,25 @@ impl HostedPeer {
             friend.reconnect_can_arm(),
             "arm before first RTA socket and membership"
         );
-        assert!(state.reconnect.is_none());
-        let (close, closed) = oneshot::channel();
-        let (stop, stopped) = oneshot::channel();
-        let (rebound, observed_rebind) = oneshot::channel();
-        #[cfg(test)]
-        let (replacement_upgrade, upgraded) = oneshot::channel();
-        let observed = Arc::new(Mutex::new(HostedRtaReconnectObservation::default()));
-        state.reconnect = Some(Services {
-            close: Some(closed),
-            stop: Some(stopped),
-            rebound: Some(rebound),
-            observed: Arc::clone(&observed),
-            connection: Uuid::new_v4(),
-            validator: None,
-            rebind_ready: false,
-            #[cfg(test)]
-            replacement_upgrade: Some(replacement_upgrade),
-            #[cfg(test)]
-            ack_accounting_hold: None,
-        });
-        HostedRtaReconnect {
-            close: Some(close),
-            stop: Some(stop),
-            rebound: observed_rebind,
-            observed,
-            #[cfg(test)]
-            replacement_upgrade: upgraded,
-        }
+        arm(&mut state)
+    }
+
+    /// Arms the fixed host sibling before its first protected upgrade or publication.
+    /// Original acquisition, source policy and all ordinary scenarios remain unchanged.
+    pub fn hold_host_rta_reconnect(&mut self) -> HostedRtaReconnect {
+        let peer = self
+            .activation
+            .as_ref()
+            .expect("original protected activation peer");
+        let mut state = peer.state.lock().unwrap();
+        assert!(
+            state.friend.is_none()
+                && state.visitors.is_none()
+                && state.renewal.is_none()
+                && !state.catalog
+        );
+        assert!(state.reference.is_none() && state.snapshot.is_null());
+        arm(&mut state)
     }
 
     /// Holds only telemetry after the replacement acknowledgment has actually flushed.
@@ -105,6 +100,38 @@ impl HostedPeer {
     }
 }
 
+/// Installs exactly one interruption and one replacement on the original protected listener.
+fn arm(state: &mut State) -> HostedRtaReconnect {
+    assert!(state.reconnect.is_none());
+    let (close, closed) = oneshot::channel();
+    let (stop, stopped) = oneshot::channel();
+    let (rebound, observed_rebind) = oneshot::channel();
+    #[cfg(test)]
+    let (replacement_upgrade, upgraded) = oneshot::channel();
+    let observed = Arc::new(Mutex::new(HostedRtaReconnectObservation::default()));
+    state.reconnect = Some(Services {
+        close: Some(closed),
+        stop: Some(stopped),
+        rebound: Some(rebound),
+        observed: Arc::clone(&observed),
+        connection: Uuid::new_v4(),
+        validator: None,
+        rebind_ready: false,
+        #[cfg(test)]
+        replacement_upgrade: Some(replacement_upgrade),
+        #[cfg(test)]
+        ack_accounting_hold: None,
+    });
+    HostedRtaReconnect {
+        close: Some(close),
+        stop: Some(stop),
+        rebound: observed_rebind,
+        observed,
+        #[cfg(test)]
+        replacement_upgrade: upgraded,
+    }
+}
+
 impl HostedRtaReconnect {
     /// Requests the physical close; the service verifies acknowledged actual membership first.
     pub fn disconnect(&mut self) {
@@ -113,6 +140,13 @@ impl HostedRtaReconnect {
             .take()
             .expect("one original interruption")
             .send(());
+    }
+
+    /// Retains the actual disconnected event at the front of the original socket FIFO.
+    /// This makes the physical loss causal before an already-ready application future is polled.
+    pub async fn disconnect_ready(&mut self, socket: &mut RtaSocket) {
+        self.disconnect();
+        rta::websocket::test_support::retain_ready_disconnect(socket).await;
     }
 
     /// Waits for the actual replacement binding and subsequent sync response flush.
@@ -201,10 +235,23 @@ pub(super) async fn run(
         )
     };
     observed.lock().unwrap().upgrades = 1;
-    if let Err(terminal) =
-        super::friend::sockets::admit(&mut socket, Arc::clone(&state), sequence).await
-    {
-        return first_terminal(&observed, terminal);
+    let friend = state.lock().unwrap().friend.is_some();
+    if friend {
+        if let Err(terminal) =
+            super::friend::sockets::admit(&mut socket, Arc::clone(&state), sequence).await
+        {
+            return first_terminal(&observed, terminal);
+        }
+    } else {
+        socket
+            .send(Message::text(
+                json!([1,sequence,0,19,
+            {"ConnectionId":super::super::script::CONNECTION}])
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        acknowledged(&state);
     }
     let requested = tokio::select! {
         requested = close => requested.is_ok(),
@@ -218,11 +265,20 @@ pub(super) async fn run(
     }
     {
         let state = state.lock().unwrap();
-        let friend = state.friend.as_ref().unwrap();
-        assert!(
-            friend.reconnect_can_close(),
-            "interrupt only actual admitted membership"
-        );
+        if let Some(friend) = &state.friend {
+            assert!(
+                friend.reconnect_can_close(),
+                "interrupt only actual admitted membership"
+            );
+        } else {
+            assert_eq!(observed.lock().unwrap().publications, 1);
+            assert!(state.verified_http_requests >= 16);
+            assert!(
+                state.snapshot["properties"]["custom"]["nonces"]["456"]
+                    .as_str()
+                    .is_some_and(|nonce| !nonce.is_empty())
+            );
+        }
         assert_eq!(
             state.snapshot["members"]["me"]["properties"]["system"]["connection"],
             json!(super::super::script::CONNECTION)
