@@ -76,7 +76,7 @@ pub(super) async fn upgrade_rta(tcp: tokio::net::TcpStream, state: &Shared) -> S
     let target = request.uri().to_string();
     let headers = format!("{} {target} HTTP/1.1\r\n{headers}", request.method());
     {
-        let state = state.lock().unwrap();
+        let mut state = state.lock().unwrap();
         let signed: Vec<_> = state.headers.iter().map(String::as_str).collect();
         crate::xbox::mpsd::test_support::verify(
             &target,
@@ -89,6 +89,7 @@ pub(super) async fn upgrade_rta(tcp: tokio::net::TcpStream, state: &Shared) -> S
             crate::xbox::mpsd::test_support::header(&headers, "authorization"),
             "XBL3.0 x=synthetic;rta"
         );
+        state.rta_upgraded = true;
     }
     #[cfg(test)]
     super::reconnect::upgraded(state);

@@ -168,3 +168,12 @@ pub(crate) async fn retain_ready_resync(socket: &mut RtaSocket) {
     assert!(socket.events.len() < super::MAX_QUEUED_EVENTS);
     socket.events.push_front(event);
 }
+
+/// Retains only an actual physical-disconnection event without inventing a socket transition.
+#[cfg(feature = "test-support")]
+pub(crate) async fn retain_ready_disconnect(socket: &mut RtaSocket) {
+    let event = socket.drive().await.unwrap();
+    assert!(matches!(&event, super::Event::Disconnected));
+    assert!(socket.events.len() < super::MAX_QUEUED_EVENTS);
+    socket.events.push_front(event);
+}

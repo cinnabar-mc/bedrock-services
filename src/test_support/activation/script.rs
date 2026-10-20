@@ -38,6 +38,14 @@ pub(super) async fn serve(listener: TcpListener, state: Shared, version: String)
     };
     for step in 1..=exchanges {
         let (tcp, _) = listener.accept().await.unwrap();
+        let host_reconnect = {
+            let state = state.lock().unwrap();
+            state.reconnect.is_some() && state.friend.is_none()
+        };
+        if host_reconnect {
+            super::host_reconnect::serve(listener, state, version, Some(tcp)).await;
+            return;
+        }
         let mut stream = rta::websocket::test_support::acceptor()
             .accept(tcp)
             .await
