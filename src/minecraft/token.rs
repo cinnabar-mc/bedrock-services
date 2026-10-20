@@ -11,8 +11,10 @@ use zeroize::Zeroizing;
 
 const CLAIMS_LEEWAY_SECONDS: i64 = 5 * 60;
 
+pub(super) mod checkpoint;
+
 /// Configuration returned with a Minecraft service credential.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct Configuration {
     /// Service configuration name.
     pub id: String,
