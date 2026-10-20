@@ -41,6 +41,7 @@ pub(super) struct Services {
     observed: Arc<Mutex<HostedRtaReconnectObservation>>,
     connection: Uuid,
     validator: Option<String>,
+    rebind_ready: bool,
     #[cfg(test)]
     replacement_upgrade: Option<oneshot::Sender<()>>,
     #[cfg(test)]
@@ -76,6 +77,7 @@ impl HostedPeer {
             observed: Arc::clone(&observed),
             connection: Uuid::new_v4(),
             validator: None,
+            rebind_ready: false,
             #[cfg(test)]
             replacement_upgrade: Some(replacement_upgrade),
             #[cfg(test)]
@@ -158,6 +160,29 @@ pub(super) fn upgraded(state: &Shared) {
     }
 }
 
+/// Records a successful acknowledgment send independently of admission and request routing.
+pub(super) fn acknowledged(state: &Shared) {
+    if let Some(recovery) = &state.lock().unwrap().reconnect {
+        recovery.observed.lock().unwrap().acknowledgments += 1;
+    }
+}
+
+/// Preserves the actual original terminal on every exit, including cancellation before admission.
+fn first_terminal(
+    observed: &Mutex<HostedRtaReconnectObservation>,
+    terminal: HostedSocketTerminal,
+) -> HostedSocketTerminal {
+    let mut facts = observed.lock().unwrap();
+    facts.first_closed = terminal == HostedSocketTerminal::Close;
+    facts.first_retired = matches!(
+        &terminal,
+        HostedSocketTerminal::Close
+            | HostedSocketTerminal::Eof
+            | HostedSocketTerminal::Io(io::ErrorKind::UnexpectedEof)
+    );
+    terminal
+}
+
 /// Reuses the same protected acceptor and request verification for exactly one replacement.
 pub(super) async fn run(
     listener: TcpListener,
@@ -179,11 +204,17 @@ pub(super) async fn run(
     if let Err(terminal) =
         super::friend::sockets::admit(&mut socket, Arc::clone(&state), sequence).await
     {
-        return terminal;
+        return first_terminal(&observed, terminal);
     }
-    observed.lock().unwrap().acknowledgments = 1;
-    if close.await.is_err() {
-        return super::sockets::terminal(&mut socket).await;
+    let requested = tokio::select! {
+        requested = close => requested.is_ok(),
+        terminal = super::sockets::terminal(&mut socket) => {
+            return first_terminal(&observed, terminal);
+        }
+    };
+    if !requested {
+        let terminal = super::sockets::terminal(&mut socket).await;
+        return first_terminal(&observed, terminal);
     }
     {
         let state = state.lock().unwrap();
@@ -198,17 +229,7 @@ pub(super) async fn run(
         );
     }
     socket.send(Message::close(None, "")).await.unwrap();
-    let first = super::sockets::terminal(&mut socket).await;
-    {
-        let mut facts = observed.lock().unwrap();
-        facts.first_closed = first == HostedSocketTerminal::Close;
-        facts.first_retired = matches!(
-            &first,
-            HostedSocketTerminal::Close
-                | HostedSocketTerminal::Eof
-                | HostedSocketTerminal::Io(io::ErrorKind::UnexpectedEof)
-        );
-    }
+    let first = first_terminal(&observed, super::sockets::terminal(&mut socket).await);
     let (tcp, _) = tokio::select! {
         _ = &mut stop => return first,
         accepted = listener.accept() => accepted.unwrap(),
@@ -219,6 +240,13 @@ pub(super) async fn run(
         Ok(sequence) => sequence,
         Err(terminal) => return terminal,
     };
+    state
+        .lock()
+        .unwrap()
+        .reconnect
+        .as_mut()
+        .unwrap()
+        .rebind_ready = true;
     replacement
         .send(Message::text(
             json!([1,sequence,0,29,{"ConnectionId":connection}]).to_string(),
@@ -239,7 +267,7 @@ pub(super) async fn run(
             hold.wait().await;
         }
     }
-    observed.lock().unwrap().acknowledgments += 1;
+    acknowledged(&state);
     super::sockets::terminal(&mut replacement).await
 }
 
@@ -251,7 +279,7 @@ pub(super) fn respond(
     state: &mut State,
 ) -> Option<friend::service::Reply> {
     let recovery = state.reconnect.as_mut()?;
-    if recovery.observed.lock().unwrap().acknowledgments != 2 {
+    if !recovery.rebind_ready {
         return None;
     }
     let reference = state.reference.as_ref().unwrap();

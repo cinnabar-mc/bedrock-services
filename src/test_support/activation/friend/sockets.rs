@@ -65,6 +65,7 @@ where
         ))
         .await
         .unwrap();
+    super::super::reconnect::acknowledged(&state);
     let admitted = tokio::select! {
         release = &mut admit => release.is_ok(),
         terminal = super::super::sockets::terminal(socket) => return Err(terminal),
