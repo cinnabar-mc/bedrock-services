@@ -142,6 +142,16 @@ impl Http {
         }
     }
 
+    /// Retains the original response observation when the sealed fixture changes HTTP owners.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn inherit_fixture_clock(&mut self, source: &Self) {
+        self.clock = Some(source.clock.expect("original fixture response has a Date"));
+        #[cfg(test)]
+        {
+            self.elapsed = source.elapsed;
+        }
+    }
+
     /// Borrows the original response UTC sample without persisting its monotonic anchor.
     pub(crate) fn response_time(&self) -> Option<SystemTime> {
         self.clock.map(|(server, _)| server)

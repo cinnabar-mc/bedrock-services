@@ -12,6 +12,8 @@ async fn friend_fixture_routes_both_original_dialects_and_conditional_leave() {
                 HostedAuthority::acquire_friend(xbox::Config::default(),
                     minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)), dialect,
                     "fixture-audience".into(), deadline).await;
+            let host_observed = Instant::now();
+            let host_service_time = account.service_time();
             let (mut socket, mut session, binding, subscription) = listed_join(&mut account, deadline).await;
             membership.joined().await;
             let no_nonce_before_admission = session.description().properties.as_ref().unwrap()
@@ -28,6 +30,8 @@ async fn friend_fixture_routes_both_original_dialects_and_conditional_leave() {
             let key = SigningKey::from_slice(&[1;48]).unwrap();
             let minted = account.multiplayer_token(key.verifying_key()).await.unwrap();
             let public_key = minted.public_key_der().to_vec();
+            let host_mint_time = host_service_time.checked_add(host_observed.elapsed()).unwrap();
+            let mint_expires = minted.expires_at();
             let local = 77;
             let request = match dialect {
                 HostedFriendDialect::Messaging => account.messaging_connection().await.unwrap(),
@@ -42,6 +46,7 @@ async fn friend_fixture_routes_both_original_dialects_and_conditional_leave() {
             let (visitor_closed, host_closed) = tokio::join!(closed(&mut visitor), closed(host.socket.as_mut().unwrap()));
             drop((visitor, host));
             let observed = peer.finish_friend().await;
+            assert!(host_mint_time < mint_expires, "acquired host clock rejects the original service mint as expired");
             assert!(no_nonce_before_admission, "fixture manufactured early admission");
             assert!(no_early_member && original_member && !wrong_member && member_retired);
             assert_eq!(actual_nonce, NONCE);
