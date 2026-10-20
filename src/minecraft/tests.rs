@@ -489,3 +489,59 @@ fn malformed_service_credentials_fail_without_panicking_or_leaking() {
         assert!(!format!("{error:?} {error}").contains("SECRET"));
     }
 }
+
+/// Public discovery accepts the issued title-key spelling without authorizing an account.
+#[tokio::test]
+async fn discovery_accepts_the_public_playfab_title_key_without_authorization() {
+    let mut step = 0;
+    let (address, server) = fixture_headers(
+        move |target, headers, body| {
+            step += 1;
+            assert_eq!(target, "/api/v1.0/discovery/MinecraftPE/builds/1.26.50");
+            let headers = headers.to_ascii_lowercase();
+            assert!(headers.starts_with("get "));
+            for name in ["authorization:", "signature:", "session-id:"] {
+                assert!(!headers.contains(name));
+            }
+            assert!(body.is_empty());
+            let key = match step {
+                1 => "playFabTitleId",
+                2 => "playfabTitleId",
+                _ => panic!("unexpected discovery request"),
+            };
+            let mut environment = json!({
+                "serviceUri": "https://synthetic-service.invalid/",
+                "issuer": "https://synthetic-issuer.invalid/"
+            });
+            environment[key] = json!("AB12");
+            (
+                200,
+                Vec::new(),
+                json!({"result":{"serviceEnvironments":{"auth":{"prod":environment}}}}),
+            )
+        },
+        2,
+    )
+    .await;
+    let mut existing = discovery_owner(address);
+    let existing_result = existing.discover().await;
+    let mut public = discovery_owner(address);
+    let public_result = public.discover().await;
+    server.await.unwrap();
+
+    existing_result.expect("the original title-key spelling stopped working");
+    assert_eq!(
+        existing.environment.as_ref().unwrap().play_fab_title_id,
+        "AB12"
+    );
+    for owner in [&existing, &public] {
+        assert!(owner.playfab.is_none());
+        assert!(owner.authorization.is_none());
+    }
+    public_result.expect("the public playfabTitleId key was rejected by discovery");
+    assert_eq!(
+        public.environment.as_ref().unwrap().play_fab_title_id,
+        "AB12"
+    );
+    public.discover().await.unwrap();
+}
