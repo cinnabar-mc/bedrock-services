@@ -75,6 +75,14 @@ pub(crate) struct Response {
 }
 
 impl Http {
+    /// Samples process-local retry time independently from service Date corrections.
+    pub(crate) fn retry_time(&self) -> tokio::time::Instant {
+        let now = tokio::time::Instant::now();
+        #[cfg(test)]
+        let now = now + self.elapsed.total;
+        now
+    }
+
     /// Builds the plain acquisition client; redirects cannot carry credentials away.
     pub fn new(user_agent: &str) -> Result<Self, Error> {
         let user_agent = HeaderValue::from_str(user_agent)
