@@ -144,6 +144,16 @@ impl Http {
             Some(transport) => transport.request(request)?,
             None => request,
         };
+        let mut request = request;
+        let mut hosts = request.headers().get_all(HOST).iter();
+        let redundant_host = hosts.next().is_some_and(|host| {
+            host.as_bytes()
+                == request.url()[url::Position::BeforeHost..url::Position::AfterPort].as_bytes()
+        }) && hosts.next().is_none();
+        if redundant_host {
+            // HTTP/2 carries authority separately; HTTP/1 supplies its mandatory Host.
+            request.headers_mut().remove(HOST);
+        }
         let mut response = self.client.execute(request).await?;
         if let Some(date) = response
             .headers()
