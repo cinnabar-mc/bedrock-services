@@ -74,7 +74,7 @@ impl Options {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SocketError {
-    /// The protected request or edge options cannot be used.
+    /// The protected request, TLS validation or edge options cannot be used.
     #[error("invalid RTA socket configuration")]
     Configuration,
     /// The protected issuance was already used or the lifecycle cannot be resumed.
@@ -111,6 +111,19 @@ impl SocketError {
                 Self::Protocol
             }
             tokio_websockets::Error::AlreadyClosed => Self::Closed,
+            tokio_websockets::Error::Rustls(_) | tokio_websockets::Error::InvalidDNSName(_) => {
+                Self::Configuration
+            }
+            tokio_websockets::Error::Io(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::InvalidData
+                        | std::io::ErrorKind::InvalidInput
+                        | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                Self::Configuration
+            }
             _ => Self::Transport,
         }
     }

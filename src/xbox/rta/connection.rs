@@ -39,6 +39,7 @@ impl Account {
         generation: Generation,
         upgrade_headers: HeaderMap,
     ) -> Result<ConnectionRequest, Error> {
+        self.replayed_title_failure = None;
         validate_upgrade(&upgrade_headers)?;
         let url = Url::parse(ENDPOINT).map_err(|_| Error::Invalid("upgrade endpoint"))?;
         let identity = self.authorize(XBOX_RELYING_PARTY).await?;
@@ -82,6 +83,17 @@ impl Account {
             #[cfg(feature = "test-support")]
             hosted_transport: self.http.hosted_transport(),
         })
+    }
+
+    /// Classifies this serialized acquisition, including the original cause of a cached title failure.
+    #[cfg(feature = "rta-tokio")]
+    pub(in crate::xbox) fn retryable_rta_acquisition(&mut self, error: &Error) -> bool {
+        let Error::Service(error) = error else {
+            return false;
+        };
+        self.replayed_title_failure
+            .take()
+            .unwrap_or_else(|| crate::http::retry::transient(error))
     }
 
     /// Invalidates only this exact issuance after an explicit rejected upgrade.

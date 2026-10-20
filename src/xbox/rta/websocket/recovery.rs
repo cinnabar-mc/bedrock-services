@@ -108,7 +108,7 @@ impl RtaSocket {
                 let headers =
                     upgrade_headers().map_err(|_| Error::Invalid("recovery upgrade fields"))?;
                 match account.rta_connection(generation, headers).await {
-                    Err(Error::Service(error)) if crate::http::retry::transient(&error) => {}
+                    Err(error) if account.retryable_rta_acquisition(&error) => {}
                     Err(error) => return Err(error.into()),
                     Ok(mut request) => {
                         guard.socket.state.check_reconnect(&request)?;

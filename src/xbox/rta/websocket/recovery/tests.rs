@@ -133,6 +133,42 @@ fn terminal_failures_are_not_retryable() {
     }
 }
 
+/// A real refused title request stays transient on cache replay, then expires at its original cutoff.
+#[tokio::test]
+async fn cached_transport_failure_preserves_acquisition_retryability() {
+    let (mut account, socket) = disconnected(1).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable = listener.local_addr().unwrap();
+    drop(listener);
+    account.current_title_data = None;
+    account.http.endpoints.nsal_current = format!("http://{unavailable}/nsal-current");
+    for cached in [false, true] {
+        let error = account
+            .rta_connection(socket.state.generation(), upgrade_headers().unwrap())
+            .await
+            .err()
+            .unwrap();
+        if cached {
+            assert!(matches!(error, Error::Service(crate::Error::Invalid(_))));
+        } else {
+            assert!(matches!(error, Error::Service(crate::Error::Http(_))));
+        }
+        assert!(account.retryable_rta_acquisition(&error));
+    }
+    let (address, server) = crate::xbox::test_support::fixture(|_, _, _| {
+        (200, json!({"EndPoints":[{"Protocol":"https","Host":"rta.xboxlive.com","HostType":"fqdn","RelyingParty":"rp://rta","SignaturePolicyIndex":0}],"SignaturePolicies":[{"Version":1}]}))
+    }, 1).await;
+    account.http.endpoints.nsal_current = format!("http://{address}/nsal-current");
+    account.advance_fixture_time(Duration::from_secs(15));
+    let request = account
+        .rta_connection(socket.state.generation(), upgrade_headers().unwrap())
+        .await
+        .unwrap();
+    socket.state.check_reconnect(&request).unwrap();
+    assert_eq!(socket.state.subscriptions().count(), 1);
+    server.await.unwrap();
+}
+
 /// Replaces only the test transport while retaining the real account, generation and desired handles.
 async fn replacement(
     account: &mut Account,
