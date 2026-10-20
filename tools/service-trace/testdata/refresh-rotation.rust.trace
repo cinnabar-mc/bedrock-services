@@ -1,0 +1,33 @@
+# refresh-rotation: Rust SDK
+> signin
+POST login.live.com/oauth20_connect.srf -> 200
+POST login.live.com/oauth20_token.srf grant=device_code -> 200
+= ok
+> presence
+POST device.auth.xboxlive.com/device/authenticate signed -> 200
+GET title.mgt.xboxlive.com/titles/default/endpoints?type=1 -> 200
+POST sisu.xboxlive.com/authorize access=a1 signed -> 200
+GET title.mgt.xboxlive.com/titles/current/endpoints auth=x1 signed -> 200
+POST userpresence.xboxlive.com/users/xuid(2535400000000001)/devices/current/titles/current auth=x1 signed -> 200
+= ok
+> advance 10800
+= ok
+> presence
+POST login.live.com/oauth20_token.srf grant=refresh_token refresh=r1 -> 200
+POST sisu.xboxlive.com/authorize access=a2 signed -> 200
+POST userpresence.xboxlive.com/users/xuid(2535400000000001)/devices/current/titles/current auth=x2 signed -> 200
+= ok
+> advance 10800
+= ok
+> presence
+POST login.live.com/oauth20_token.srf grant=refresh_token refresh=r2 -> 200
+POST sisu.xboxlive.com/authorize access=a3 signed -> 200
+POST userpresence.xboxlive.com/users/xuid(2535400000000001)/devices/current/titles/current auth=x3 signed -> 200
+= ok
+> advance 10800
+= ok
+> presence
+POST login.live.com/oauth20_token.srf grant=refresh_token refresh=r2 -> 200
+POST sisu.xboxlive.com/authorize access=a4 signed -> 200
+POST userpresence.xboxlive.com/users/xuid(2535400000000001)/devices/current/titles/current auth=x4 signed -> 200
+= ok

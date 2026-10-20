@@ -501,3 +501,5 @@ fn validate_service_url(value: &str) -> Result<(), Error> {
 mod realms_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trace_tests;

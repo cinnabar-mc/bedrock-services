@@ -219,6 +219,47 @@ impl Http {
         Self::fixture_agent(address, "fixture-acquisition-agent")
     }
 
+    #[cfg(test)]
+    /// Reaches the shared trace peer under the real service hostnames: every name
+    /// resolves to its loopback address, and only its fixture CA is trusted.
+    pub(crate) fn trace_fixture(
+        address: std::net::SocketAddr,
+        ca_pem: &[u8],
+        user_agent: &str,
+    ) -> Self {
+        struct Loopback(std::net::SocketAddr);
+        impl reqwest::dns::Resolve for Loopback {
+            fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+                let addresses: reqwest::dns::Addrs = Box::new(std::iter::once(self.0));
+                Box::pin(std::future::ready(Ok::<
+                    _,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >(addresses)))
+            }
+        }
+        let client = Client::builder()
+            .https_only(true)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_gzip()
+            .no_brotli()
+            .no_zstd()
+            .no_deflate()
+            .tls_certs_only([reqwest::Certificate::from_pem(ca_pem).unwrap()])
+            .dns_resolver(std::sync::Arc::new(Loopback(address)))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        Self {
+            client,
+            user_agent: HeaderValue::from_str(user_agent).unwrap(),
+            endpoints: Endpoints::default(),
+            clock: None,
+            #[cfg(feature = "test-support")]
+            hosted_transport: None,
+        }
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     /// Exercises an edge owner's explicit agent against a local HTTP fixture.
     pub fn fixture_agent(address: std::net::SocketAddr, user_agent: &str) -> Self {
