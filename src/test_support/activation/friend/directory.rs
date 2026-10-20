@@ -118,14 +118,15 @@ pub(super) fn respond(target: &str, headers: &str, body: &[u8], state: &mut Stat
         return response;
     }
     assert!(headers.starts_with("PUT "));
-    assert_eq!(
-        header(headers, "if-match"),
-        if admitted {
-            "\"friend-admitted\""
-        } else {
-            "\"friend-joined\""
-        }
-    );
+    let validator = if let Some(recovery) = state.reconnect.as_ref().filter(|r| r.canceled_bind) {
+        assert_eq!(recovery.observed.lock().unwrap().rebinds, 1);
+        recovery.validator.as_deref().unwrap()
+    } else if admitted {
+        "\"friend-admitted\""
+    } else {
+        "\"friend-joined\""
+    };
+    assert_eq!(header(headers, "if-match"), validator);
     assert_eq!(
         serde_json::from_slice::<Value>(body).unwrap(),
         json!({"members":{"me":null}})
