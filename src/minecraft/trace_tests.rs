@@ -65,6 +65,12 @@ const DIVERGENCES: &[Divergence] = &[
         kind: Kind::Worse,
         why: "429/503 fail the join and presence update that Go retries after Retry-After",
     },
+    // Not in the audit: go-xsapi's NSAL failure cache also holds SISU errors.
+    Divergence {
+        scenario: "sisu-failure-cache",
+        kind: Kind::Different,
+        why: "Go replays a cached SISU error for 15s without a request; Rust asks SISU again",
+    },
     // Audit: no transient retry or Retry-After handling anywhere.
     Divergence {
         scenario: "transient-failure",
@@ -133,7 +139,9 @@ struct Peer<'a> {
     session: u64,
     address: SocketAddr,
     ca: Vec<u8>,
+    /// Client clock: the peer's skew is only visible through its Date headers.
     now: SystemTime,
+    elapsed: Duration,
 }
 
 impl Peer<'_> {
@@ -144,15 +152,18 @@ impl Peer<'_> {
             address: reply["addr"].as_str().unwrap().parse().unwrap(),
             ca: reply["ca"].as_str().unwrap().as_bytes().to_vec(),
             now: unix(&reply["now"]),
+            elapsed: Duration::ZERO,
             oracle,
         }
     }
 
-    fn advance(&mut self, seconds: u64) {
+    fn advance(&mut self, seconds: u64) -> Duration {
         let reply = self
             .oracle
             .call(json!({"op": "advance", "session": self.session, "seconds": seconds}));
         self.now = unix(&reply["now"]);
+        self.elapsed += Duration::from_secs(seconds);
+        Duration::from_secs(seconds)
     }
 
     fn take(&mut self) -> Vec<String> {
@@ -162,9 +173,10 @@ impl Peer<'_> {
         serde_json::from_value(reply["steps"].clone()).unwrap()
     }
 
+    /// Starts with no Date sample, its host clock moved by the time simulated so far.
     fn http(&self, user_agent: &str) -> Http {
         let mut http = Http::trace_fixture(self.address, &self.ca, user_agent);
-        http.set_fixture_time(self.now);
+        http.advance_fixture_time(self.elapsed);
         http
     }
 }
@@ -205,8 +217,7 @@ async fn run(peer: &mut Peer<'_>, client: &mut Option<Minecraft>, step: &str) ->
                 .next_poll()
                 .duration_since(peer.now)
                 .unwrap_or_default();
-            peer.advance(wait.as_secs());
-            auth.http.set_fixture_time(peer.now);
+            auth.http.advance_fixture_time(peer.advance(wait.as_secs()));
             if let Poll::Authorized(credentials) = auth.poll(&mut attempt, peer.now).await? {
                 break credentials;
             }
@@ -226,9 +237,9 @@ async fn run(peer: &mut Peer<'_>, client: &mut Option<Minecraft>, step: &str) ->
             .await
             .map(drop),
         "advance" => {
-            peer.advance(argument.parse().unwrap());
-            owner.http.set_fixture_time(peer.now);
-            owner.xbox.set_fixture_time(peer.now);
+            let by = peer.advance(argument.parse().unwrap());
+            owner.http.advance_fixture_time(by);
+            owner.xbox.advance_fixture_time(by);
             Ok(())
         }
         "restart" => {

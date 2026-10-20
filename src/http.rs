@@ -51,8 +51,18 @@ pub(crate) struct Http {
     user_agent: HeaderValue,
     pub endpoints: Endpoints,
     clock: Option<(SystemTime, Instant)>,
+    #[cfg(test)]
+    elapsed: FixtureElapsed,
     #[cfg(feature = "test-support")]
     hosted_transport: Option<std::sync::Arc<crate::test_support::activation::transport::Transport>>,
+}
+
+/// Simulated time passing for fixture clocks, so tests advance without sleeping.
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+struct FixtureElapsed {
+    total: Duration,       // added to the host clock while no Date was seen
+    at_response: Duration, // total when the last Date arrived
 }
 
 pub(crate) struct Response {
@@ -81,6 +91,8 @@ impl Http {
             user_agent,
             endpoints: Endpoints::default(),
             clock: None,
+            #[cfg(test)]
+            elapsed: FixtureElapsed::default(),
             #[cfg(feature = "test-support")]
             hosted_transport: None,
         })
@@ -115,11 +127,18 @@ impl Http {
 
     /// Advances the last server Date with monotonic elapsed time at the HTTP edge.
     pub fn now(&self) -> SystemTime {
+        #[cfg(test)]
+        let (local, since_response) = (
+            self.elapsed.total,
+            self.elapsed.total - self.elapsed.at_response,
+        );
+        #[cfg(not(test))]
+        let (local, since_response) = (Duration::ZERO, Duration::ZERO);
         match self.clock {
             Some((server, received)) => server
-                .checked_add(received.elapsed())
+                .checked_add(received.elapsed() + since_response)
                 .unwrap_or_else(SystemTime::now),
-            None => SystemTime::now(),
+            None => SystemTime::now() + local,
         }
     }
 
@@ -152,6 +171,10 @@ impl Http {
             .and_then(|value| httpdate::parse_http_date(value).ok())
         {
             self.clock = Some((date, Instant::now()));
+            #[cfg(test)]
+            {
+                self.elapsed.at_response = self.elapsed.total;
+            }
         }
         if response
             .content_length()
@@ -208,9 +231,16 @@ impl Http {
     }
 
     #[cfg(test)]
+    /// Simulates `by` of host and monotonic time passing; Date samples are kept.
+    pub(crate) fn advance_fixture_time(&mut self, by: Duration) {
+        self.elapsed.total += by;
+    }
+
+    #[cfg(test)]
     /// Advances fixture UTC explicitly without sleeping or changing the host clock.
     pub(crate) fn set_fixture_time(&mut self, now: SystemTime) {
         self.clock = Some((now, Instant::now()));
+        self.elapsed.at_response = self.elapsed.total;
     }
 
     #[cfg(test)]
@@ -255,6 +285,8 @@ impl Http {
             user_agent: HeaderValue::from_str(user_agent).unwrap(),
             endpoints: Endpoints::default(),
             clock: None,
+            #[cfg(test)]
+            elapsed: FixtureElapsed::default(),
             #[cfg(feature = "test-support")]
             hosted_transport: None,
         }
@@ -289,6 +321,8 @@ impl Http {
                 playfab: Some(format!("{base}/Client/LoginWithXbox")),
             },
             clock: None,
+            #[cfg(test)]
+            elapsed: FixtureElapsed::default(),
             #[cfg(feature = "test-support")]
             hosted_transport: None,
         }

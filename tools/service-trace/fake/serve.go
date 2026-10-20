@@ -126,12 +126,12 @@ func Serve(in io.Reader, out io.Writer) error {
 				break
 			}
 			sessions[next] = s
-			resp = map[string]any{"session": next, "addr": s.ln.Addr().String(), "ca": ca.pem, "now": s.server.Time().Unix()}
+			resp = map[string]any{"session": next, "addr": s.ln.Addr().String(), "ca": ca.pem, "now": s.client().Unix()}
 		case s == nil:
 			resp = map[string]any{"error": "unknown session"}
 		case req.Op == "advance":
 			s.advance(time.Duration(req.Seconds) * time.Second)
-			resp = map[string]any{"now": s.server.Time().Unix()}
+			resp = map[string]any{"now": s.client().Unix()}
 		case req.Op == "take":
 			steps := s.server.Take()
 			if steps == nil {
@@ -152,7 +152,8 @@ func Serve(in io.Reader, out io.Writer) error {
 	}
 }
 
-// session is one scenario peer with a manual clock that moves only on advance.
+// session is one scenario peer with a manual client clock that moves only on
+// advance. Clients learn the peer's skewed time only from its Date headers.
 type session struct {
 	server *Server
 	ln     net.Listener
@@ -173,6 +174,13 @@ func open(script Script, ca *authority) (*session, error) {
 	}}
 	go func() { _ = s.http.ServeTLS(ln, "", "") }()
 	return s, nil
+}
+
+// client is the unskewed client clock; only the peer's answers carry the skew.
+func (s *session) client() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clock
 }
 
 func (s *session) advance(d time.Duration) {

@@ -90,6 +90,11 @@ var Scenarios = []Scenario{
 		}},
 		Plan: []string{"signin", "join", advance(16 * time.Second), "join", advance(16 * time.Second), "join"},
 	},
+	{
+		Name: "sisu-failure-cache", Note: "a SISU error poisons NSAL current, so Go replays it for 15s without a request",
+		Script: Script{Faults: []Fault{{Endpoint: "sisu", Hits: []int{1}, Status: 401, Header: map[string]string{"X-Err": "2148916238"}}}},
+		Plan:   []string{"signin", "join", "join", advance(16 * time.Second), "join"},
+	},
 }
 
 // Lookup returns the named scenario.

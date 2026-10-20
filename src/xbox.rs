@@ -207,9 +207,9 @@ impl Account {
     }
 
     #[cfg(test)]
-    /// Moves this account's service clock with a fixture's manual clock.
-    pub(crate) fn set_fixture_time(&mut self, now: SystemTime) {
-        self.http.set_fixture_time(now);
+    /// Simulates time passing for this account's service clock.
+    pub(crate) fn advance_fixture_time(&mut self, by: Duration) {
+        self.http.advance_fixture_time(by);
     }
 
     /// Borrows the account's current Microsoft credentials for secure persistence.
