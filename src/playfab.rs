@@ -10,6 +10,8 @@ use zeroize::Zeroizing;
 
 const REUSE: Duration = Duration::from_secs(24 * 60 * 60 - 15 * 60);
 
+pub(crate) mod checkpoint;
+
 /// One PlayFab login; secret ticket and entity credential have no Debug implementation.
 pub struct Session {
     pub(crate) ticket: Zeroizing<String>,

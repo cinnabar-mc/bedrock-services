@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 const PREFIX: &[u8] = b"BSAC\x01";
 const CACHED_PREFIX: &[u8] = b"BSAC\x02";
 const DEVICE_CACHED_PREFIX: &[u8] = b"BSAC\x03";
+const SERVICES_PREFIX: &[u8] = b"BSAC\x04";
 const TIME_BYTES: usize = 12;
 
 mod derived;
@@ -32,6 +33,19 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
+    /// Adds optional service state without displacing the required account checkpoint.
+    pub(crate) fn with_services(self, services: &[u8]) -> Result<Self, Error> {
+        let length = SERVICES_PREFIX.len() + 8 + self.bytes.len() + services.len();
+        if length > MAX_CHECKPOINT_BYTES {
+            return Ok(self);
+        }
+        let mut bytes = Zeroizing::new(Vec::with_capacity(length));
+        bytes.extend_from_slice(SERVICES_PREFIX);
+        append_bytes(&mut bytes, &self.bytes)?;
+        append_bytes(&mut bytes, services)?;
+        Ok(Self { bytes })
+    }
+
     /// Takes ownership of bounded, versioned bytes read from the caller's secure store.
     ///
     /// This checks framing. Policy and proof-key validity are checked when the
@@ -58,7 +72,7 @@ impl Account {
     /// generation and serialization boundary as refresh and sign-out. Access, device,
     /// SISU and XSTS entries may be included within the same size limit when their
     /// live owner has a service clock. Their original absolute expiry is preserved;
-    /// restore requires fresh public policy and a successful response Date before use.
+    /// restore requires a fresh public policy or matching Minecraft discovery Date before use.
     /// Optional cache bytes never prevent capturing the refresh credential and proof.
     ///
     /// # Errors
@@ -122,7 +136,11 @@ impl Account {
             bytes.extend_from_slice(&length.to_le_bytes());
             cached.write(&mut bytes)?;
         }
-        Ok(Checkpoint { bytes })
+        let checkpoint = Checkpoint { bytes };
+        match &self.service_checkpoint {
+            Some(services) => checkpoint.with_services(services),
+            None => Ok(checkpoint),
+        }
     }
 
     /// Restores only state whose account and policy binding remains meaningful at restart.
@@ -147,6 +165,9 @@ impl Account {
         credentials.suspend_access();
         let mut account = Self::with_key(http, config, credentials, key);
         account.restored = contents.derived.map(View::into_owned);
+        account.service_checkpoint = contents
+            .services
+            .map(|bytes| Zeroizing::new(bytes.to_vec()));
         Ok(account)
     }
 }
@@ -184,10 +205,15 @@ fn device_tag(device: Device) -> u8 {
 
 /// Appends a checked UTF-8 field to an already bounded checkpoint allocation.
 fn append_field(bytes: &mut Vec<u8>, value: &str) -> Result<(), Error> {
+    append_bytes(bytes, value.as_bytes())
+}
+
+/// Appends one bounded opaque checkpoint field.
+fn append_bytes(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), Error> {
     let length =
         u32::try_from(value.len()).map_err(|_| Error::Invalid("account checkpoint size"))?;
     bytes.extend_from_slice(&length.to_le_bytes());
-    bytes.extend_from_slice(value.as_bytes());
+    bytes.extend_from_slice(value);
     Ok(())
 }
 
@@ -199,6 +225,7 @@ struct Contents<'a> {
     access: &'a str,
     expires: SystemTime,
     derived: Option<View<'a>>,
+    services: Option<&'a [u8]>,
 }
 
 impl<'a> Contents<'a> {
@@ -206,6 +233,19 @@ impl<'a> Contents<'a> {
     fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() > MAX_CHECKPOINT_BYTES {
             return Err(Error::Invalid("account checkpoint size"));
+        }
+        if let Some(bytes) = bytes.strip_prefix(SERVICES_PREFIX) {
+            let mut reader = Reader(bytes);
+            let account = reader.bytes()?;
+            if account.starts_with(SERVICES_PREFIX) {
+                return Err(Error::Invalid("nested account checkpoint"));
+            }
+            let mut contents = Self::parse(account)?;
+            contents.services = Some(reader.bytes()?);
+            if !reader.0.is_empty() {
+                return Err(Error::Invalid("account checkpoint framing"));
+            }
+            return Ok(contents);
         }
         let mut reader = Reader(bytes);
         let prefix = reader.take(PREFIX.len())?;
@@ -238,6 +278,7 @@ impl<'a> Contents<'a> {
             access,
             expires,
             derived,
+            services: None,
         })
     }
 }

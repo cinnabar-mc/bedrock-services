@@ -160,6 +160,15 @@ impl Http {
         self.clock.map(|(server, _)| server)
     }
 
+    /// Shares a fresh authenticated transport observation without reanchoring its lifetime.
+    pub(crate) fn inherit_clock(&mut self, source: &Self) {
+        self.clock = source.clock;
+        #[cfg(test)]
+        {
+            self.elapsed = source.elapsed;
+        }
+    }
+
     /// Keeps acquisition and ordinary service reads within the default byte budget.
     pub async fn send(&mut self, request: Request) -> Result<Response, Error> {
         self.send_with_limit(request, RESPONSE_LIMIT).await
