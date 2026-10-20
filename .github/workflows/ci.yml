@@ -21,17 +21,37 @@ jobs:
           components: rustfmt, clippy
       - uses: actions/setup-go@v6
         with:
-          go-version-file: tools/go-oracle/go.mod
-          cache-dependency-path: tools/go-oracle/go.sum
+          go-version-file: tools/service-trace/go.mod
+          cache-dependency-path: |
+            tools/go-oracle/go.sum
+            tools/service-trace/go.sum
       - working-directory: tools/go-oracle
         run: go build -o ../../target/go-signature-oracle.exe .
+      - working-directory: tools/service-trace
+        run: go build -o ../../target/service-trace-oracle.exe .
       - run: cargo fmt --all --check
       - run: cargo check --lib --no-default-features --locked
       - run: cargo test --all-targets --all-features --locked
         env:
           BEDROCK_SERVICES_GO_ORACLE: ${{ github.workspace }}/target/go-signature-oracle.exe
+          BEDROCK_SERVICES_TRACE_ORACLE: ${{ github.workspace }}/target/service-trace-oracle.exe
       - run: cargo test --doc --all-features --locked
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+  service-trace:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/service-trace
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: tools/service-trace/go.mod
+          cache-dependency-path: tools/service-trace/go.sum
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      # Regenerates every golden from the Go libraries and fails on drift.
+      - run: go test -race ./...
   msrv:
     runs-on: ubuntu-latest
     steps:
