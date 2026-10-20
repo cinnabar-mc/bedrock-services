@@ -9,9 +9,17 @@ use friend::service::Reply;
 
 /// Reuses every original acquisition/publication response, then accepts only bounded host recovery IO.
 /// A failed app recovery can still synchronize and remove its original member before tasks are joined.
-pub(super) async fn serve(listener: TcpListener, state: Shared, version: String) {
+pub(super) async fn serve(
+    listener: TcpListener,
+    state: Shared,
+    version: String,
+    mut accepted: Option<tokio::net::TcpStream>,
+) {
     loop {
-        let (tcp, _) = listener.accept().await.unwrap();
+        let tcp = match accepted.take() {
+            Some(tcp) => tcp,
+            None => listener.accept().await.unwrap().0,
+        };
         let mut stream = rta::websocket::test_support::acceptor()
             .accept(tcp)
             .await

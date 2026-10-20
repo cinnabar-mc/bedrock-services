@@ -91,6 +91,7 @@ struct State {
     catalog: bool,
     friend: Option<friend::Observed>,
     reconnect: Option<reconnect::Services>,
+    rta_upgraded: bool,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -328,6 +329,7 @@ async fn acquire_inner(
         initial_turn_seconds,
         catalog,
         reconnect: None,
+        rta_upgraded: false,
         friend: friend
             .as_mut()
             .map(|services| services.observed(minecraft.network_protocol_version)),

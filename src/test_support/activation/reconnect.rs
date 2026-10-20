@@ -102,6 +102,10 @@ impl HostedPeer {
 
 /// Installs exactly one interruption and one replacement on the original protected listener.
 fn arm(state: &mut State) -> HostedRtaReconnect {
+    assert!(
+        !state.rta_upgraded,
+        "arm before the original verified RTA upgrade"
+    );
     assert!(state.reconnect.is_none());
     let (close, closed) = oneshot::channel();
     let (stop, stopped) = oneshot::channel();
