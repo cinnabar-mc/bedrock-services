@@ -2,12 +2,14 @@
 
 pub(super) mod friend;
 mod host_reconnect;
+mod rebind;
 mod reconnect;
 mod renewal;
 mod script;
 mod sockets;
 mod subscription;
 pub(super) mod visitors;
+pub use rebind::HostedRebindHold;
 pub use reconnect::{HostedRtaReconnect, HostedRtaReconnectObservation};
 pub use renewal::HostedRenewalObservation;
 pub use subscription::HostedSubscriptionHold;

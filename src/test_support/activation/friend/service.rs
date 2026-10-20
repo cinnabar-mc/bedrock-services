@@ -34,6 +34,18 @@ pub(in super::super) async fn serve(listener: TcpListener, state: Shared, versio
         let (bytes, end, length) = read_request(&mut stream).await;
         let headers = std::str::from_utf8(&bytes[..end]).unwrap();
         let target = headers.split_whitespace().nth(1).unwrap();
+        if super::super::rebind::cancelled_request(
+            &listener,
+            &state,
+            &mut stream,
+            target,
+            headers,
+            &bytes[end..end + length],
+        )
+        .await
+        {
+            continue;
+        }
         let reply = {
             let mut state = state.lock().unwrap();
             assert!(

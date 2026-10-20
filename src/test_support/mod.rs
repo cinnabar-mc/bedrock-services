@@ -12,7 +12,7 @@ pub use activation::friend::{
 };
 pub use activation::{
     HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedActivationPrefix,
-    HostedActivationVisitors, HostedRenewalObservation, HostedRtaReconnect,
+    HostedActivationVisitors, HostedRebindHold, HostedRenewalObservation, HostedRtaReconnect,
     HostedRtaReconnectObservation, HostedSocketTerminal, HostedSubscriptionHold, HostedVisitor,
     HostedVisitorsObservation,
 };
