@@ -86,11 +86,11 @@ async fn explicit_discovery_failure_is_retryable_without_minting() {
         assert!(headers.to_ascii_lowercase().starts_with("get "));
         assert!(!headers.to_ascii_lowercase().contains("authorization:"));
         assert!(body.is_empty());
-        if step == 1 { return (503, Vec::new(), json!({"error":"synthetic unavailable"})); }
+        if step <= 2 { return (503, Vec::new(), json!({"error":"synthetic unavailable"})); }
         (200, Vec::new(), json!({"result":{"serviceEnvironments":{"auth":{"prod":{
             "serviceUri":"https://synthetic-service.invalid/", "playFabTitleId":"AB12", "issuer":"https://synthetic-issuer.invalid/"
         }}}}}))
-    }, 2).await;
+    }, 3).await;
     let mut minecraft = discovery_owner(address);
     let session = minecraft.session_id();
     assert!(matches!(
