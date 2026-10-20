@@ -25,8 +25,6 @@ const GOLDENS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/service-trace/
 enum Kind {
     /// Fewer requests or a recovery Go lacks, with the same final correctness.
     Better,
-    /// More requests or a failure Go recovers from.
-    Worse,
     /// A different trade-off with no strict ordering.
     Different,
 }
@@ -41,6 +39,11 @@ struct Divergence {
 }
 
 const DIVERGENCES: &[Divergence] = &[
+    Divergence {
+        scenario: "warm-restart-expiry",
+        kind: Kind::Better,
+        why: "restored PlayFab login replaces the expired Minecraft credential without Xbox or PlayFab acquisition",
+    },
     Divergence {
         scenario: "retry-after",
         kind: Kind::Better,
@@ -69,12 +72,6 @@ const DIVERGENCES: &[Divergence] = &[
         scenario: "sisu-failure-cache",
         kind: Kind::Different,
         why: "Go replays a cached SISU error for 15s without a request; Rust asks SISU again",
-    },
-    // Audit: MCToken not persisted.
-    Divergence {
-        scenario: "warm-restart-join",
-        kind: Kind::Worse,
-        why: "6 requests vs Go's 2: no persisted MCToken, plus NSAL default calibration and NSAL current",
     },
     // Audit: concurrent acquisition is serialized by `&mut` instead of deduplicated.
     Divergence {
