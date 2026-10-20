@@ -88,6 +88,7 @@ struct Retail {
 #[serde(rename_all = "camelCase")]
 struct Environment {
     service_uri: String,
+    #[serde(alias = "playfabTitleId")]
     play_fab_title_id: String,
     #[serde(default)]
     issuer: String,
