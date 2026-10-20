@@ -188,11 +188,16 @@ pub(super) async fn run(
                 | HostedSocketTerminal::Io(io::ErrorKind::UnexpectedEof)
         );
     }
-    let (mut replacement, sequence) = tokio::select! {
+    let (tcp, _) = tokio::select! {
         _ = &mut stop => return first,
-        accepted = super::sockets::accept_rta(&listener, &state) => accepted,
+        accepted = listener.accept() => accepted.unwrap(),
     };
+    let mut replacement = super::sockets::upgrade_rta(tcp, &state).await;
     observed.lock().unwrap().upgrades += 1;
+    let sequence = match super::sockets::subscription(&mut replacement).await {
+        Ok(sequence) => sequence,
+        Err(terminal) => return terminal,
+    };
     replacement
         .send(Message::text(
             json!([1,sequence,0,29,{"ConnectionId":connection}]).to_string(),

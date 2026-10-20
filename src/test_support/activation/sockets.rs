@@ -43,8 +43,17 @@ pub(super) type Socket = WebSocketStream<tokio_rustls::server::TlsStream<tokio::
 /// Verifies one actual signed upgrade and desired subscription before any service acknowledgment.
 pub(super) async fn accept_rta(listener: &TcpListener, state: &Shared) -> (Socket, Value) {
     let (tcp, _) = listener.accept().await.unwrap();
+    let mut socket = upgrade_rta(tcp, state).await;
+    let sequence = subscription(&mut socket)
+        .await
+        .expect("actual original RTA subscription");
+    (socket, sequence)
+}
+
+/// Retains an accepted TCP owner through verified TLS and the original protected upgrade.
+pub(super) async fn upgrade_rta(tcp: tokio::net::TcpStream, state: &Shared) -> Socket {
     let stream = tls::acceptor().accept(tcp).await.unwrap();
-    let (request, mut socket) = ServerBuilder::new()
+    let (request, socket) = ServerBuilder::new()
         .config(
             Config::default()
                 .frame_size(rta::MAX_MESSAGE_BYTES)
@@ -83,14 +92,35 @@ pub(super) async fn accept_rta(listener: &TcpListener, state: &Shared) -> (Socke
     }
     #[cfg(test)]
     super::reconnect::upgraded(state);
-    let message = socket.next().await.unwrap().unwrap();
-    assert!(message.is_text());
-    let message: Value = serde_json::from_slice(message.as_payload()).unwrap();
-    assert_eq!(
-        message,
-        json!([1, message[1], rta::Resource::session_directory().as_str()])
-    );
-    (socket, message[1].clone())
+    socket
+}
+
+/// Verifies the desired subscription or preserves this same socket's physical terminal.
+pub(super) async fn subscription(socket: &mut Socket) -> Result<Value, HostedSocketTerminal> {
+    loop {
+        let message = match socket.next().await {
+            Some(Ok(message)) if message.is_text() => message,
+            Some(Ok(message)) if message.is_close() => {
+                return Err(match socket.close().await {
+                    Ok(()) => HostedSocketTerminal::Close,
+                    Err(error) => failure(error),
+                });
+            }
+            Some(Ok(message)) if message.is_ping() || message.is_pong() => {
+                socket.flush().await.map_err(failure)?;
+                continue;
+            }
+            Some(Ok(_)) => return Err(HostedSocketTerminal::Protocol),
+            Some(Err(error)) => return Err(failure(error)),
+            None => return Err(HostedSocketTerminal::Eof),
+        };
+        let message: Value = serde_json::from_slice(message.as_payload()).unwrap();
+        assert_eq!(
+            message,
+            json!([1, message[1], rta::Resource::session_directory().as_str()])
+        );
+        return Ok(message[1].clone());
+    }
 }
 
 /// Independently verifies original protected fields and acknowledges the actual desired subscription.
