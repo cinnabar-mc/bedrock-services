@@ -9,20 +9,27 @@ const LIFETIME: Duration = Duration::from_secs(15);
 pub(super) struct Failure {
     until: Instant,
     error: Error,
+    transient: bool,
 }
 
 impl Failure {
     /// Retains a redacted replay of a completed failure for the original 15-second window.
-    pub(super) fn new(error: &Error, now: Instant) -> Self {
+    pub(super) fn new(error: &Error, now: Instant, replayed: Option<bool>) -> Self {
         Self {
             until: now + LIFETIME,
             error: replay(error),
+            transient: replayed.unwrap_or_else(|| crate::http::retry::transient(error)),
         }
     }
 
     /// Returns the cached failure strictly before its monotonic retry deadline.
     pub(super) fn get(&self, now: Instant) -> Option<Error> {
         (now < self.until).then(|| replay(&self.error))
+    }
+
+    /// Retains the original transport classification even when its redacted replay cannot be cloned.
+    pub(super) fn transient(&self) -> bool {
+        self.transient
     }
 }
 
@@ -80,6 +87,7 @@ mod tests {
                 xerr: Some(0x8015_DC0E),
             },
             Instant::now(),
+            None,
         );
         for _ in 0..14 {
             tokio::time::advance(Duration::from_secs(1)).await;

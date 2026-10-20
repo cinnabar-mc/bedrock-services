@@ -26,7 +26,9 @@ import (
 	"github.com/cinnabar-mc/bedrock-services/tools/service-trace/fake"
 	"github.com/df-mc/go-playfab/v2"
 	"github.com/df-mc/go-xsapi/v2"
+	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/presence"
+	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/sisu"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
@@ -192,23 +194,27 @@ func outcome(err error) string {
 
 // driver holds the long-lived objects a Go client builds from these libraries.
 type driver struct {
-	ctx         context.Context
-	srv         *fake.Server
-	tr          *fake.Transport
-	client      *http.Client
-	conf        auth.Config
-	msa         *lastToken
-	device      xasd.TokenSource
-	session     *sisu.Session
-	resolver    *nsal.Resolver
-	env         *service.AuthorizationEnvironment
-	src         service.TokenSource
-	lastService *service.Token
-	resumed     *service.Token
-	sessionID   string
-	playfab     *playfab.Client
-	xbl         *xsapi.Client
-	closers     []func() error
+	ctx              context.Context
+	srv              *fake.Server
+	tr               *fake.Transport
+	client           *http.Client
+	conf             auth.Config
+	msa              *lastToken
+	device           xasd.TokenSource
+	session          *sisu.Session
+	resolver         *nsal.Resolver
+	env              *service.AuthorizationEnvironment
+	src              service.TokenSource
+	lastService      *service.Token
+	resumed          *service.Token
+	sessionID        string
+	playfab          *playfab.Client
+	xbl              *xsapi.Client
+	closers          []func() error
+	rtaConn          *rta.Conn
+	rtaReady         chan error
+	rtaSubscriptions []*rta.Subscription
+	directory        *mpsd.Client
 }
 
 var quiet = slog.New(slog.DiscardHandler)
@@ -259,6 +265,16 @@ func (d *driver) run(step string) error {
 		return nil
 	case "xsts-pair":
 		return d.xstsPair(arg)
+	case "rta-subscribe":
+		return d.subscribeRTA(1)
+	case "rta-subscribe-pair":
+		return d.subscribeRTA(2)
+	case "rta-active":
+		return d.activeRTA()
+	case "rta-drop":
+		return d.dropRTA()
+	case "mpsd-join":
+		return d.joinDirectory()
 	}
 	return fmt.Errorf("unknown step %q", step)
 }

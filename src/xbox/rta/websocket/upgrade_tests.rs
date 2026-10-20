@@ -180,7 +180,10 @@ async fn verified_tls_rejects_untrusted_root_and_wrong_hostname() {
         })
         .await
         .unwrap();
-        assert!(client.is_err());
+        assert_eq!(
+            SocketError::from_wire(client.unwrap_err()),
+            SocketError::Configuration
+        );
         assert!(server.is_err());
     }
 }

@@ -20,6 +20,8 @@ pub struct ConnectionRequest {
     authorization: Arc<Authorization>,
     scope: Scope,
     used: bool,
+    #[cfg(test)]
+    pub(crate) trace_transport: Option<(std::net::SocketAddr, Vec<u8>)>,
     #[cfg(feature = "test-support")]
     pub(crate) hosted_transport: Option<Arc<crate::test_support::activation::transport::Transport>>,
 }
@@ -37,6 +39,7 @@ impl Account {
         generation: Generation,
         upgrade_headers: HeaderMap,
     ) -> Result<ConnectionRequest, Error> {
+        self.replayed_title_failure = None;
         validate_upgrade(&upgrade_headers)?;
         let url = Url::parse(ENDPOINT).map_err(|_| Error::Invalid("upgrade endpoint"))?;
         let identity = self.authorize(XBOX_RELYING_PARTY).await?;
@@ -75,9 +78,22 @@ impl Account {
                 epoch: Epoch(Uuid::new_v4()),
             },
             used: false,
+            #[cfg(test)]
+            trace_transport: self.trace_rta_transport.clone(),
             #[cfg(feature = "test-support")]
             hosted_transport: self.http.hosted_transport(),
         })
+    }
+
+    /// Classifies this serialized acquisition, including the original cause of a cached title failure.
+    #[cfg(feature = "rta-tokio")]
+    pub(in crate::xbox) fn retryable_rta_acquisition(&mut self, error: &Error) -> bool {
+        let Error::Service(error) = error else {
+            return false;
+        };
+        self.replayed_title_failure
+            .take()
+            .unwrap_or_else(|| crate::http::retry::transient(error))
     }
 
     /// Invalidates only this exact issuance after an explicit rejected upgrade.

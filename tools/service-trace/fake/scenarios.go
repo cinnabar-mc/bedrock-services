@@ -6,7 +6,7 @@ import (
 )
 
 // Scenario pairs the peer's script with the client plan both languages run.
-// Plan steps: signin, join, presence, restart, advance <seconds>, xsts-pair <relying party>.
+// Plans also support rta-subscribe, rta-drop and mpsd-join through the real service owners.
 type Scenario struct {
 	Name        string
 	Note        string
@@ -19,6 +19,45 @@ const realmsRP = "https://pocket.realms.minecraft.net/"
 
 // Scenarios is the shared catalogue; goldens and Rust drivers derive from it.
 var Scenarios = []Scenario{
+	{
+		Name: "rta-rejected-then-interrupted", Note: "a resource rejection remains observable after its sibling's interrupted restoration",
+		Script: Script{Faults: []Fault{{Endpoint: "rta.subscribe", Hits: []int{3}, Status: 1}, {Endpoint: "rta.subscribe", Hits: []int{4}, Reset: true}}},
+		Plan:   []string{"signin", "rta-subscribe-pair", "rta-drop", "rta-active"},
+	},
+	{
+		Name: "rta-partial-restoration", Note: "one rejected restore retires only that resource and leaves its sibling active",
+		Script: Script{Faults: []Fault{{Endpoint: "rta.subscribe", Hits: []int{3}, Status: 1}}},
+		Plan:   []string{"signin", "rta-subscribe-pair", "rta-drop", "rta-active"},
+	},
+	{
+		Name: "rta-reconnect-retry", Note: "a refused replacement upgrade retries with backoff and restores its subscription",
+		Script: Script{Faults: []Fault{{Endpoint: "rta", Hits: []int{2}, Status: 503}}},
+		Plan:   []string{"signin", "rta-subscribe", "rta-drop"},
+	},
+	{
+		Name: "rta-resubscribe-interrupted", Note: "a replacement dropped during subscribe retries without losing the desired handle",
+		Script: Script{Faults: []Fault{{Endpoint: "rta.subscribe", Hits: []int{2}, Reset: true}}},
+		Plan:   []string{"signin", "rta-subscribe", "rta-drop"},
+	},
+	{
+		Name: "rta-reconnect", Note: "a dropped RTA socket reconnects and restores the desired subscription",
+		Plan: []string{"signin", "rta-subscribe", "rta-drop"},
+	},
+	{
+		Name: "mpsd-412", Note: "explicit ETag conflicts replay one stable join intent at most three times",
+		Script: Script{Faults: []Fault{{Endpoint: "mpsd.join", Hits: []int{1}, Status: 412, Header: map[string]string{"ETag": "\"raced1\""}},
+			{Endpoint: "mpsd.join", Hits: []int{2}, Status: 412, Header: map[string]string{"ETag": "\"raced2\""}}}},
+		Plan: []string{"signin", "mpsd-join"},
+	},
+	{
+		Name: "mpsd-412-exhausted", Note: "three explicit conflicts exhaust the stable join",
+		Script: Script{Faults: []Fault{{Endpoint: "mpsd.join", Status: 412, Header: map[string]string{"ETag": "\"raced\""}}}},
+		Plan:   []string{"signin", "mpsd-join"},
+	},
+	{
+		Name: "mpsd-reconnect", Note: "a joined membership rebinds after RTA reconnect and resubscribe",
+		Plan: []string{"signin", "mpsd-join", "rta-drop"},
+	},
 	{
 		Name: "fresh-signin-join", Note: "device-code sign-in, then the first join token",
 		Script: Script{PendingPolls: 1},
