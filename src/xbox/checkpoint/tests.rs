@@ -519,6 +519,8 @@ async fn restored_cache_requires_date_on_the_successful_decoded_policy_response(
             .unwrap();
         if case < 2 {
             assert!(restored.authorize("rp://fixture").await.is_err());
+            assert!(restored.authorize("rp://fixture").await.is_err());
+            restored.advance_fixture_time(Duration::from_secs(16));
             assert_eq!(
                 restored
                     .authorize("rp://fixture")
