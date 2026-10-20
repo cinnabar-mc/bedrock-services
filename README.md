@@ -33,6 +33,12 @@ Returned authorizations are immutable and shareable. Acquisition uses a separate
 plain HTTP client with HTTPS, finite deadlines, disabled redirects and bounded
 responses. There are no account background tasks or locks held across HTTP.
 
+HTTP acquisition uses the caller's Tokio runtime. Discovery, Minecraft credential
+issuance and title-presence updates opt into bounded retries within the original
+30-second HTTP budget. Server Retry-After delays are never shortened to fit that
+budget. Other requests, including OAuth rotation and membership/invitation writes,
+remain single-dispatch. Dropping the operation future ends its pending retry wait.
+
 The crate provides a default Android Minecraft authentication policy, independent
 of the game's platform metadata. Request signing
 accepts caller time and a borrowed P-256 key; Bedrock session P-384 keys belong to
@@ -74,8 +80,8 @@ An exact SISU profile-creation challenge returns
 `Error::AccountCreationRequired`. Its opaque payload exposes `signup_url()` only
 for the caller's sign-in UI/browser; Debug and Display redact this signed URL.
 Keep the same account owner and caller deadline while the user completes that
-page, then retry authorization. The SDK does not launch a browser or run a retry
-loop. Persist the same account checkpoint after canceled or failed acquisitions
+page, then retry authorization. The SDK does not launch a browser or automatically
+retry that challenge. Persist the same account checkpoint after canceled or failed acquisitions
 so credential rotations survive.
 
 At least one public policy request is required after restart. Minecraft and PlayFab

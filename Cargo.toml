@@ -10,8 +10,8 @@ publish = false
 
 [features]
 test-support = ["rta-tokio", "signaling-tokio", "tokio/rt", "tokio/macros", "tokio/sync", "tokio-websockets/server"]
-signaling-tokio = ["dep:tokio", "dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
-rta-tokio = ["dep:tokio", "dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots", "dep:httparse", "dep:aws-lc-rs"]
+signaling-tokio = ["dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots"]
+rta-tokio = ["dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "dep:webpki-roots", "dep:httparse", "dep:aws-lc-rs"]
 
 [dependencies]
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"], optional = true }
@@ -19,6 +19,7 @@ base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"], optional = true }
 httparse = { version = "1", optional = true }
 httpdate = "1"
+hyper = { version = "1", default-features = false }
 ipnet = "2"
 p256 = { version = "0.14", default-features = false, features = ["std", "ecdsa"] }
 p384 = { version = "0.14", default-features = false, features = ["std", "ecdsa", "pkcs8"] }
@@ -30,7 +31,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.11"
 thiserror = "2"
 time = { version = "0.3", features = ["parsing"] }
-tokio = { version = "1", features = ["net", "time", "io-util"], optional = true }
+tokio = { version = "1", features = ["net", "time", "io-util"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "rustls-bring-your-own-connector", "aws_lc_rs", "getrandom"], optional = true }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"], optional = true }
 webpki-roots = { version = "1", optional = true }
@@ -42,7 +43,7 @@ zeroize = "1"
 h2 = "0.4"
 http = "1"
 tokio-websockets = { version = "0.13", default-features = false, features = ["server", "aws_lc_rs"] }
-tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync", "test-util"] }
 
 [lints.rust]
 unsafe_code = "forbid"

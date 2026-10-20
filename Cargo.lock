@@ -72,6 +72,7 @@ dependencies = [
  "http",
  "httparse",
  "httpdate",
+ "hyper",
  "ipnet",
  "p256",
  "p384",

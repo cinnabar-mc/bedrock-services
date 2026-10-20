@@ -1,5 +1,7 @@
 //! Bounded, unauthenticated HTTP acquisition and response-clock correction.
 
+pub(crate) mod retry;
+
 use crate::Error;
 use reqwest::{
     Client, Method, Request, RequestBuilder, StatusCode,
@@ -13,6 +15,7 @@ pub(crate) const RESPONSE_LIMIT: usize = 1024 * 1024;
 /// Shared source-backed response budget for persona, statistics and Minecraft messaging.
 pub(crate) const SERVICE_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 const DEFAULT_ACCEPT: &str = "*/*";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const SISU_ORIGIN: &str = "https://sisu.xboxlive.com";
 
 pub(crate) struct Endpoints {
@@ -83,7 +86,7 @@ impl Http {
             .no_brotli()
             .no_zstd()
             .no_deflate()
-            .timeout(Duration::from_secs(30))
+            .timeout(REQUEST_TIMEOUT)
             .connect_timeout(Duration::from_secs(10))
             .build()?;
         Ok(Self {
@@ -160,6 +163,25 @@ impl Http {
     /// Keeps acquisition and ordinary service reads within the default byte budget.
     pub async fn send(&mut self, request: Request) -> Result<Response, Error> {
         self.send_with_limit(request, RESPONSE_LIMIT).await
+    }
+
+    /// Replays only an explicitly selected buffered acquisition under one original budget.
+    pub(crate) async fn send_retrying(
+        &mut self,
+        request: Request,
+        policy: retry::Policy,
+    ) -> Result<Response, Error> {
+        let mut retry = retry::Retry::new(policy);
+        loop {
+            let mut attempt = request
+                .try_clone()
+                .ok_or(Error::Invalid("non-replayable acquisition request"))?;
+            retry.begin(&mut attempt);
+            let result = self.send(attempt).await;
+            if !retry.wait(&result, self.now()).await {
+                return result;
+            }
+        }
     }
 
     /// Bounds declared and streamed bodies by the concrete service owner's budget.

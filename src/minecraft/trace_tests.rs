@@ -41,6 +41,11 @@ struct Divergence {
 }
 
 const DIVERGENCES: &[Divergence] = &[
+    Divergence {
+        scenario: "retry-after",
+        kind: Kind::Better,
+        why: "the same successful recovery reuses NSAL instead of repeating Go's current-endpoints lookup",
+    },
     // Audit: Rust judges token validity on the server Date; Go uses the local clock.
     Divergence {
         scenario: "date-skew",
@@ -59,23 +64,11 @@ const DIVERGENCES: &[Divergence] = &[
         kind: Kind::Better,
         why: "Rust keeps the previous refresh token; Go blanks it and cannot refresh again",
     },
-    // Audit: no transient retry or Retry-After handling anywhere.
-    Divergence {
-        scenario: "retry-after",
-        kind: Kind::Worse,
-        why: "429/503 fail the join and presence update that Go retries after Retry-After",
-    },
     // Not in the audit: go-xsapi's NSAL failure cache also holds SISU errors.
     Divergence {
         scenario: "sisu-failure-cache",
         kind: Kind::Different,
         why: "Go replays a cached SISU error for 15s without a request; Rust asks SISU again",
-    },
-    // Audit: no transient retry or Retry-After handling anywhere.
-    Divergence {
-        scenario: "transient-failure",
-        kind: Kind::Worse,
-        why: "a 5xx on discovery and a reset mint each fail a join that Go retries",
     },
     // Audit: MCToken not persisted.
     Divergence {
@@ -314,6 +307,15 @@ async fn service_traces_match_go_goldens() {
         let golden =
             std::fs::read_to_string(Path::new(GOLDENS).join(format!("{scenario}.trace"))).unwrap();
         let rust = replay(&mut oracle, scenario, &golden).await;
+        if matches!(scenario.as_str(), "retry-after" | "transient-failure") {
+            let operations = golden.lines().filter(|line| line.starts_with("> ")).count();
+            let outcomes: Vec<_> = rust.lines().filter(|line| line.starts_with("= ")).collect();
+            if outcomes != vec!["= ok"; operations] {
+                failures.push(format!(
+                    "{scenario}: every original operation must recover successfully"
+                ));
+            }
+        }
         let same = comparable(&rust) == comparable(&golden);
         match DIVERGENCES.iter().find(|entry| entry.scenario == scenario) {
             None if !same => failures.push(format!(

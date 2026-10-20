@@ -12,14 +12,16 @@ GET title.mgt.xboxlive.com/titles/current/endpoints auth=x1 signed -> 200
 POST xsts.auth.xboxlive.com/xsts/authorize rp=rp://playfabapi.com/ signed -> 200
 POST 20ca2.playfabapi.com/Client/LoginWithXbox xbox=x2 -> 200
 POST authorization.franchise.minecraft-services.net/api/v1.0/session/start ticket=p1 -> 503
-= error
-> join
 POST authorization.franchise.minecraft-services.net/api/v1.0/session/start ticket=p1 -> 200
+POST authorization.franchise.minecraft-services.net/api/v1.0/multiplayer/session/start auth=m1 -> 200
+= ok
+> join
 POST authorization.franchise.minecraft-services.net/api/v1.0/multiplayer/session/start auth=m1 -> 200
 = ok
 > presence
 POST userpresence.xboxlive.com/users/xuid(2535400000000001)/devices/current/titles/current auth=x1 signed -> 429
-= error
+POST userpresence.xboxlive.com/users/xuid(2535400000000001)/devices/current/titles/current auth=x1 signed -> 200
+= ok
 > presence
 POST userpresence.xboxlive.com/users/xuid(2535400000000001)/devices/current/titles/current auth=x1 signed -> 200
 = ok
