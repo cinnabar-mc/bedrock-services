@@ -146,4 +146,44 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn endpoints_without_a_relying_party_preserve_usable_siblings() {
+        use serde_json::json;
+
+        for malformed in [json!(false), json!(7), json!([]), json!({})] {
+            let data = serde_json::from_value::<TitleData>(json!({
+                "EndPoints": [{"Protocol": "https", "Host": "service.example.test",
+                    "HostType": "fqdn", "RelyingParty": malformed}]
+            }));
+            assert!(data.is_err(), "a non-string relying party was accepted");
+        }
+
+        let mut data: TitleData = serde_json::from_value(json!({
+            "EndPoints": [
+                {"Protocol": "https", "Host": "service.example.test", "HostType": "fqdn"},
+                {"Protocol": "https", "Host": "service.example.test", "HostType": "fqdn",
+                    "RelyingParty": null},
+                {"Protocol": "https", "Host": "service.example.test", "HostType": "fqdn",
+                    "RelyingParty": ""},
+                {"Protocol": "https", "Host": "service.example.test", "HostType": "fqdn",
+                    "RelyingParty": "rp://usable", "SignaturePolicyIndex": 0}
+            ],
+            "SignaturePolicies": [{"Version": 1, "MaxBodyBytes": 8192,
+                "ExtraHeaders": ["User-Agent"]}]
+        }))
+        .expect("an endpoint without a relying party discarded a usable policy table");
+        let url = Url::parse("https://service.example.test/authorize").unwrap();
+        let (party, policy) = data.resolve(&url).expect("usable sibling policy");
+        assert_eq!(party, "rp://usable");
+        assert_eq!(policy.version, 1);
+        assert_eq!(policy.max_body_bytes, 8192);
+        assert_eq!(policy.extra_headers, ["User-Agent"]);
+
+        data.endpoints.pop().expect("usable sibling is last");
+        assert!(
+            data.resolve(&url).is_none(),
+            "an endpoint without a relying party supplied authorization"
+        );
+    }
 }
