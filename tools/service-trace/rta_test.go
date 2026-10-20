@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/df-mc/go-xsapi/v2"
@@ -12,11 +13,14 @@ import (
 
 type subscribeProbe struct {
 	rta.NopSubscriptionHandler
-	ready chan struct{}
+	ready chan error
 }
 
 // HandleSubscribe signals only after the real subscription callback receives its new snapshot.
-func (p subscribeProbe) HandleSubscribe(json.RawMessage) error { p.ready <- struct{}{}; return nil }
+func (p subscribeProbe) HandleSubscribe(json.RawMessage) error { p.ready <- nil; return nil }
+
+// HandleError reports a rejected restoration independently from the other desired resources.
+func (p subscribeProbe) HandleError(err error) { p.ready <- err }
 
 // startRTA authenticates the actual Go WebSocket client through the same request peer.
 func (d *driver) startRTA() error {
@@ -38,16 +42,21 @@ func (d *driver) startRTA() error {
 }
 
 // subscribeRTA retains one desired subscription across physical connection replacement.
-func (d *driver) subscribeRTA() error {
+func (d *driver) subscribeRTA(count int) error {
 	if err := d.startRTA(); err != nil {
 		return err
 	}
-	d.rtaReady = make(chan struct{}, 1)
-	sub := rta.NewSubscription("https://sessiondirectory.xboxlive.com/connections/", subscribeProbe{ready: d.rtaReady})
-	if err := d.rtaConn.Subscribe(d.ctx, sub); err != nil {
-		return err
+	d.rtaReady = make(chan error, count)
+	for range count {
+		sub := rta.NewSubscription("https://sessiondirectory.xboxlive.com/connections/", subscribeProbe{ready: d.rtaReady})
+		if err := d.rtaConn.Subscribe(d.ctx, sub); err != nil {
+			return err
+		}
+		if err := <-d.rtaReady; err != nil {
+			return err
+		}
+		d.rtaSubscriptions = append(d.rtaSubscriptions, sub)
 	}
-	<-d.rtaReady
 	return nil
 }
 
@@ -56,12 +65,35 @@ func (d *driver) dropRTA() error {
 	if d.rtaConn == nil {
 		return fmt.Errorf("RTA was not started")
 	}
+	active := 0
+	for _, sub := range d.rtaSubscriptions {
+		if sub.Active() {
+			active++
+		}
+	}
 	d.srv.DropRTA()
 	if d.rtaReady != nil {
-		<-d.rtaReady
-		return nil
+		var failures []error
+		for range active {
+			failures = append(failures, <-d.rtaReady)
+		}
+		return errors.Join(failures...)
 	}
 	d.srv.WaitDirectoryConnection(2)
+	return nil
+}
+
+// activeRTA verifies that rejection of one resource leaves its sibling active on the new socket.
+func (d *driver) activeRTA() error {
+	active := 0
+	for _, sub := range d.rtaSubscriptions {
+		if sub.Active() {
+			active++
+		}
+	}
+	if active != 1 {
+		return fmt.Errorf("expected one active subscription, got %d", active)
+	}
 	return nil
 }
 

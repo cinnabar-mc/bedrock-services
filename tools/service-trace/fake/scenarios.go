@@ -19,6 +19,16 @@ const realmsRP = "https://pocket.realms.minecraft.net/"
 // Scenarios is the shared catalogue; goldens and Rust drivers derive from it.
 var Scenarios = []Scenario{
 	{
+		Name: "rta-rejected-then-interrupted", Note: "a resource rejection remains observable after its sibling's interrupted restoration",
+		Script: Script{Faults: []Fault{{Endpoint: "rta.subscribe", Hits: []int{3}, Status: 1}, {Endpoint: "rta.subscribe", Hits: []int{4}, Reset: true}}},
+		Plan:   []string{"signin", "rta-subscribe-pair", "rta-drop", "rta-active"},
+	},
+	{
+		Name: "rta-partial-restoration", Note: "one rejected restore retires only that resource and leaves its sibling active",
+		Script: Script{Faults: []Fault{{Endpoint: "rta.subscribe", Hits: []int{3}, Status: 1}}},
+		Plan:   []string{"signin", "rta-subscribe-pair", "rta-drop", "rta-active"},
+	},
+	{
 		Name: "rta-reconnect-retry", Note: "a refused replacement upgrade retries with backoff and restores its subscription",
 		Script: Script{Faults: []Fault{{Endpoint: "rta", Hits: []int{2}, Status: 503}}},
 		Plan:   []string{"signin", "rta-subscribe", "rta-drop"},

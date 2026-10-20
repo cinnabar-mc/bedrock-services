@@ -186,26 +186,27 @@ func outcome(err error) string {
 
 // driver holds the long-lived objects a Go client builds from these libraries.
 type driver struct {
-	ctx         context.Context
-	srv         *fake.Server
-	tr          *fake.Transport
-	client      *http.Client
-	conf        auth.Config
-	msa         *lastToken
-	device      xasd.TokenSource
-	session     *sisu.Session
-	resolver    *nsal.Resolver
-	env         *service.AuthorizationEnvironment
-	src         service.TokenSource
-	lastService *service.Token
-	resumed     *service.Token
-	sessionID   string
-	playfab     *playfab.Client
-	xbl         *xsapi.Client
-	closers     []func() error
-	rtaConn     *rta.Conn
-	rtaReady    chan struct{}
-	directory   *mpsd.Client
+	ctx              context.Context
+	srv              *fake.Server
+	tr               *fake.Transport
+	client           *http.Client
+	conf             auth.Config
+	msa              *lastToken
+	device           xasd.TokenSource
+	session          *sisu.Session
+	resolver         *nsal.Resolver
+	env              *service.AuthorizationEnvironment
+	src              service.TokenSource
+	lastService      *service.Token
+	resumed          *service.Token
+	sessionID        string
+	playfab          *playfab.Client
+	xbl              *xsapi.Client
+	closers          []func() error
+	rtaConn          *rta.Conn
+	rtaReady         chan error
+	rtaSubscriptions []*rta.Subscription
+	directory        *mpsd.Client
 }
 
 var quiet = slog.New(slog.DiscardHandler)
@@ -257,7 +258,11 @@ func (d *driver) run(step string) error {
 	case "xsts-pair":
 		return d.xstsPair(arg)
 	case "rta-subscribe":
-		return d.subscribeRTA()
+		return d.subscribeRTA(1)
+	case "rta-subscribe-pair":
+		return d.subscribeRTA(2)
+	case "rta-active":
+		return d.activeRTA()
 	case "rta-drop":
 		return d.dropRTA()
 	case "mpsd-join":

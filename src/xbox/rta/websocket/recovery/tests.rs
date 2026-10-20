@@ -1,0 +1,185 @@
+use super::*;
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+
+/// Uses real original upgrade credentials and transport, then retires only that socket.
+async fn disconnected(desired: usize) -> (Account, RtaSocket) {
+    let (account, mut request) = super::super::test_support::request().await;
+    let (transport, peer) = super::super::test_support::transport(&request, None).await;
+    let state = request.start().unwrap();
+    let mut socket = RtaSocket::from_socket(transport, state, Options::default());
+    for _ in 0..desired {
+        socket
+            .subscribe(
+                Resource::session_directory(),
+                Instant::now() + Duration::from_secs(15),
+            )
+            .unwrap();
+    }
+    socket.abort();
+    drop(peer);
+    (account, socket)
+}
+
+/// A canceled recovery retires partial I/O while retaining desired handles and its scheduled wait.
+#[tokio::test]
+async fn canceled_recovery_retains_desires_and_backoff() {
+    let (mut account, mut socket) = disconnected(1).await;
+    let until = tokio::time::Instant::now() + Duration::from_secs(60);
+    socket.recovery.next = Some(until);
+    {
+        let recovery = socket.recover(&mut account, Instant::now() + Duration::from_secs(120));
+        tokio::pin!(recovery);
+        poll_fn(|cx| {
+            assert!(recovery.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+    assert!(socket.socket.is_none());
+    assert_eq!(socket.state.subscriptions().count(), 1);
+    assert_eq!(socket.recovery.next, Some(until));
+    assert!(matches!(
+        socket
+            .recover(&mut account, Instant::now() - Duration::from_secs(1))
+            .await,
+        Err(RecoveryError::Deadline)
+    ));
+    assert_eq!(socket.state.subscriptions().count(), 1);
+}
+
+/// No desired subscriptions require no upgrade, while another proof owner is rejected before I/O.
+#[tokio::test]
+async fn empty_recovery_is_network_free_and_wrong_account_is_fenced() {
+    let (mut account, mut socket) = disconnected(0).await;
+    let (mut other, _) = super::super::test_support::request().await;
+    assert!(matches!(
+        socket
+            .recover(&mut other, Instant::now() + Duration::from_secs(1))
+            .await,
+        Err(RecoveryError::State(Error::WrongAccount))
+    ));
+    assert!(
+        socket
+            .recover(&mut account, Instant::now() + Duration::from_secs(1))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Replaces only the test transport while retaining the real account, generation and desired handles.
+async fn replacement(
+    account: &mut Account,
+    socket: RtaSocket,
+) -> (
+    RtaSocket,
+    super::super::test_support::Server,
+    super::super::super::Epoch,
+) {
+    let mut state = socket.into_connection();
+    let mut request = account
+        .rta_connection(state.generation(), upgrade_headers().unwrap())
+        .await
+        .unwrap();
+    let epoch = request.epoch();
+    let (transport, peer) = super::super::test_support::transport(&request, None).await;
+    state.reconnect(&mut request).unwrap();
+    (
+        RtaSocket::from_socket(transport, state, Options::default()),
+        peer,
+        epoch,
+    )
+}
+
+/// A rejection survives cancellation during its sibling's real handshake and is delivered exactly once.
+#[tokio::test]
+async fn rejected_completion_survives_cancellation_of_sibling_restore() {
+    let (mut account, socket) = disconnected(2).await;
+    let handles = socket.state.subscriptions().collect::<Vec<_>>();
+    let (mut socket, mut peer, epoch) = replacement(&mut account, socket).await;
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let message = peer.next().await.unwrap().unwrap();
+        let first: Value = serde_json::from_slice(message.as_payload()).unwrap();
+        let sequence = u32::try_from(first[1].as_u64().unwrap()).unwrap();
+        peer.send(Message::text(json!([1, sequence, 1]).to_string()))
+            .await
+            .unwrap();
+        let second = peer.next().await.unwrap().unwrap();
+        assert!(second.is_text());
+        seen_tx.send(sequence).unwrap();
+        cancel_rx.await.unwrap();
+    });
+    let sequence;
+    {
+        let guard = Guard {
+            socket: &mut socket,
+            complete: false,
+        };
+        let restoring = guard
+            .socket
+            .restore_subscriptions(Instant::now() + Duration::from_secs(15));
+        tokio::pin!(restoring);
+        sequence = tokio::select! {
+            result=&mut restoring => { drop(result); panic!("held sibling completed before cancellation"); },
+            sequence=seen_rx => sequence.unwrap(),
+        };
+    }
+    cancel_tx.send(()).unwrap();
+    server.await.unwrap();
+    assert_eq!(
+        socket.state.subscriptions().collect::<Vec<_>>(),
+        vec![handles[1]]
+    );
+    let mut failures = 0;
+    while let Ok(event) = socket.drive().await {
+        if let Event::Failed {
+            request,
+            subscription,
+            cause: crate::xbox::rta::Failure::Status(status),
+        } = event
+        {
+            assert_eq!(status, 1);
+            assert_eq!(subscription, handles[0]);
+            assert_eq!(request, RequestId { epoch, sequence });
+            failures += 1;
+        }
+    }
+    assert_eq!(failures, 1);
+    let (mut socket, mut peer, _) = replacement(&mut account, socket).await;
+    let (events, peer) = tokio::join!(
+        socket.restore_subscriptions(Instant::now() + Duration::from_secs(15)),
+        async move {
+            let message = peer.next().await.unwrap().unwrap();
+            let request: Value = serde_json::from_slice(message.as_payload()).unwrap();
+            peer.send(Message::text(
+                json!([1,request[1],0,900,{"ConnectionId":uuid::Uuid::from_u128(7)}]).to_string(),
+            ))
+            .await
+            .unwrap();
+            peer
+        }
+    );
+    let events = events.unwrap().unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0],Event::Subscribed{subscription,..} if *subscription==handles[1]));
+    assert!(socket.recovery_events.is_empty());
+    drop(peer);
+}
+
+/// The schedule caps at 60 seconds before jitter, and cache reads do not move its deadline.
+#[tokio::test(start_paused = true)]
+async fn recovery_backoff_is_capped_and_retains_its_deadline() {
+    let mut backoff = Backoff::default();
+    for seconds in [1, 2, 4, 8, 16, 32, 60, 60] {
+        let now = tokio::time::Instant::now();
+        backoff.failed(now, 0.0);
+        assert_eq!(backoff.next, Some(now + Duration::from_secs(seconds)));
+        tokio::time::advance(Duration::from_secs(seconds)).await;
+    }
+    let now = tokio::time::Instant::now();
+    backoff.failed(now, 1.0);
+    assert_eq!(backoff.next, Some(now + Duration::from_secs(90)));
+}

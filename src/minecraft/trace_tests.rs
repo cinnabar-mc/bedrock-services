@@ -225,7 +225,9 @@ async fn run(peer: &mut Peer<'_>, client: &mut Option<Minecraft>, step: &str) ->
     let owner = client.as_mut().expect("plan step before signin");
     match verb {
         #[cfg(feature = "rta-tokio")]
-        "rta-subscribe" | "mpsd-join" | "rta-drop" => rta::run(peer, owner, verb).await,
+        "rta-subscribe" | "rta-subscribe-pair" | "rta-active" | "mpsd-join" | "rta-drop" => {
+            rta::run(peer, owner, verb).await
+        }
         "join" => {
             let key = p384::ecdsa::SigningKey::from_slice(&[7; 48]).unwrap();
             owner.multiplayer_token(key.verifying_key()).await.map(drop)
@@ -314,12 +316,8 @@ async fn service_traces_match_go_goldens() {
             std::fs::read_to_string(Path::new(GOLDENS).join(format!("{scenario}.trace"))).unwrap();
         if !cfg!(feature = "rta-tokio")
             && golden.lines().any(|line| {
-                line.strip_prefix("> ").is_some_and(|step| {
-                    matches!(
-                        step.split_whitespace().next(),
-                        Some("rta-subscribe" | "rta-drop" | "mpsd-join")
-                    )
-                })
+                line.strip_prefix("> ")
+                    .is_some_and(|step| step.starts_with("rta-") || step == "mpsd-join")
             })
         {
             continue;

@@ -151,6 +151,15 @@ func (s *Server) rta(conn io.ReadWriteCloser) {
 				s.mu.Unlock()
 				return
 			}
+			if fault != nil && fault.Status != 0 {
+				s.steps = append(s.steps, fmt.Sprintf("RTA subscribe %s -> status=%d", resource, fault.Status))
+				s.mu.Unlock()
+				bytes, _ := json.Marshal([]any{1, sequence, fault.Status})
+				if writeRTAFrame(conn, 1, bytes) != nil {
+					return
+				}
+				continue
+			}
 			s.steps = append(s.steps, fmt.Sprintf("RTA subscribe %s -> connection=%d", resource, connection))
 			s.mu.Unlock()
 			nextSubscription++

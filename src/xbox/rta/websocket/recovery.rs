@@ -13,14 +13,6 @@ pub enum RecoveryError {
     /// The supplied account, generation or subscription lifecycle cannot be recovered.
     #[error(transparent)]
     State(#[from] Error),
-    /// A subscription was explicitly rejected by the replacement connection.
-    #[error("RTA subscription restoration returned {status}")]
-    Subscription {
-        /// Desired resource whose restoration the service rejected.
-        subscription: SubscriptionId,
-        /// Numeric RTA service rejection, without its diagnostic payload.
-        status: i32,
-    },
 }
 
 #[derive(Default)]
@@ -47,7 +39,7 @@ impl Drop for Guard<'_> {
     /// Cancels partial handshakes on their physical socket while retaining desired local handles.
     fn drop(&mut self) {
         if !self.complete {
-            self.socket.abort();
+            self.socket.interrupt_recovery();
         }
     }
 }
@@ -58,9 +50,11 @@ impl RtaSocket {
     /// Keep driving the socket afterward and apply returned events in order,
     /// including rebinding MPSD memberships from each new directory snapshot. Cancellation drops partial
     /// transport work; desired handles and any scheduled backoff survive a later call.
+    /// An explicit service rejection returns a Failed event and retires only that desired resource.
+    /// Rejections survive interruption; drive can deliver them if recovery is canceled.
     ///
     /// # Errors
-    /// Returns account/lifecycle mismatches, explicit subscription rejection, or the caller's deadline.
+    /// Returns account/lifecycle mismatches or the caller's deadline.
     /// Transient acquisition, upgrade and interrupted-resubscribe failures retry until that deadline.
     pub async fn recover(
         &mut self,
@@ -76,9 +70,14 @@ impl RtaSocket {
         if self.state.scope.proof != *account.key.verifying_key() {
             return Err(Error::WrongAccount.into());
         }
+        let desired = self.state.subscriptions().count();
+        if self.recovery_events.len() + desired > MAX_QUEUED_EVENTS {
+            return Err(Error::Limit.into());
+        }
         if self.state.subscriptions().next().is_none() {
             self.abort();
-            return Ok(Vec::new());
+            self.recovery = Backoff::default();
+            return Ok(self.recovery_events.drain(..).collect());
         }
         let mut guard = Guard {
             socket: self,
@@ -130,7 +129,7 @@ impl RtaSocket {
                         }
                     }
                 }
-                guard.socket.abort();
+                guard.socket.interrupt_recovery();
                 guard
                     .socket
                     .recovery
@@ -143,128 +142,64 @@ impl RtaSocket {
         result
     }
 
+    /// Drops epoch-dependent snapshots while preserving terminal rejections until the caller receives them.
+    fn interrupt_recovery(&mut self) {
+        self.recovery_events.retain(|event| {
+            matches!(
+                event,
+                Event::Failed {
+                    cause: crate::xbox::rta::Failure::Status(_),
+                    ..
+                }
+            )
+        });
+        self.abort();
+    }
+
     /// Restores one resource at a time so the bounded socket queue can hold every desired set.
     async fn restore_subscriptions(
         &mut self,
         deadline: Instant,
     ) -> Result<Option<Vec<Event>>, RecoveryError> {
         let subscriptions = self.state.subscriptions().collect::<Vec<_>>();
-        let mut events = Vec::new();
-        for subscription in subscriptions {
+        let count = subscriptions.len();
+        for (index, subscription) in subscriptions.into_iter().enumerate() {
             let until = deadline.min(Instant::now() + Duration::from_secs(15));
             let request = self.resubscribe(subscription, until)?;
             loop {
-                let event = match self.drive().await {
+                let event = match poll_fn(|cx| self.poll_drive(cx)).await {
                     Ok(Event::Disconnected) | Err(_) => return Ok(None),
-                    Ok(Event::Failed {
-                        subscription,
-                        cause: crate::xbox::rta::Failure::Status(status),
-                        ..
-                    }) => {
-                        return Err(RecoveryError::Subscription {
-                            subscription,
-                            status,
-                        });
-                    }
+                    Ok(
+                        event @ Event::Failed {
+                            cause: crate::xbox::rta::Failure::Status(_),
+                            ..
+                        },
+                    ) => event,
                     Ok(Event::Failed { .. }) => return Ok(None),
                     Ok(event) => event,
                 };
-                let ready = matches!(&event,Event::Subscribed { request:received,.. } if *received == request);
-                if events.len() >= MAX_QUEUED_EVENTS {
+                let ready = matches!(&event,Event::Subscribed { request:received,.. } | Event::Failed {request:received,..} if *received == request);
+                // Reserve one terminal completion for every restore that has not yet finished.
+                let remaining = count - index - usize::from(ready);
+                if self.recovery_events.len() + 1 + remaining > MAX_QUEUED_EVENTS {
                     return Err(Error::Limit.into());
                 }
-                events.push(event);
+                let rejected = match &event {
+                    Event::Failed { subscription, .. } => Some(*subscription),
+                    _ => None,
+                };
+                self.recovery_events.push_back(event);
+                if let Some(rejected) = rejected {
+                    self.state.remove_idle(rejected)?;
+                }
                 if ready {
                     break;
                 }
             }
         }
-        Ok(Some(events))
+        Ok(Some(self.recovery_events.drain(..).collect()))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Uses real original upgrade credentials and transport, then retires only that socket.
-    async fn disconnected(desired: bool) -> (Account, RtaSocket) {
-        let (account, mut request) = super::super::test_support::request().await;
-        let (transport, peer) = super::super::test_support::transport(&request, None).await;
-        let state = request.start().unwrap();
-        let mut socket = RtaSocket::from_socket(transport, state, Options::default());
-        if desired {
-            socket
-                .subscribe(
-                    Resource::session_directory(),
-                    Instant::now() + Duration::from_secs(15),
-                )
-                .unwrap();
-        }
-        socket.abort();
-        drop(peer);
-        (account, socket)
-    }
-
-    /// A canceled recovery retires partial I/O while retaining desired handles and its scheduled wait.
-    #[tokio::test]
-    async fn canceled_recovery_retains_desires_and_backoff() {
-        let (mut account, mut socket) = disconnected(true).await;
-        let until = tokio::time::Instant::now() + Duration::from_secs(60);
-        socket.recovery.next = Some(until);
-        {
-            let recovery = socket.recover(&mut account, Instant::now() + Duration::from_secs(120));
-            tokio::pin!(recovery);
-            poll_fn(|cx| {
-                assert!(recovery.as_mut().poll(cx).is_pending());
-                Poll::Ready(())
-            })
-            .await;
-        }
-        assert!(socket.socket.is_none());
-        assert_eq!(socket.state.subscriptions().count(), 1);
-        assert_eq!(socket.recovery.next, Some(until));
-        assert!(matches!(
-            socket
-                .recover(&mut account, Instant::now() - Duration::from_secs(1))
-                .await,
-            Err(RecoveryError::Deadline)
-        ));
-        assert_eq!(socket.state.subscriptions().count(), 1);
-    }
-
-    /// No desired subscriptions require no upgrade, while another proof owner is rejected before I/O.
-    #[tokio::test]
-    async fn empty_recovery_is_network_free_and_wrong_account_is_fenced() {
-        let (mut account, mut socket) = disconnected(false).await;
-        let (mut other, _) = super::super::test_support::request().await;
-        assert!(matches!(
-            socket
-                .recover(&mut other, Instant::now() + Duration::from_secs(1))
-                .await,
-            Err(RecoveryError::State(Error::WrongAccount))
-        ));
-        assert!(
-            socket
-                .recover(&mut account, Instant::now() + Duration::from_secs(1))
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    /// The schedule caps at 60 seconds before jitter, and cache reads do not move its deadline.
-    #[tokio::test(start_paused = true)]
-    async fn recovery_backoff_is_capped_and_retains_its_deadline() {
-        let mut backoff = Backoff::default();
-        for seconds in [1, 2, 4, 8, 16, 32, 60, 60] {
-            let now = tokio::time::Instant::now();
-            backoff.failed(now, 0.0);
-            assert_eq!(backoff.next, Some(now + Duration::from_secs(seconds)));
-            tokio::time::advance(Duration::from_secs(seconds)).await;
-        }
-        let now = tokio::time::Instant::now();
-        backoff.failed(now, 1.0);
-        assert_eq!(backoff.next, Some(now + Duration::from_secs(90)));
-    }
-}
+mod tests;

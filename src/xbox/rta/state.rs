@@ -176,7 +176,7 @@ impl Connection {
         self.ready(now, deadline)?;
         match self.subscription(id)?.phase {
             Phase::Idle => {
-                self.subscriptions.remove(&id);
+                self.remove_idle(id)?;
                 Ok(None)
             }
             Phase::Active { server, directory } => {
@@ -189,6 +189,15 @@ impl Connection {
             }
             _ => Err(Error::State),
         }
+    }
+
+    /// Retires only an idle desired handle without a clock read or a remote unsubscribe.
+    pub(super) fn remove_idle(&mut self, id: SubscriptionId) -> Result<(), Error> {
+        if !matches!(self.subscription(id)?.phase, Phase::Idle) {
+            return Err(Error::State);
+        }
+        self.subscriptions.remove(&id);
+        Ok(())
     }
 
     /// Returns the current MPSD connection UUID plus the caller's stable per-session subscription

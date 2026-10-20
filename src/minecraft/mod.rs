@@ -255,7 +255,7 @@ impl Minecraft {
     /// Cancellation retains desired handles and retry backoff while dropping partial transport work.
     ///
     /// # Errors
-    /// Returns account/lifecycle mismatch, subscription rejection or deadline expiry.
+    /// Returns account/lifecycle mismatch or deadline expiry. Resource rejections are Failed events.
     #[cfg(feature = "rta-tokio")]
     pub async fn recover_rta(
         &mut self,
