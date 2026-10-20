@@ -17,7 +17,7 @@ const ROOT: &[u8] = include_bytes!("../../../tests/fixtures/rta-tls/root.der");
 const CERT: &[u8] = include_bytes!("../../../tests/fixtures/rta-tls/server.der");
 const KEY: &[u8] = include_bytes!("../../../tests/fixtures/rta-tls/server.key.der");
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Host {
     Default,
     Override,
@@ -30,6 +30,14 @@ struct Received {
     headers: HeaderMap,
     body: Vec<u8>,
     alpn: Option<Vec<u8>>,
+}
+
+struct Exchange {
+    response: Result<Response, Error>,
+    received: io::Result<Received>,
+    authority: String,
+    signature: HeaderValue,
+    stage: u8,
 }
 
 /// Uses the original public localhost test certificate and requires ordinary TLS ALPN for H2.
@@ -84,22 +92,19 @@ fn request(http: &Http, url: &str, host: Host) -> (Request, HeaderValue) {
     (request, signature)
 }
 
-/// Captures real H2 pseudo-fields and ordinary headers, then drains the sole connection to EOF.
-async fn exchange(
-    host: Host,
-) -> (
-    Result<Response, Error>,
-    io::Result<Received>,
-    String,
-    HeaderValue,
-) {
+/// Captures real H2 fields, completes the client response, then drops and joins the sole peer.
+async fn exchange(host: Host) -> Exchange {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let authority = format!("localhost:{}", address.port());
+    let stage = Arc::new(AtomicU8::new(0));
+    let progress = Arc::clone(&stage);
+    let (completed, completion) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         tokio::time::timeout(Duration::from_secs(10), async move {
             let (stream, _) = listener.accept().await?;
             let stream = acceptor().accept(stream).await?;
+            progress.store(1, Ordering::Relaxed);
             let alpn = stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
             let mut connection = h2::server::Builder::new()
                 .handshake::<_, &'static [u8]>(stream)
@@ -110,6 +115,8 @@ async fn exchange(
                 .await
                 .ok_or_else(|| io::Error::other("missing fixture request"))?
                 .map_err(io::Error::other)?;
+            progress.store(2, Ordering::Relaxed);
+            let serving = Arc::clone(&progress);
             let received = {
                 let serve = async move {
                     let (parts, mut input) = request.into_parts();
@@ -126,6 +133,7 @@ async fn exchange(
                             .map_err(io::Error::other)?;
                     }
                     drop(input);
+                    serving.store(3, Ordering::Relaxed);
                     let response = http::Response::builder()
                         .status(200)
                         .header("content-length", REPLY.len())
@@ -135,6 +143,7 @@ async fn exchange(
                         .send_response(response, false)
                         .map_err(io::Error::other)?;
                     output.send_data(REPLY, true).map_err(io::Error::other)?;
+                    serving.store(4, Ordering::Relaxed);
                     Ok(Received {
                         method: parts.method,
                         uri: parts.uri,
@@ -154,11 +163,21 @@ async fn exchange(
                     }
                 }
             };
-            connection.graceful_shutdown();
-            if let Some(request) = connection.accept().await {
-                request.map_err(io::Error::other)?;
-                return Err(io::Error::other("unexpected second fixture request"));
+            tokio::select! {
+                biased;
+                complete = completion => {
+                    complete.map_err(|_| io::Error::other("client response did not complete"))?;
+                    progress.store(5, Ordering::Relaxed);
+                }
+                next = connection.accept() => {
+                    if let Some(request) = next {
+                        request.map_err(io::Error::other)?;
+                    }
+                    return Err(io::Error::other("fixture connection ended before client response"));
+                }
             }
+            drop(connection);
+            progress.store(6, Ordering::Relaxed);
             Ok(received)
         })
         .await
@@ -179,9 +198,20 @@ async fn exchange(
         host,
     );
     let response = http.send_with_limit(request, RESPONSE_LIMIT).await;
+    if response.is_ok() {
+        let _ = completed.send(());
+    } else {
+        drop(completed);
+    }
     let received = server.await.expect("original TLS fixture task joined");
     drop(http);
-    (response, received, authority, signature)
+    Exchange {
+        response,
+        received,
+        authority,
+        signature,
+        stage: stage.load(Ordering::Relaxed),
+    }
 }
 
 /// Defaults use only authority, while explicit and multiple Host values retain their wire meaning.
@@ -189,26 +219,42 @@ async fn exchange(
 async fn signed_http2_uses_authority_without_a_redundant_default_host() {
     let mut captures = Vec::new();
     for host in [Host::Default, Host::Override, Host::Multiple] {
-        captures.push(exchange(host).await);
+        captures.push((host, exchange(host).await));
     }
     let mut ordinary_hosts = Vec::new();
-    for (response, received, authority, signature) in captures {
-        let response = response.expect("original signed H2 request completed");
-        let received = received.expect("original TLS/H2 owner drained and joined");
+    for (host, exchange) in captures {
+        let client = match &exchange.response {
+            Ok(_) => "complete",
+            Err(Error::Http(error)) if error.is_timeout() => "http-timeout",
+            Err(Error::Http(error)) if error.is_connect() => "http-connect",
+            Err(Error::Http(error)) if error.is_body() => "http-body",
+            Err(Error::Http(_)) => "http-error",
+            Err(_) => "sdk-error",
+        };
+        let received = exchange.received.unwrap_or_else(|error| {
+            panic!(
+                "{host:?}: peer stage {}, client {client}, peer {:?}",
+                exchange.stage,
+                error.kind()
+            )
+        });
+        let response = exchange
+            .response
+            .unwrap_or_else(|_| panic!("{host:?}: client {client}, peer stage {}", exchange.stage));
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(response.body.as_slice(), REPLY);
         assert_eq!(received.alpn.as_deref(), Some(b"h2".as_slice()));
         assert_eq!(received.method, Method::POST);
         assert_eq!(
             received.uri.authority().map(|value| value.as_str()),
-            Some(authority.as_str())
+            Some(exchange.authority.as_str())
         );
         assert_eq!(
             received.uri.path_and_query().map(|value| value.as_str()),
             Some("/protected?operation=read")
         );
         assert_eq!(received.body, BODY);
-        assert_eq!(received.headers["signature"], signature);
+        assert_eq!(received.headers["signature"], exchange.signature);
         assert_eq!(received.headers[AUTHORIZATION], "synthetic-authorization");
         ordinary_hosts.push(
             received
