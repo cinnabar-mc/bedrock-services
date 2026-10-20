@@ -5,7 +5,7 @@ use std::fmt;
 use uuid::Uuid;
 
 /// A stable device UUID with an explicit Minecraft-service wire representation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DeviceId {
     uuid: Uuid,
     compact: bool,
@@ -43,7 +43,7 @@ impl fmt::Display for DeviceId {
 }
 
 /// Stable policy for one Minecraft account session; the caller persists its device ID.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Config {
     /// Version supplied by the application's generated protocol infrastructure.
     pub game_version: String,

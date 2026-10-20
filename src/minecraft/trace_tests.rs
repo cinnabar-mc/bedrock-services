@@ -25,8 +25,6 @@ const GOLDENS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/service-trace/
 enum Kind {
     /// Fewer requests or a recovery Go lacks, with the same final correctness.
     Better,
-    /// More requests or a failure Go recovers from.
-    Worse,
 }
 
 /// A known divergence from the Go baseline. The test asserts it still
@@ -39,6 +37,11 @@ struct Divergence {
 }
 
 const DIVERGENCES: &[Divergence] = &[
+    Divergence {
+        scenario: "warm-restart-expiry",
+        kind: Kind::Better,
+        why: "restored PlayFab login replaces the expired Minecraft credential without Xbox or PlayFab acquisition",
+    },
     Divergence {
         scenario: "retry-after",
         kind: Kind::Better,
@@ -55,12 +58,6 @@ const DIVERGENCES: &[Divergence] = &[
         scenario: "refresh-rotation",
         kind: Kind::Better,
         why: "Rust keeps the previous refresh token; Go blanks it and cannot refresh again",
-    },
-    // Audit: MCToken not persisted.
-    Divergence {
-        scenario: "warm-restart-join",
-        kind: Kind::Worse,
-        why: "6 requests vs Go's 2: no persisted MCToken, plus NSAL default calibration and NSAL current",
     },
     // Audit: concurrent acquisition is serialized by `&mut` instead of deduplicated.
     Divergence {

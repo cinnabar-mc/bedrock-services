@@ -171,6 +171,7 @@ pub struct Account {
     title_failures: [Option<failure::Failure>; 2],
     authorizations: HashMap<String, Arc<Authorization>>,
     restored: Option<checkpoint::Derived>,
+    pub(crate) service_checkpoint: Option<zeroize::Zeroizing<Vec<u8>>>,
     #[cfg(any(test, feature = "test-support"))]
     fixture_mpsd_base: Option<url::Url>,
 }
@@ -181,6 +182,14 @@ struct Session {
 }
 
 impl Account {
+    /// Admits saved Xbox entries using the owning Minecraft transport's fresh discovery Date.
+    pub(crate) fn admit_service_clock(&mut self, source: &Http) {
+        self.http.inherit_clock(source);
+        if let Some(restored) = self.restored.take() {
+            restored.install(self);
+        }
+    }
+
     /// Establishes one proof-key owner without issuing any network request.
     pub(crate) fn new(http: Http, config: Config, credentials: Credentials) -> Result<Self, Error> {
         let key = SigningKey::try_generate_from_rng(&mut SysRng)
@@ -204,6 +213,7 @@ impl Account {
             title_failures: [None, None],
             authorizations: HashMap::new(),
             restored: None,
+            service_checkpoint: None,
             #[cfg(any(test, feature = "test-support"))]
             fixture_mpsd_base: None,
         }
@@ -244,6 +254,7 @@ impl Account {
         }
         self.credentials = credentials;
         self.restored = None;
+        self.service_checkpoint = None;
         self.device = None;
         self.device_id = None;
         self.legacy_device = false;

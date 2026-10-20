@@ -61,7 +61,7 @@ stale revisions and prevent signed-out accounts from being restored.
 
 Version-two checkpoints can also retain the exact OAuth material and Xbox device,
 SISU and XSTS issuances with their original absolute expiries. A restored cache is
-dormant until a fresh successful public title-policy request supplies a valid
+dormant until a fresh successful public title-policy or matching Minecraft discovery request supplies a valid
 HTTP Date. Saved OAuth access remains operationally dormant under the same admission:
 failed time qualification forces refresh before SISU, even when its original bytes
 and expiry are retained for persistence. Importing identical material cannot change
@@ -84,8 +84,15 @@ page, then retry authorization. The SDK does not launch a browser or automatical
 retry that challenge. Persist the same account checkpoint after canceled or failed acquisitions
 so credential rotations survive.
 
-At least one public policy request is required after restart. Minecraft and PlayFab
-credentials are not persisted. A caller must prevent restoration of stale
+Version-four checkpoints exported by `Minecraft::checkpoint()` also retain the
+Minecraft credential, PlayFab login, discovery binding and game-session ID.
+Restore the account normally and pass it to `Minecraft::new()` with the same
+configuration. A fresh discovery request must confirm the saved route, title,
+issuer and a non-regressing Date before any saved service credential is reused.
+The original expiry margins still apply; a warm join needs discovery and a mint.
+Optional service cache bytes share the existing 64 KiB bound.
+
+A caller must prevent restoration of stale
 checkpoints after rejection or account changes; this SDK does not reconcile
 snapshots across processes. `Account::replace_credentials()` preserves caches only
 when every OAuth field is identical. Changed material invalidates all Xbox stages.
