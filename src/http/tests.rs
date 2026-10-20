@@ -10,6 +10,9 @@ use std::{
 };
 use tokio::{io::AsyncWriteExt, net::TcpListener, task::JoinHandle};
 
+#[cfg(feature = "rta-tokio")]
+mod authority;
+
 const FIXTURE_DATE: &str = "Wed, 01 Jan 2025 00:00:00 GMT";
 const LIMITS: [Option<usize>; 3] = [
     None,
