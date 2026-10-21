@@ -12,9 +12,9 @@ pub use activation::friend::{
 };
 pub use activation::{
     HOSTED_ACTIVATION_KEY_ID, HostedActivationObservation, HostedActivationPrefix,
-    HostedActivationVisitors, HostedRebindHold, HostedRenewalObservation, HostedRtaReconnect,
-    HostedRtaReconnectObservation, HostedSocketTerminal, HostedSubscriptionHold, HostedVisitor,
-    HostedVisitorsObservation,
+    HostedActivationVisitors, HostedPropertiesHold, HostedRebindHold, HostedRenewalObservation,
+    HostedRtaReconnect, HostedRtaReconnectObservation, HostedSocketTerminal,
+    HostedSubscriptionHold, HostedVisitor, HostedVisitorsObservation,
 };
 
 /// Non-retail issuer returned only by the fixed hosted-world discovery response.

@@ -1,6 +1,7 @@
 //! One finite original-account/public-activation service scenario, entirely caller-runtime owned.
 
 pub(super) mod friend;
+mod host_properties;
 mod host_reconnect;
 mod rebind;
 mod reconnect;
@@ -9,6 +10,7 @@ mod script;
 mod sockets;
 mod subscription;
 pub(super) mod visitors;
+pub use host_properties::HostedPropertiesHold;
 pub use rebind::HostedRebindHold;
 pub use reconnect::{HostedRtaReconnect, HostedRtaReconnectObservation};
 pub use renewal::HostedRenewalObservation;

@@ -27,6 +27,17 @@ pub(super) async fn serve(
         let (bytes, end, length) = read_request(&mut stream).await;
         let headers = std::str::from_utf8(&bytes[..end]).unwrap();
         let target = headers.split_whitespace().nth(1).unwrap();
+        if host_properties::hold_request(
+            &state,
+            &mut stream,
+            target,
+            headers,
+            &bytes[end..end + length],
+        )
+        .await
+        {
+            continue;
+        }
         let (reply, publication, leave) = {
             let mut state = state.lock().unwrap();
             let step = state.verified_http_requests + 1;
@@ -85,6 +96,9 @@ pub(super) async fn serve(
 fn respond(target: &str, headers: &str, body: &[u8], state: &mut State) -> Reply {
     script::verify_directory(target, headers, body, state);
     script::verify_target(target, state);
+    if let Some(reply) = host_properties::snapshot(headers, body, state) {
+        return reply;
+    }
     if let Some(reply) = reconnect::respond(target, headers, body, state) {
         return reply;
     }
@@ -104,6 +118,10 @@ fn respond(target: &str, headers: &str, body: &[u8], state: &mut State) -> Reply
     assert_eq!(header(headers, "if-match"), validator);
     let actual: Value = serde_json::from_slice(body).unwrap();
     if actual.get("properties").is_some() {
+        assert!(
+            !state.reconnect.as_ref().unwrap().properties_applied,
+            "one original occupancy properties PUT, without replay"
+        );
         assert_eq!(
             actual,
             json!({"properties":{"custom":state.snapshot["properties"]["custom"]}})
@@ -121,6 +139,8 @@ mod tests {
     use super::*;
     use crate::signaling::{Event, websocket::MessagingSocket};
     use p384::ecdsa::SigningKey;
+
+    mod properties;
 
     /// Proves the host sibling's physical replacement and same-member HTTP contract before app use.
     #[tokio::test]

@@ -48,6 +48,9 @@ pub(super) struct Services {
     rebind_ready: bool,
     pub(super) rebind_hold: Option<super::rebind::Hold>,
     pub(super) canceled_bind: bool,
+    pub(super) properties_hold: Option<super::host_properties::Hold>,
+    pub(super) properties_applied: bool,
+    pub(super) first_terminal: Option<oneshot::Sender<bool>>,
     #[cfg(test)]
     replacement_upgrade: Option<oneshot::Sender<()>>,
     #[cfg(test)]
@@ -125,6 +128,9 @@ fn arm(state: &mut State) -> HostedRtaReconnect {
         rebind_ready: false,
         rebind_hold: None,
         canceled_bind: false,
+        properties_hold: None,
+        properties_applied: false,
+        first_terminal: None,
         #[cfg(test)]
         replacement_upgrade: Some(replacement_upgrade),
         #[cfg(test)]
@@ -211,6 +217,7 @@ pub(super) fn acknowledged(state: &Shared) {
 
 /// Preserves the actual original terminal on every exit, including cancellation before admission.
 fn first_terminal(
+    state: &Shared,
     observed: &Mutex<HostedRtaReconnectObservation>,
     terminal: HostedSocketTerminal,
 ) -> HostedSocketTerminal {
@@ -222,6 +229,19 @@ fn first_terminal(
             | HostedSocketTerminal::Eof
             | HostedSocketTerminal::Io(io::ErrorKind::UnexpectedEof)
     );
+    let retired = facts.first_retired;
+    drop(facts);
+    if let Some(notify) = state
+        .lock()
+        .unwrap()
+        .reconnect
+        .as_mut()
+        .unwrap()
+        .first_terminal
+        .take()
+    {
+        let _ = notify.send(retired);
+    }
     terminal
 }
 
@@ -248,7 +268,7 @@ pub(super) async fn run(
         if let Err(terminal) =
             super::friend::sockets::admit(&mut socket, Arc::clone(&state), sequence).await
         {
-            return first_terminal(&observed, terminal);
+            return first_terminal(&state, &observed, terminal);
         }
     } else {
         socket
@@ -264,12 +284,12 @@ pub(super) async fn run(
     let requested = tokio::select! {
         requested = close => requested.is_ok(),
         terminal = super::sockets::terminal(&mut socket) => {
-            return first_terminal(&observed, terminal);
+            return first_terminal(&state, &observed, terminal);
         }
     };
     if !requested {
         let terminal = super::sockets::terminal(&mut socket).await;
-        return first_terminal(&observed, terminal);
+        return first_terminal(&state, &observed, terminal);
     }
     {
         let state = state.lock().unwrap();
@@ -293,7 +313,11 @@ pub(super) async fn run(
         );
     }
     socket.send(Message::close(None, "")).await.unwrap();
-    let first = first_terminal(&observed, super::sockets::terminal(&mut socket).await);
+    let first = first_terminal(
+        &state,
+        &observed,
+        super::sockets::terminal(&mut socket).await,
+    );
     let (tcp, _) = tokio::select! {
         _ = &mut stop => return first,
         accepted = listener.accept() => accepted.unwrap(),
