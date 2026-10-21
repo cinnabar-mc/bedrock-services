@@ -97,7 +97,7 @@ pub(super) fn respond(target: &str, headers: &str, body: &[u8], state: &mut Stat
     if headers.starts_with("GET ") {
         assert!(body.is_empty());
         let previous = header(headers, "if-none-match");
-        if !admitted || previous == "\"friend-admitted\"" {
+        if !previous.is_empty() && (!admitted || previous == "\"friend-admitted\"") {
             assert_eq!(
                 previous,
                 if admitted {
@@ -108,13 +108,21 @@ pub(super) fn respond(target: &str, headers: &str, body: &[u8], state: &mut Stat
             );
             return Reply::json(304, Value::Null);
         }
-        assert_eq!(previous, "\"friend-joined\"");
-        state.snapshot["properties"]["custom"] = properties(state);
-        state.snapshot["changeNumber"] = json!(2);
+        assert!(previous.is_empty() || previous == "\"friend-joined\"");
+        if admitted {
+            state.snapshot["properties"]["custom"] = properties(state);
+            state.snapshot["changeNumber"] = json!(2);
+        }
         let mut response = Reply::json(200, state.snapshot.clone());
-        response
-            .headers
-            .push(("ETag".into(), "\"friend-admitted\"".into()));
+        response.headers.push((
+            "ETag".into(),
+            if admitted {
+                "\"friend-admitted\""
+            } else {
+                "\"friend-joined\""
+            }
+            .into(),
+        ));
         return response;
     }
     assert!(headers.starts_with("PUT "));
