@@ -76,10 +76,10 @@ pub(super) async fn hold_request(
         let mut state = shared.lock().unwrap();
         if state.verified_http_requests < 16
             || !headers.starts_with("PUT ")
-            || !state
+            || state
                 .reconnect
                 .as_ref()
-                .is_some_and(|r| r.properties_hold.is_some())
+                .is_none_or(|r| r.properties_hold.is_none())
         {
             return false;
         }
