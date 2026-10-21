@@ -346,3 +346,4 @@ async fn friend_fixture_stop_retains_accepted_replacement_until_physical_retirem
 }
 
 mod lifecycle;
+mod rebind;

@@ -46,6 +46,11 @@ pub(super) struct Services {
     connection: Uuid,
     pub(super) validator: Option<String>,
     rebind_ready: bool,
+    pub(super) rebind_hold: Option<super::rebind::Hold>,
+    pub(super) canceled_bind: bool,
+    pub(super) properties_hold: Option<super::host_properties::Hold>,
+    pub(super) properties_applied: bool,
+    pub(super) first_terminal: Option<oneshot::Sender<bool>>,
     #[cfg(test)]
     replacement_upgrade: Option<oneshot::Sender<()>>,
     #[cfg(test)]
@@ -121,6 +126,11 @@ fn arm(state: &mut State) -> HostedRtaReconnect {
         connection: Uuid::new_v4(),
         validator: None,
         rebind_ready: false,
+        rebind_hold: None,
+        canceled_bind: false,
+        properties_hold: None,
+        properties_applied: false,
+        first_terminal: None,
         #[cfg(test)]
         replacement_upgrade: Some(replacement_upgrade),
         #[cfg(test)]
@@ -207,6 +217,7 @@ pub(super) fn acknowledged(state: &Shared) {
 
 /// Preserves the actual original terminal on every exit, including cancellation before admission.
 fn first_terminal(
+    state: &Shared,
     observed: &Mutex<HostedRtaReconnectObservation>,
     terminal: HostedSocketTerminal,
 ) -> HostedSocketTerminal {
@@ -218,6 +229,19 @@ fn first_terminal(
             | HostedSocketTerminal::Eof
             | HostedSocketTerminal::Io(io::ErrorKind::UnexpectedEof)
     );
+    let retired = facts.first_retired;
+    drop(facts);
+    if let Some(notify) = state
+        .lock()
+        .unwrap()
+        .reconnect
+        .as_mut()
+        .unwrap()
+        .first_terminal
+        .take()
+    {
+        let _ = notify.send(retired);
+    }
     terminal
 }
 
@@ -244,7 +268,7 @@ pub(super) async fn run(
         if let Err(terminal) =
             super::friend::sockets::admit(&mut socket, Arc::clone(&state), sequence).await
         {
-            return first_terminal(&observed, terminal);
+            return first_terminal(&state, &observed, terminal);
         }
     } else {
         socket
@@ -260,12 +284,12 @@ pub(super) async fn run(
     let requested = tokio::select! {
         requested = close => requested.is_ok(),
         terminal = super::sockets::terminal(&mut socket) => {
-            return first_terminal(&observed, terminal);
+            return first_terminal(&state, &observed, terminal);
         }
     };
     if !requested {
         let terminal = super::sockets::terminal(&mut socket).await;
-        return first_terminal(&observed, terminal);
+        return first_terminal(&state, &observed, terminal);
     }
     {
         let state = state.lock().unwrap();
@@ -289,7 +313,11 @@ pub(super) async fn run(
         );
     }
     socket.send(Message::close(None, "")).await.unwrap();
-    let first = first_terminal(&observed, super::sockets::terminal(&mut socket).await);
+    let first = first_terminal(
+        &state,
+        &observed,
+        super::sockets::terminal(&mut socket).await,
+    );
     let (tcp, _) = tokio::select! {
         _ = &mut stop => return first,
         accepted = listener.accept() => accepted.unwrap(),
@@ -338,6 +366,9 @@ pub(super) fn respond(
     body: &[u8],
     state: &mut State,
 ) -> Option<friend::service::Reply> {
+    if let Some(binding) = rebind(target, headers, body, state) {
+        return Some(apply_rebind(binding, state));
+    }
     let recovery = state.reconnect.as_mut()?;
     if !recovery.rebind_ready {
         return None;
@@ -355,32 +386,21 @@ pub(super) fn respond(
     if target != url.path() {
         return None;
     }
-    let mut facts = recovery.observed.lock().unwrap();
-    if headers.starts_with("PUT ")
-        && serde_json::from_slice::<Value>(body).unwrap()["members"]["me"].is_object()
+    let facts = recovery.observed.lock().unwrap();
+    if headers.starts_with("GET ")
+        && facts.rebinds == 1
+        && (recovery.canceled_bind || !facts.synchronized)
     {
-        assert_eq!(facts.rebinds, 0, "one original member rebind");
-        assert_eq!(header(headers, "if-match"), "*");
-        let change: Value = serde_json::from_slice(body).unwrap();
-        let binding = &change["members"]["me"]["properties"]["system"];
-        let original = &state.snapshot["members"]["me"]["properties"]["system"];
-        assert_eq!(
-            change,
-            json!({"members":{"me":{"properties":{"system":{
-                "active":true,"connection":recovery.connection,"subscription":original["subscription"]
-            }}}}})
-        );
-        assert_eq!(binding["subscription"], original["subscription"]);
-        state.snapshot["members"]["me"]["properties"]["system"] = binding.clone();
-        facts.rebinds = 1;
-        let mut reply = friend::service::Reply::json(200, state.snapshot.clone());
-        reply
-            .headers
-            .push(("ETag".into(), recovery.validator.clone().unwrap()));
-        return Some(reply);
-    }
-    if headers.starts_with("GET ") && facts.rebinds == 1 && !facts.synchronized {
         assert!(body.is_empty());
+        let previous = header(headers, "if-none-match");
+        if recovery.canceled_bind && previous != recovery.validator.as_deref().unwrap() {
+            assert!(previous.is_empty() || previous == "\"friend-admitted\"");
+            let mut reply = friend::service::Reply::json(200, state.snapshot.clone());
+            reply
+                .headers
+                .push(("ETag".into(), recovery.validator.clone().unwrap()));
+            return Some(reply);
+        }
         assert_eq!(
             header(headers, "if-none-match"),
             recovery.validator.as_deref().unwrap()
@@ -388,6 +408,64 @@ pub(super) fn respond(
         return Some(friend::service::Reply::json(304, Value::Null));
     }
     None
+}
+
+/// Validates the same original member-only rebind before either normal or held application.
+pub(super) fn rebind(target: &str, headers: &str, body: &[u8], state: &State) -> Option<Value> {
+    let recovery = state.reconnect.as_ref()?;
+    if !recovery.rebind_ready || !headers.starts_with("PUT ") {
+        return None;
+    }
+    let reference = state.reference.as_ref().unwrap();
+    let mut url = url::Url::parse(crate::xbox::mpsd::test_support::DIRECTORY_ENDPOINT).unwrap();
+    url.path_segments_mut().unwrap().extend([
+        "serviceconfigs",
+        &reference.service_config_id().to_string(),
+        "sessionTemplates",
+        reference.template_name(),
+        "sessions",
+        reference.name(),
+    ]);
+    if target != url.path() {
+        return None;
+    }
+    let change: Value = serde_json::from_slice(body).unwrap();
+    if !change["members"]["me"].is_object() {
+        return None;
+    }
+    assert_eq!(
+        recovery.observed.lock().unwrap().rebinds,
+        0,
+        "one original member rebind"
+    );
+    assert_eq!(header(headers, "if-match"), "*");
+    let binding = &change["members"]["me"]["properties"]["system"];
+    let original = &state.snapshot["members"]["me"]["properties"]["system"];
+    assert_eq!(
+        change,
+        json!({"members":{"me":{"properties":{"system":{
+            "active":true,"connection":recovery.connection,"subscription":original["subscription"]
+        }}}}})
+    );
+    assert_eq!(binding["subscription"], original["subscription"]);
+    Some(binding.clone())
+}
+
+/// Applies only a binding already checked against this same scenario's original member.
+pub(super) fn apply_rebind(binding: Value, state: &mut State) -> friend::service::Reply {
+    let recovery = state.reconnect.as_mut().unwrap();
+    let mut facts = recovery.observed.lock().unwrap();
+    assert_eq!(facts.rebinds, 0);
+    state.snapshot["members"]["me"]["properties"]["system"] = binding;
+    facts.rebinds = 1;
+    if recovery.canceled_bind {
+        recovery.validator = Some("\"friend-rebound\"".into());
+    }
+    let mut reply = friend::service::Reply::json(200, state.snapshot.clone());
+    reply
+        .headers
+        .push(("ETag".into(), recovery.validator.clone().unwrap()));
+    reply
 }
 
 /// Records only actual flushed validators and sync completion on the original HTTP task.
