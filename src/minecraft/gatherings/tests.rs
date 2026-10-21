@@ -210,6 +210,67 @@ async fn gatherings_requests_keep_catalog_metadata_counts_and_explicit_join_tran
     assert!(!services.reject(&original));
 }
 
+/// Authorization failures short-circuit joins; a final rejection preserves the same typed status.
+#[tokio::test]
+async fn join_preserves_authorization_and_request_failures_without_an_extra_dispatch() {
+    for authorization_failure in [true, false] {
+        let mut step = 0;
+        let (address, server) = fixture_bytes(
+            move |path, headers, bytes| {
+                step += 1;
+                let headers_lower = headers.to_ascii_lowercase();
+                if step == 1 {
+                    assert_eq!(path, "/api/v1.0/discovery/MinecraftPE/builds/1.26.50");
+                    return (200, vec![], discovery(headers, None));
+                }
+                assert_eq!(step, 2);
+                if authorization_failure {
+                    assert_eq!(path, "/api/v1.0/discovery/MinecraftPE/builds/1.26.50");
+                    assert!(headers_lower.starts_with("get "));
+                    assert!(!headers_lower.contains("authorization:"));
+                    assert!(bytes.is_empty());
+                } else {
+                    assert_eq!(path, "/gatherings-prefix/api/v2.0/join/experience");
+                    assert!(headers_lower.starts_with("post "));
+                    assert!(headers_lower.contains("authorization: mctoken original."));
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(bytes).unwrap(),
+                        json!({"experienceId": EXPERIENCE})
+                    );
+                }
+                (404, vec![("x-err", "1234")], b"SENSITIVE".to_vec())
+            },
+            2,
+        )
+        .await;
+        let mut services = services(address);
+        let original = Arc::clone(services.authorization.as_ref().unwrap());
+        let mut api = services.gatherings().await.unwrap();
+        if authorization_failure {
+            api.minecraft.authorization = None;
+            api.minecraft.environment = None;
+        }
+        let error = api.join_experience(EXPERIENCE).await.err().unwrap();
+        assert!(matches!(
+            error,
+            Error::Status {
+                status: StatusCode::NOT_FOUND,
+                xerr: Some(1234)
+            }
+        ));
+        assert!(!format!("{error:?} {error}").contains("SENSITIVE"));
+        server.await.unwrap();
+        if authorization_failure {
+            assert!(services.authorization.is_none());
+        } else {
+            assert!(Arc::ptr_eq(
+                &original,
+                services.authorization.as_ref().unwrap()
+            ));
+        }
+    }
+}
+
 /// Completed count failures retain the cache and throttle; fresh wrappers use the same owner.
 #[tokio::test]
 async fn population_failure_keeps_original_cache_and_attempt_interval() {

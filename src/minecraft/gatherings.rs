@@ -75,7 +75,7 @@ impl Gatherings<'_> {
         request
             .headers_mut()
             .insert("accept-language", HeaderValue::from_static("en-US"));
-        let response = self.send(request).await?;
+        let response = self.send("search_items", request).await?;
         #[derive(Deserialize)]
         struct Envelope {
             data: Object<SearchResult>,
@@ -121,7 +121,7 @@ impl Gatherings<'_> {
             .http
             .request(Method::GET, url.as_str())
             .build()?;
-        let response = self.send(request).await?;
+        let response = self.send("player_counts", request).await?;
         #[derive(Deserialize)]
         struct Envelope {
             result: Vec<Box<RawValue>>,
@@ -153,7 +153,7 @@ impl Gatherings<'_> {
             .minecraft
             .http
             .post_json(url.as_str(), &serde_json::json!({"experienceId":id}))?;
-        let response = self.send(request).await?;
+        let response = self.send("join_experience", request).await?;
         #[derive(Deserialize)]
         struct Envelope {
             result: Object<JoinAddress>,
@@ -164,11 +164,20 @@ impl Gatherings<'_> {
     }
 
     /// Sends once with the exact current Minecraft issuance; rejection cannot evict a replacement.
-    async fn send(&mut self, mut request: Request) -> Result<Response, Error> {
-        let token = self.minecraft.authorize().await?;
-        request
-            .headers_mut()
-            .insert("authorization", token.header_value()?);
+    async fn send(
+        &mut self,
+        operation: &'static str,
+        mut request: Request,
+    ) -> Result<Response, Error> {
+        let token = self
+            .minecraft
+            .authorize()
+            .await
+            .inspect_err(|error| record_failure(operation, "authorization", error))?;
+        let authorization = token
+            .header_value()
+            .inspect_err(|error| record_failure(operation, "authorization", error))?;
+        request.headers_mut().insert("authorization", authorization);
         request
             .headers_mut()
             .insert("accept", HeaderValue::from_static("application/json"));
@@ -176,16 +185,41 @@ impl Gatherings<'_> {
             .minecraft
             .http
             .send_with_limit(request, crate::http::SERVICE_RESPONSE_LIMIT)
-            .await?;
+            .await
+            .inspect_err(|error| record_failure(operation, "request", error))?;
         if response.status == StatusCode::UNAUTHORIZED {
             self.minecraft.reject(&token);
         }
         if response.status != StatusCode::OK {
-            response.success()?;
+            response
+                .success()
+                .inspect_err(|error| record_failure(operation, "request", error))?;
             return Err(Error::Invalid("gatherings response status"));
         }
         Ok(response)
     }
+}
+
+/// Emits only finite caller/phase labels and safe error scalars, preserving the original error.
+fn record_failure(operation: &'static str, phase: &'static str, error: &Error) {
+    let (class, http_status) = match error {
+        Error::Http(source) => ("http", source.status().map(|status| status.as_u16())),
+        Error::Status { status, .. } => ("status", Some(status.as_u16())),
+        Error::AccountCreationRequired(_) => ("account_creation_required", None),
+        Error::Invalid(_) => ("invalid", None),
+        Error::ResponseTooLarge => ("response_too_large", None),
+        Error::TimeRange => ("time_range", None),
+        Error::DeviceCodeExpired => ("device_code_expired", None),
+        Error::AuthorizationDeclined => ("authorization_declined", None),
+        Error::SignInRequired => ("sign_in_required", None),
+    };
+    tracing::warn!(
+        operation,
+        phase,
+        class,
+        http_status,
+        "gatherings operation failed"
+    );
 }
 
 #[cfg(test)]

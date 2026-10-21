@@ -87,6 +87,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-websockets",
+ "tracing",
  "url",
  "uuid",
  "webpki-roots",

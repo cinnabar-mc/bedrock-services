@@ -197,6 +197,12 @@ only the transport and destination supplied by that response. It never retries a
 possible allocation. The caller owns the deadline and observation of uncertain
 results, validates supported transports and establishes the actual game connection.
 
+Failures while authorizing or sending Gatherings requests emit `tracing` events
+with the operation, authorization/request phase, error class and available numeric
+HTTP status. Nested authorization failures do not identify the failing service
+endpoint. The application owns the subscriber; events contain no credentials,
+URLs, response bodies or account identifiers.
+
 These concrete HTTP clients use the caller's async runtime. Transport state machines
 belong to the separate networking libraries; service credentials do not create an
 internal runtime or per-account background tasks.
