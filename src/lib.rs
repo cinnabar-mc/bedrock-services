@@ -1,7 +1,8 @@
-//! Account-owned Microsoft/Xbox authentication for native Bedrock clients.
+//! Sign in, restore accounts, and use Minecraft and Xbox services from Rust.
 //!
-//! Credential acquisition uses exclusive ownership. Returned authorizations can
-//! be shared across concurrent service requests without sharing mutable state.
+//! Start with [`oauth::MicrosoftAuth`]. Keep the returned [`xbox::Account`] for
+//! social reads, or move it into [`minecraft::Minecraft`] for multiplayer tokens
+//! and Realms. HTTP calls use your Tokio runtime; no account worker is started.
 
 #![doc = include_str!("../README.md")]
 
