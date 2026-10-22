@@ -29,9 +29,12 @@ pub const USER_AGENT: &str = "libhttpclient/1.0.0.0";
 pub const SERVICE_CONFIG_ID: uuid::Uuid =
     uuid::Uuid::from_u128(0x4fc1_0100_5f7a_4470_899b_2808_3576_0c07);
 
-/// Owns the concrete service chain without background tasks or shared mutable locks.
-/// Async methods use the caller's runtime. Successfully acquired stages survive
-/// cancellation; dropping this owner releases its account and service credentials.
+/// One account's Minecraft services, including multiplayer tokens, Realms, and catalogs.
+///
+/// Create it with your game/protocol version and persistent device identity. Reuse
+/// this owner for later calls and save [`checkpoint`](Self::checkpoint) for restart.
+/// HTTP methods use your Tokio runtime. Completed acquisition stages survive
+/// cancellation; dropping this owner releases its local credentials.
 pub struct Minecraft {
     xbox: xbox::Account,
     http: Http,
@@ -443,8 +446,8 @@ impl Minecraft {
         }
     }
 
-    /// Loads one version-specific environment and validates it before sending credentials.
-    /// Acquires public version-matched service discovery without authorizing or minting credentials.
+    /// Loads and validates public service routes for the configured game version.
+    /// This call does not authorize the account or mint a multiplayer token.
     ///
     /// Reuses this account session's successfully acquired environment. A failed
     /// or canceled request leaves discovery retryable on the same owner. Optional

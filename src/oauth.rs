@@ -170,7 +170,12 @@ pub enum Poll {
     Authorized(Credentials),
 }
 
-/// Owns the plain Microsoft acquisition client, which can move into a signed-in account.
+/// Starts device-code sign-in and restores previously saved accounts.
+///
+/// Call [`start`](Self::start), display the code/URI, and call [`poll`](Self::poll)
+/// when [`DeviceAuthorization::next_poll`] is due. Move authorized credentials into
+/// [`into_account`](Self::into_account), or use [`restore_account`](Self::restore_account)
+/// with protected checkpoint bytes. HTTP calls run on your Tokio runtime.
 pub struct MicrosoftAuth {
     pub(crate) http: Http,
     pub(crate) config: Config,

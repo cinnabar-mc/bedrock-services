@@ -74,7 +74,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// Creates the desktop service policy used by Cinnabar, with explicit version and device identity.
+    /// Creates desktop service settings from your game/protocol version and persistent device ID.
     pub fn desktop(
         game_version: impl Into<String>,
         network_protocol_version: u32,

@@ -50,7 +50,7 @@ pub struct Config {
     pub sandbox: String,
 }
 
-/// Device identity rules supported by the inspected Xbox authentication baseline.
+/// Device platforms supported by this SDK's authentication policy.
 #[derive(Clone, Copy, Debug)]
 pub enum Device {
     /// Android OS major version.
@@ -154,9 +154,12 @@ impl Authorization {
     }
 }
 
-/// Owns one account's acquisition client, OAuth state, proof key and token caches.
-/// Mutable methods serialize acquisition through Rust ownership; service traffic
-/// can share the returned immutable authorizations independently.
+/// A signed-in Xbox account, including its credentials, proof key, and cached authorizations.
+///
+/// Use [`social`](Self::social) for profile/friend reads or move this account into
+/// [`crate::minecraft::Minecraft`] for Minecraft-specific services. Mutable methods
+/// serialize credential acquisition; returned immutable authorizations can be shared.
+/// Save [`checkpoint`](Self::checkpoint) through your protected storage layer.
 pub struct Account {
     http: Http,
     config: Config,
