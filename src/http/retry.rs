@@ -102,7 +102,7 @@ impl Retry {
 }
 
 /// Accepts one positive Retry-After without using an untrusted clock to retry early.
-fn response_delay(response: &Response, utc: SystemTime) -> Result<Option<Duration>, ()> {
+pub(crate) fn response_delay(response: &Response, utc: SystemTime) -> Result<Option<Duration>, ()> {
     let mut values = response.headers.get_all("retry-after").iter();
     let Some(value) = values.next() else {
         return Ok(None);
