@@ -160,6 +160,22 @@ impl DeviceAuthorization {
     pub fn next_poll(&self) -> SystemTime {
         self.next_poll
     }
+
+    /// Extends the scheduled interval from response receipt without moving the grant expiry.
+    fn defer_poll(&mut self, receipt: SystemTime, delay: Result<Option<Duration>, ()>) {
+        self.next_poll = match delay {
+            Ok(Some(delay)) => self
+                .next_poll
+                .max(poll_deadline(receipt, delay, self.expires)),
+            Ok(None) => self.next_poll,
+            Err(()) => self.expires,
+        };
+    }
+}
+
+/// Caps every caller-owned wait at the original grant expiry, including overflowing delays.
+fn poll_deadline(now: SystemTime, delay: Duration, expires: SystemTime) -> SystemTime {
+    now.checked_add(delay).unwrap_or(expires).min(expires)
 }
 
 /// The result of a single device-code poll, without internal sleeping or background tasks.
@@ -220,14 +236,15 @@ impl MicrosoftAuth {
         }
         let interval =
             Duration::from_secs(value.interval.filter(|seconds| *seconds != 0).unwrap_or(5));
+        let expires = now
+            .checked_add(Duration::from_secs(value.expires_in))
+            .ok_or(Error::TimeRange)?;
         Ok(DeviceAuthorization {
             code: Zeroizing::new(value.device_code),
             user_code: value.user_code,
             verification_uri: uri,
-            expires: now
-                .checked_add(Duration::from_secs(value.expires_in))
-                .ok_or(Error::TimeRange)?,
-            next_poll: now.checked_add(interval).ok_or(Error::TimeRange)?,
+            expires,
+            next_poll: poll_deadline(now, interval, expires),
             interval,
             completed: false,
             client_id: self.config.client_id.clone(),
@@ -235,6 +252,7 @@ impl MicrosoftAuth {
     }
 
     /// Polls once when due. Dropping this future cancels only this HTTP attempt.
+    /// Temporary transport and server failures preserve the grant and its poll interval.
     pub async fn poll(
         &mut self,
         attempt: &mut DeviceAuthorization,
@@ -250,7 +268,7 @@ impl MicrosoftAuth {
             return Ok(Poll::Pending);
         }
         // Commit pacing before awaiting, so canceled attempts cannot bypass the interval.
-        attempt.next_poll = now.checked_add(attempt.interval).ok_or(Error::TimeRange)?;
+        attempt.next_poll = poll_deadline(now, attempt.interval, attempt.expires);
         let request = self
             .http
             .request(reqwest::Method::POST, &self.http.endpoints.oauth_token)
@@ -261,7 +279,23 @@ impl MicrosoftAuth {
                 ("scope", SCOPE),
             ])
             .build()?;
-        let response = self.http.send(request).await?;
+        let sent = self.http.retry_time();
+        let result = self.http.send_device_poll(request).await;
+        let receipt = now
+            .checked_add(self.http.retry_time().duration_since(sent))
+            .unwrap_or(attempt.expires);
+        let response = match result {
+            Ok(response) => response,
+            Err(error) if crate::http::retry::transient_poll(&error) => return Ok(Poll::Pending),
+            Err(error) => return Err(error),
+        };
+        if response.status.is_server_error() {
+            attempt.defer_poll(
+                receipt,
+                crate::http::retry::response_delay(&response, receipt),
+            );
+            return Ok(Poll::Pending);
+        }
         if response.status == reqwest::StatusCode::OK {
             let token: TokenResponse = response.json()?;
             let credentials = token.credentials(self.config.client_id.clone(), self.http.now())?;
@@ -276,7 +310,7 @@ impl MicrosoftAuth {
                     .interval
                     .checked_add(Duration::from_secs(5))
                     .ok_or(Error::TimeRange)?;
-                attempt.next_poll = now.checked_add(attempt.interval).ok_or(Error::TimeRange)?;
+                attempt.next_poll = poll_deadline(now, attempt.interval, attempt.expires);
                 Ok(Poll::Pending)
             }
             "authorization_declined" | "access_denied" => {
@@ -316,6 +350,9 @@ impl MicrosoftAuth {
         Account::restore(self.http, self.config, checkpoint)
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Deserialize)]
 struct DeviceResponse {
