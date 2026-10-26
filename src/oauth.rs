@@ -235,6 +235,7 @@ impl MicrosoftAuth {
     }
 
     /// Polls once when due. Dropping this future cancels only this HTTP attempt.
+    /// Temporary transport and server failures preserve the grant and its poll interval.
     pub async fn poll(
         &mut self,
         attempt: &mut DeviceAuthorization,
@@ -261,7 +262,14 @@ impl MicrosoftAuth {
                 ("scope", SCOPE),
             ])
             .build()?;
-        let response = self.http.send(request).await?;
+        let response = match self.http.send(request).await {
+            Ok(response) => response,
+            Err(error) if crate::http::retry::transient_poll(&error) => return Ok(Poll::Pending),
+            Err(error) => return Err(error),
+        };
+        if response.status.is_server_error() {
+            return Ok(Poll::Pending);
+        }
         if response.status == reqwest::StatusCode::OK {
             let token: TokenResponse = response.json()?;
             let credentials = token.credentials(self.config.client_id.clone(), self.http.now())?;
@@ -316,6 +324,9 @@ impl MicrosoftAuth {
         Account::restore(self.http, self.config, checkpoint)
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Deserialize)]
 struct DeviceResponse {
