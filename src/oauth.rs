@@ -280,7 +280,7 @@ impl MicrosoftAuth {
             ])
             .build()?;
         let sent = self.http.retry_time();
-        let result = self.http.send(request).await;
+        let result = self.http.send_device_poll(request).await;
         let receipt = now
             .checked_add(self.http.retry_time().duration_since(sent))
             .unwrap_or(attempt.expires);

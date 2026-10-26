@@ -197,6 +197,67 @@ async fn device_poll_retry_after_starts_after_response_latency() {
     server.await.unwrap();
 }
 
+/// Incomplete or oversized unused server-error bodies cannot hide the provider's backoff.
+#[tokio::test]
+async fn device_poll_truncated_server_error_preserves_retry_after() {
+    for (headers, declared, expected_next) in [
+        ("Retry-After: 20\r\n", 100, 25),
+        ("Retry-After: 20\r\n", crate::http::RESPONSE_LIMIT + 1, 25),
+        ("Retry-After: 1\r\nRetry-After: 20\r\n", 100, 60),
+        ("Retry-After: 100\r\n", 100, 60),
+    ] {
+        let response = format!(
+            "HTTP/1.1 503 Unavailable\r\n{headers}Content-Length: {declared}\r\nConnection: close\r\n\r\n{{"
+        );
+        let (mut auth, mut attempt, requests, server) = polling_fixture(vec![Some(response)]).await;
+        let due = attempt.next_poll();
+        let started = auth.http.retry_time();
+        assert!(matches!(
+            auth.poll(&mut attempt, due).await,
+            Ok(Poll::Pending)
+        ));
+        let elapsed = auth.http.retry_time().duration_since(started);
+        let expected = SystemTime::UNIX_EPOCH + Duration::from_secs(expected_next);
+        assert!(attempt.next_poll() >= expected, "{headers}");
+        assert!(
+            attempt.next_poll() <= expected.checked_add(elapsed).unwrap(),
+            "{headers}"
+        );
+        assert!(attempt.next_poll() <= attempt.expires);
+        assert!(matches!(
+            auth.poll(&mut attempt, expected - Duration::from_secs(1))
+                .await,
+            Ok(Poll::Pending)
+        ));
+        let expires = attempt.expires;
+        assert!(matches!(
+            auth.poll(&mut attempt, expires).await,
+            Err(Error::DeviceCodeExpired)
+        ));
+        server.await.unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+}
+
+/// The device-specific early return never bypasses acquisition bounds for non-server responses.
+#[tokio::test]
+async fn device_poll_other_statuses_preserve_body_limits() {
+    for status in [200, 400] {
+        let response = format!(
+            "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            crate::http::RESPONSE_LIMIT + 1
+        );
+        let (mut auth, mut attempt, requests, server) = polling_fixture(vec![Some(response)]).await;
+        let due = attempt.next_poll();
+        assert!(matches!(
+            auth.poll(&mut attempt, due).await,
+            Err(Error::ResponseTooLarge)
+        ));
+        server.await.unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+}
+
 /// Neither an initial interval nor later slow-down or transport failure can delay expiry reporting.
 #[tokio::test]
 async fn device_poll_all_waits_stop_at_grant_expiry() {

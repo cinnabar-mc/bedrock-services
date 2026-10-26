@@ -75,6 +75,12 @@ pub(crate) struct Response {
     pub body: Zeroizing<Vec<u8>>,
 }
 
+/// Selects whether an owner needs a server-error body after receiving its headers.
+enum BodyPolicy {
+    Read,
+    DevicePoll,
+}
+
 impl Http {
     /// Samples process-local retry time independently from service Date corrections.
     pub(crate) fn retry_time(&self) -> tokio::time::Instant {
@@ -219,6 +225,12 @@ impl Http {
         self.send_with_limit(request, RESPONSE_LIMIT).await
     }
 
+    /// Retains device-poll backoff headers without reading unused server-error bodies.
+    pub(crate) async fn send_device_poll(&mut self, request: Request) -> Result<Response, Error> {
+        self.send_with_body_policy(request, RESPONSE_LIMIT, BodyPolicy::DevicePoll)
+            .await
+    }
+
     /// Replays only an explicitly selected buffered acquisition under one original budget.
     pub(crate) async fn send_retrying(
         &mut self,
@@ -243,6 +255,17 @@ impl Http {
         &mut self,
         request: Request,
         response_limit: usize,
+    ) -> Result<Response, Error> {
+        self.send_with_body_policy(request, response_limit, BodyPolicy::Read)
+            .await
+    }
+
+    /// Shares request preparation and clocks while keeping body admission owner-specific.
+    async fn send_with_body_policy(
+        &mut self,
+        request: Request,
+        response_limit: usize,
+        policy: BodyPolicy,
     ) -> Result<Response, Error> {
         #[cfg(feature = "test-support")]
         let request = match &self.hosted_transport {
@@ -273,14 +296,21 @@ impl Http {
                 self.elapsed.at_response = self.elapsed.total;
             }
         }
+        let status = response.status();
+        let headers = response.headers().clone();
+        if matches!(policy, BodyPolicy::DevicePoll) && status.is_server_error() {
+            return Ok(Response {
+                status,
+                headers,
+                body: Vec::new().into(),
+            });
+        }
         if response
             .content_length()
             .is_some_and(|length| length > response_limit as u64)
         {
             return Err(Error::ResponseTooLarge);
         }
-        let status = response.status();
-        let headers = response.headers().clone();
         let mut body = Zeroizing::new(Vec::new());
         while let Some(chunk) = response.chunk().await? {
             if chunk.len() > response_limit.saturating_sub(body.len()) {
