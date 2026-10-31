@@ -1,225 +1,221 @@
 use serde::{
     Deserialize, Deserializer,
-    de::{MapAccess, Visitor, value::MapAccessDeserializer},
+    de::{DeserializeSeed, MapAccess, Visitor, value::MapAccessDeserializer},
 };
 use serde_json::value::RawValue;
 use std::{collections::HashMap, fmt, marker::PhantomData};
 
+// Decode each occurrence in wire order; one field declaration owns its name, type and null policy.
+macro_rules! record {
+    ($(#[$doc:meta])* pub struct $name:ident {
+        $($(#[$field_doc:meta])* pub $field:ident: $ty:ty => $wire:literal, $mode:ident;)*
+    }) => {
+        $(#[$doc])*
+        #[derive(Default)]
+        pub struct $name { $($(#[$field_doc])* pub $field: $ty,)* }
+
+        impl<'de> Deserialize<'de> for $name {
+            /// Decodes a named record with later scalar values replacing earlier values.
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let mut value = Self::default();
+                Self::deserialize_in_place(deserializer, &mut value)?;
+                Ok(value)
+            }
+
+            /// Merges repeated object fields while preserving the wire's null semantics.
+            fn deserialize_in_place<D: Deserializer<'de>>(deserializer: D, place: &mut Self) -> Result<(), D::Error> {
+                struct RecordVisitor<'a>(&'a mut $name);
+                impl<'de> Visitor<'de> for RecordVisitor<'_> {
+                    type Value = ();
+                    /// Describes the required non-positional record shape.
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str("a player messaging object")
+                    }
+                    /// Applies every occurrence and skips unknown metadata without retaining it.
+                    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+                        while let Some(name) = map.next_key::<String>()? {
+                            $(if name.eq_ignore_ascii_case($wire) {
+                                record!(@read $mode, map, self.0.$field);
+                                continue;
+                            })*
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                        Ok(())
+                    }
+                }
+                deserializer.deserialize_map(RecordVisitor(place))
+            }
+        }
+    };
+    (@read merge, $map:ident, $field:expr) => { $map.next_value_seed(InPlace(&mut $field))?; };
+    (@read sequence, $map:ident, $field:expr) => { $map.next_value_seed(Sequence(&mut $field))?; };
+    (@read mapping, $map:ident, $field:expr) => { $map.next_value_seed(Mapping(&mut $field))?; };
+    (@read raw, $map:ident, $field:expr) => { $field = $map.next_value()?; };
+}
+
+record! {
 /// A successful marketing refresh, retaining original service order and category counts.
 /// No message metadata is authenticated game/session authority.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct Session {
     /// Opaque continuation from this response; empty does not replace the retained token.
-    #[serde(deserialize_with = "null_default")]
-    pub continuation_token: String,
+    pub continuation_token: String => "continuationToken", merge;
     /// Top-level marketing surfaces, separate from category messages.
-    #[serde(deserialize_with = "null_sequence")]
-    pub messages: Vec<Message>,
+    pub messages: Vec<Message> => "messages", sequence;
     /// Service counts and the currently loaded per-category messages.
-    #[serde(deserialize_with = "null_object")]
-    pub inbox_summary: InboxSummary,
+    pub inbox_summary: InboxSummary => "inboxSummary", merge;
     /// Uninterpreted optional settings, never a replacement for caller policy.
-    pub inbox_settings: Option<Box<RawValue>>,
+    pub inbox_settings: Option<Box<RawValue>> => "inboxSettings", raw;
+}
 }
 
+record! {
 /// Service totals, which may exceed the number of messages loaded in this response.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct InboxSummary {
     /// Reported total, preserving signed wire values for application projection.
-    #[serde(rename = "totalNumberOfMessages", deserialize_with = "null_default")]
-    pub total: i64,
+    pub total: i64 => "totalNumberOfMessages", merge;
     /// Categories in service order.
-    #[serde(deserialize_with = "null_sequence")]
-    pub categories: Vec<Category>,
+    pub categories: Vec<Category> => "categories", sequence;
+}
 }
 
+record! {
 /// One category's reported totals, metadata, continuation and loaded messages.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct Category {
     /// Reported message total; not the length of the loaded subset.
-    #[serde(rename = "totalNumberOfMessages", deserialize_with = "null_default")]
-    pub total: i64,
+    pub total: i64 => "totalNumberOfMessages", merge;
     /// Reported unread total; applications decide how to project negative values.
-    #[serde(
-        rename = "totalNumberOfUnreadMessages",
-        deserialize_with = "null_default"
-    )]
-    pub unread: i64,
+    pub unread: i64 => "totalNumberOfUnreadMessages", merge;
     /// Reported category spelling and display metadata.
-    #[serde(rename = "categoryInfo", deserialize_with = "null_object")]
-    pub info: CategoryInfo,
+    pub info: CategoryInfo => "categoryInfo", merge;
     /// Original category continuation, without an implicit follow-up request.
-    #[serde(deserialize_with = "null_default")]
-    pub continuation_token: String,
+    pub continuation_token: String => "continuationToken", merge;
     /// The currently loaded messages in this category.
-    #[serde(deserialize_with = "null_sequence")]
-    pub messages: Vec<Message>,
+    pub messages: Vec<Message> => "messages", sequence;
+}
 }
 
+record! {
 /// Untrusted service category metadata; its image is never automatically fetched.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct CategoryInfo {
     /// Original category type, matched by application policy.
-    #[serde(rename = "type", deserialize_with = "null_default")]
-    pub kind: String,
+    pub kind: String => "type", merge;
     /// Display name.
-    #[serde(deserialize_with = "null_default")]
-    pub name: String,
+    pub name: String => "name", merge;
     /// Display-only category image.
-    #[serde(deserialize_with = "null_object")]
-    pub image: Image,
+    pub image: Image => "image", merge;
+}
 }
 
+record! {
 /// One marketing surface or inbox message, before application filtering/projection.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct Message {
     /// Service message identity, distinct from its instance and report identity.
-    #[serde(deserialize_with = "null_default")]
-    pub id: String,
+    pub id: String => "id", merge;
     /// Instance identity used by ordered inbox reports.
-    #[serde(deserialize_with = "null_default")]
-    pub instance_id: String,
+    pub instance_id: String => "instanceId", merge;
     /// Whether this message is a service control.
-    #[serde(deserialize_with = "null_default")]
-    pub is_control: bool,
+    pub is_control: bool => "isControl", merge;
     /// Report identity supplied by this same message.
-    #[serde(deserialize_with = "null_default")]
-    pub report_id: String,
+    pub report_id: String => "reportId", merge;
     /// Display-only sender text.
-    #[serde(deserialize_with = "null_default")]
-    pub sender: String,
+    pub sender: String => "sender", merge;
     /// Requested display surface; unknown values remain metadata.
-    #[serde(deserialize_with = "null_default")]
-    pub surface: String,
+    pub surface: String => "surface", merge;
     /// Requested layout template; unknown values remain metadata.
-    #[serde(deserialize_with = "null_default")]
-    pub template: String,
+    pub template: String => "template", merge;
     /// Service permission to show this message in game, not a game admission.
-    #[serde(deserialize_with = "null_default")]
-    pub allow_in_game: bool,
+    pub allow_in_game: bool => "allowInGame", merge;
     /// Header, body and ribbon text.
-    #[serde(rename = "messageText", deserialize_with = "null_object")]
-    pub text: MessageText,
+    pub text: MessageText => "messageText", merge;
     /// Keyed button metadata, never an automatically opened URI.
-    #[serde(deserialize_with = "null_map")]
-    pub buttons: HashMap<String, Button>,
+    pub buttons: HashMap<String, Button> => "buttons", mapping;
     /// Keyed image metadata, never an authenticated fetch destination.
-    #[serde(deserialize_with = "null_map")]
-    pub images: HashMap<String, Image>,
+    pub images: HashMap<String, Image> => "images", mapping;
     /// Original category spelling.
-    #[serde(deserialize_with = "null_default")]
-    pub inbox_category: String,
+    pub inbox_category: String => "inboxCategory", merge;
     /// Original received timestamp, without guessed parsing of future formats.
-    #[serde(deserialize_with = "null_default")]
-    pub date_received: String,
+    pub date_received: String => "dateReceived", merge;
     /// Original expiration metadata, separate from credentials or world approval.
-    #[serde(deserialize_with = "null_default")]
-    pub expiration_date: String,
+    pub expiration_date: String => "expirationDate", merge;
     /// Original read/unread status, without a mutation on refresh.
-    #[serde(deserialize_with = "null_default")]
-    pub status: String,
+    pub status: String => "status", merge;
     /// Multi-item layout contents in service order.
-    #[serde(rename = "messageItemList", deserialize_with = "null_sequence")]
-    pub items: Vec<MessageItem>,
+    pub items: Vec<MessageItem> => "messageItemList", sequence;
     /// Unused style metadata retained without a recursive application model.
-    pub style: Option<Box<RawValue>>,
+    pub style: Option<Box<RawValue>> => "style", raw;
     /// Named button-art colors.
-    #[serde(deserialize_with = "null_map")]
-    pub colors: HashMap<String, Color>,
+    pub colors: HashMap<String, Color> => "colors", mapping;
+}
 }
 
+record! {
 /// A message's textual presentation.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct MessageText {
     /// Header text.
-    #[serde(deserialize_with = "null_default")]
-    pub header: String,
+    pub header: String => "header", merge;
     /// Body text.
-    #[serde(deserialize_with = "null_default")]
-    pub body: String,
+    pub body: String => "body", merge;
     /// Ribbon/banner text.
-    #[serde(rename = "bannerText", deserialize_with = "null_default")]
-    pub banner: String,
+    pub banner: String => "bannerText", merge;
+}
 }
 
+record! {
 /// A reported button; URI launch/egress policy belongs to the application.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct Button {
     /// Original button identity.
-    #[serde(deserialize_with = "null_default")]
-    pub id: String,
+    pub id: String => "id", merge;
     /// Display text.
-    #[serde(deserialize_with = "null_default")]
-    pub text: String,
+    pub text: String => "text", merge;
     /// Original description.
-    #[serde(deserialize_with = "null_default")]
-    pub description: String,
+    pub description: String => "description", merge;
     /// Display/action link, never a credential destination.
-    #[serde(deserialize_with = "null_default")]
-    pub link: String,
+    pub link: String => "link", merge;
     /// Original action spelling, including unrecognized future values.
-    #[serde(deserialize_with = "null_default")]
-    pub action: String,
+    pub action: String => "action", merge;
+}
 }
 
+record! {
 /// Image metadata; bytes require separate caller egress/cache/decoder validation.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct Image {
     /// Original image identity, when present.
-    #[serde(deserialize_with = "null_default")]
-    pub id: String,
+    pub id: String => "id", merge;
     /// Untrusted display/download URL.
-    #[serde(deserialize_with = "null_default")]
-    pub url: String,
+    pub url: String => "url", merge;
     /// Reported dimensions, not image decoder authority.
-    #[serde(rename = "imageSize", deserialize_with = "null_object")]
-    pub size: ImageSize,
+    pub size: ImageSize => "imageSize", merge;
+}
 }
 
+record! {
 /// Original reported image dimensions.
-#[derive(Default, Deserialize)]
-#[serde(default)]
 pub struct ImageSize {
     /// Reported width.
-    #[serde(deserialize_with = "null_default")]
-    pub width: i64,
+    pub width: i64 => "width", merge;
     /// Reported height.
-    #[serde(deserialize_with = "null_default")]
-    pub height: i64,
+    pub height: i64 => "height", merge;
+}
 }
 
+record! {
 /// One multi-item message entry, preserving optional unused metadata.
-#[derive(Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
 pub struct MessageItem {
     /// Optional button data.
-    #[serde(deserialize_with = "null_object")]
-    pub button: Button,
+    pub button: Button => "button", merge;
     /// Optional image data.
-    #[serde(deserialize_with = "null_object")]
-    pub image: Image,
+    pub image: Image => "image", merge;
     /// Text or other well-formed banner metadata.
-    pub sale_banner: Option<Box<RawValue>>,
+    pub sale_banner: Option<Box<RawValue>> => "saleBanner", raw;
     /// Subtitle text.
-    #[serde(rename = "subTitle", deserialize_with = "null_default")]
-    pub sub_title: String,
+    pub sub_title: String => "subTitle", merge;
     /// Unused footer call-to-action metadata.
-    #[serde(rename = "footerCTA", alias = "FooterCTA")]
-    pub footer_cta: Option<Box<RawValue>>,
+    pub footer_cta: Option<Box<RawValue>> => "footerCTA", raw;
     /// Footer header text.
-    #[serde(alias = "FooterHeader", deserialize_with = "null_default")]
-    pub footer_header: String,
+    pub footer_header: String => "footerHeader", merge;
     /// Footer body text.
-    #[serde(alias = "FooterBody", deserialize_with = "null_default")]
-    pub footer_body: String,
+    pub footer_body: String => "footerBody", merge;
+}
 }
 
 impl MessageItem {
@@ -232,37 +228,24 @@ impl MessageItem {
     }
 }
 
+record! {
 /// One named art color, with the baseline's object-valued `hexColor` channels.
-#[derive(Default, Deserialize)]
-#[serde(default)]
 pub struct Color {
     /// RGB channels, not a CSS/hexadecimal string.
-    #[serde(rename = "hexColor", deserialize_with = "null_object")]
-    pub rgb: Rgb,
+    pub rgb: Rgb => "hexColor", merge;
+}
 }
 
+record! {
 /// Eight-bit color channels in the original wire representation.
-#[derive(Default, Deserialize)]
-#[serde(default)]
 pub struct Rgb {
     /// Red channel.
-    #[serde(deserialize_with = "null_default")]
-    pub r: u8,
+    pub r: u8 => "r", merge;
     /// Green channel.
-    #[serde(deserialize_with = "null_default")]
-    pub g: u8,
+    pub g: u8 => "g", merge;
     /// Blue channel.
-    #[serde(deserialize_with = "null_default")]
-    pub b: u8,
+    pub b: u8 => "b", merge;
 }
-
-/// The baseline decoder leaves a zero field unchanged for JSON null, as for an absent field.
-fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de> + Default,
-{
-    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 /// Admits named JSON records through their existing field decoder, never positional arrays.
@@ -292,42 +275,73 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
     }
 }
 
-/// Preserves a null record as default while requiring every nonnull record to be an object.
-fn null_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de> + Default,
-{
-    Option::<Object<T>>::deserialize(deserializer)
-        .map(|value| value.map(|Object(value)| value).unwrap_or_default())
-}
-
 /// Preserves zero-valued null struct elements without accepting positional records.
 fn null_sequence<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de> + Default,
 {
-    Option::<Vec<Option<Object<T>>>>::deserialize(deserializer).map(|values| {
+    Option::<Vec<Option<T>>>::deserialize(deserializer).map(|values| {
         values
             .unwrap_or_default()
             .into_iter()
-            .map(|value| value.map(|Object(value)| value).unwrap_or_default())
+            .map(Option::unwrap_or_default)
             .collect()
     })
 }
 
-/// Preserves null map entries as default metadata, without accepting positional records.
-fn null_map<'de, D, T>(deserializer: D) -> Result<HashMap<String, T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de> + Default,
-{
-    Option::<HashMap<String, Option<Object<T>>>>::deserialize(deserializer).map(|values| {
-        values
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(key, value)| (key, value.map(|Object(value)| value).unwrap_or_default()))
-            .collect()
-    })
+/// Leaves scalar and struct fields unchanged for null and decodes nonnull values in place.
+struct InPlace<'a, T>(&'a mut T);
+
+impl<'de, T: Deserialize<'de>> DeserializeSeed<'de> for InPlace<'_, T> {
+    type Value = ();
+    /// Uses the option visitor only to distinguish null from an actual field value.
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_option(self)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Visitor<'de> for InPlace<'_, T> {
+    type Value = ();
+    /// Describes a nullable field without including its contents in errors.
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a nullable field")
+    }
+    /// JSON null leaves an existing scalar or record unchanged.
+    fn visit_none<E: serde::de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+    /// Delegates replacement or record merging to the field's owning type.
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        T::deserialize_in_place(deserializer, self.0)
+    }
+}
+
+/// Replaces a repeated sequence, retaining default-valued null record elements.
+struct Sequence<'a, T>(&'a mut Vec<T>);
+impl<'de, T: Deserialize<'de> + Default> DeserializeSeed<'de> for Sequence<'_, T> {
+    type Value = ();
+    /// A null sequence clears the prior slice, just like an empty replacement.
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        *self.0 = null_sequence(deserializer)?;
+        Ok(())
+    }
+}
+
+/// Merges repeated maps, replacing individual entries and clearing the map on null.
+struct Mapping<'a, T>(&'a mut HashMap<String, T>);
+impl<'de, T: Deserialize<'de> + Default> DeserializeSeed<'de> for Mapping<'_, T> {
+    type Value = ();
+    /// Keeps existing keys that are absent from a later nonnull map occurrence.
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        match Option::<HashMap<String, Option<T>>>::deserialize(deserializer)? {
+            None => self.0.clear(),
+            Some(values) => self.0.extend(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, value.unwrap_or_default())),
+            ),
+        }
+        Ok(())
+    }
 }

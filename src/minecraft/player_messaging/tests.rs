@@ -12,6 +12,27 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
+/// Repeated recognized fields and alternate footer casing follow their wire order.
+#[test]
+fn repeated_message_fields_regression() {
+    let session: Session = serde_json::from_str(r#"{"messages":[{"id":"old","id":"new","messageItemList":[{"footerHeader":"old","FooterHeader":"new","FooterBody":"first","footerBody":"last"}]}]}"#).unwrap();
+    assert_eq!(session.messages[0].id, "new");
+    assert_eq!(session.messages[0].items[0].footer_header, "new");
+    assert_eq!(session.messages[0].items[0].footer_body, "last");
+    let session: Session = serde_json::from_str(r#"{"messages":[{"id":"kept","id":null,"messageText":{"header":"header"},"messageText":{"body":"body"},"messageText":null,"buttons":{"first":{"text":"first"}},"buttons":{"second":{"text":"second"}}}]}"#).unwrap();
+    let message = &session.messages[0];
+    assert_eq!(message.id, "kept");
+    assert_eq!(message.text.header, "header");
+    assert_eq!(message.text.body, "body");
+    assert_eq!(message.buttons.len(), 2);
+    assert!(serde_json::from_str::<Session>(r#"{"messages":[{"id":1,"id":"new"}]}"#).is_err());
+    let session: Session = serde_json::from_str(r#"{"messages":[{"id":"old"}],"messages":[{"id":"new","buttons":{"a":{}},"buttons":null}]}"#).unwrap();
+    assert_eq!(session.messages.len(), 1);
+    assert_eq!(session.messages[0].id, "new");
+    assert!(session.messages[0].buttons.is_empty());
+    assert!(serde_json::from_str::<Session>(r#"{"messages":[[]]}"#).is_err());
+}
+
 /// Actual authorized refresh/report requests advance only fully decoded continuations.
 #[tokio::test]
 async fn player_messaging_refresh_reports_retain_session_continuation_and_locale() {
