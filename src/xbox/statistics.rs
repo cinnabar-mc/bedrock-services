@@ -117,105 +117,109 @@ impl Statistics<'_> {
     /// Rejects invalid/oversized selections before acquisition, malformed envelopes,
     /// unrequested response identities and redacted service/HTTP failures.
     pub async fn read(&mut self, users: &[&str], selections: &[Selection]) -> Result<Batch, Error> {
-        if users.is_empty()
-            || users.len() > super::social::MAX_BATCH_USERS
-            || selections.is_empty()
-            || selections.len() > MAX_CONFIGURATIONS
-        {
-            return Err(Error::Invalid("statistics selection count"));
-        }
-        for user in users {
-            validate_xuid(user)?;
-        }
-        for selection in selections {
-            if selection.service_config_id.is_nil()
-                || selection.names.is_empty()
-                || selection.names.len() > MAX_STATISTICS
-                || selection.names.iter().any(|name| {
-                    name.is_empty()
-                        || name.len() > MAX_NAME_BYTES
-                        || name.chars().any(char::is_control)
-                })
+        crate::http::call::run(async {
+            if users.is_empty()
+                || users.len() > super::social::MAX_BATCH_USERS
+                || selections.is_empty()
+                || selections.len() > MAX_CONFIGURATIONS
             {
-                return Err(Error::Invalid("statistics selection"));
+                return Err(Error::Invalid("statistics selection count"));
             }
-        }
-        #[derive(Serialize)]
-        struct Request<'a, 'b> {
-            requestedusers: &'a [&'b str],
-            requestedscids: &'a [Selection],
-        }
-        let mut body = serde_json::to_vec(&Request {
-            requestedusers: users,
-            requestedscids: selections,
-        })
-        .map_err(|_| Error::Invalid("statistics request"))?;
-        if body.len() >= crate::http::RESPONSE_LIMIT {
-            return Err(Error::Invalid("statistics request size"));
-        }
-        body.push(b'\n');
-        let mut url = Url::parse(ENDPOINT).map_err(|_| Error::Invalid("statistics endpoint"))?;
-        #[cfg(test)]
-        if let Some(base) = &self.fixture_base {
-            url = base.clone();
-        }
-        url.path_segments_mut()
-            .map_err(|_| Error::Invalid("statistics path"))?
-            .pop_if_empty()
-            .push("batch");
-        url.set_query(Some("operation=read"));
-        let token = self.account.authorize_service(&url).await?;
-        let mut request = self
-            .account
-            .http
-            .request(Method::POST, url.as_str())
-            .header("x-xbl-contract-version", "1")
-            .header("accept-language", super::DEFAULT_LANGUAGE)
-            .header("content-type", "application/json; charset=utf-8")
-            .header("content-length", body.len())
-            .body(body)
-            .build()?;
-        request.headers_mut().insert(
-            reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_static(USER_AGENT),
-        );
-        let response = self
-            .account
-            .send_service_with_limit(request, token, crate::http::SERVICE_RESPONSE_LIMIT)
-            .await?;
-        if response.status != StatusCode::OK {
-            return Err(Error::Status {
-                status: response.status,
-                xerr: None,
-            });
-        }
-        #[derive(Deserialize)]
-        struct Envelope {
-            users: Option<Vec<Box<RawValue>>>,
-        }
-        let rows = response
-            .json::<Envelope>()?
-            .users
-            .ok_or(Error::Invalid("statistics users"))?;
-        if rows.len() > super::social::MAX_BATCH_USERS {
-            return Err(Error::Invalid("statistics response count"));
-        }
-        let mut batch = Batch {
-            users: Vec::new(),
-            malformed_users: 0,
-        };
-        for row in rows {
-            match serde_json::from_str::<UserStatistics>(row.get()) {
-                Ok(user) => {
-                    if !users.contains(&user.xuid.as_str()) {
-                        return Err(Error::Invalid("unrequested statistics user"));
-                    }
-                    batch.users.push(user);
+            for user in users {
+                validate_xuid(user)?;
+            }
+            for selection in selections {
+                if selection.service_config_id.is_nil()
+                    || selection.names.is_empty()
+                    || selection.names.len() > MAX_STATISTICS
+                    || selection.names.iter().any(|name| {
+                        name.is_empty()
+                            || name.len() > MAX_NAME_BYTES
+                            || name.chars().any(char::is_control)
+                    })
+                {
+                    return Err(Error::Invalid("statistics selection"));
                 }
-                Err(_) => batch.malformed_users += 1,
             }
-        }
-        Ok(batch)
+            #[derive(Serialize)]
+            struct Request<'a, 'b> {
+                requestedusers: &'a [&'b str],
+                requestedscids: &'a [Selection],
+            }
+            let mut body = serde_json::to_vec(&Request {
+                requestedusers: users,
+                requestedscids: selections,
+            })
+            .map_err(|_| Error::Invalid("statistics request"))?;
+            if body.len() >= crate::http::RESPONSE_LIMIT {
+                return Err(Error::Invalid("statistics request size"));
+            }
+            body.push(b'\n');
+            let mut url =
+                Url::parse(ENDPOINT).map_err(|_| Error::Invalid("statistics endpoint"))?;
+            #[cfg(test)]
+            if let Some(base) = &self.fixture_base {
+                url = base.clone();
+            }
+            url.path_segments_mut()
+                .map_err(|_| Error::Invalid("statistics path"))?
+                .pop_if_empty()
+                .push("batch");
+            url.set_query(Some("operation=read"));
+            let token = self.account.authorize_service(&url).await?;
+            let mut request = self
+                .account
+                .http
+                .request(Method::POST, url.as_str())
+                .header("x-xbl-contract-version", "1")
+                .header("accept-language", super::DEFAULT_LANGUAGE)
+                .header("content-type", "application/json; charset=utf-8")
+                .header("content-length", body.len())
+                .body(body)
+                .build()?;
+            request.headers_mut().insert(
+                reqwest::header::USER_AGENT,
+                reqwest::header::HeaderValue::from_static(USER_AGENT),
+            );
+            let response = self
+                .account
+                .send_service_with_limit(request, token, crate::http::SERVICE_RESPONSE_LIMIT)
+                .await?;
+            if response.status != StatusCode::OK {
+                return Err(Error::Status {
+                    status: response.status,
+                    xerr: None,
+                });
+            }
+            #[derive(Deserialize)]
+            struct Envelope {
+                users: Option<Vec<Box<RawValue>>>,
+            }
+            let rows = response
+                .json::<Envelope>()?
+                .users
+                .ok_or(Error::Invalid("statistics users"))?;
+            if rows.len() > super::social::MAX_BATCH_USERS {
+                return Err(Error::Invalid("statistics response count"));
+            }
+            let mut batch = Batch {
+                users: Vec::new(),
+                malformed_users: 0,
+            };
+            for row in rows {
+                match serde_json::from_str::<UserStatistics>(row.get()) {
+                    Ok(user) => {
+                        if !users.contains(&user.xuid.as_str()) {
+                            return Err(Error::Invalid("unrequested statistics user"));
+                        }
+                        batch.users.push(user);
+                    }
+                    Err(_) => batch.malformed_users += 1,
+                }
+            }
+            Ok(batch)
+        })
+        .await
     }
 }
 

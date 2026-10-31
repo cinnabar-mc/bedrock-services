@@ -1,7 +1,7 @@
 //! Account-borrowed discovery, population snapshots and explicit experience joins.
 //!
 //! Catalog metadata is not connection authority. Listing never joins or fetches artwork.
-//! Callers own deadlines, polling and possible-write observation; joining is never retried.
+//! Calls have a shared preparation/send deadline; callers own polling and uncertain join outcomes.
 
 mod types;
 pub use types::{
@@ -40,20 +40,23 @@ impl Minecraft {
     /// # Errors
     /// Rejects absent/unsafe discovery before sending credentials to the service.
     pub async fn gatherings(&mut self) -> Result<Gatherings<'_>, Error> {
-        self.discover().await?;
-        let uri = self
-            .gatherings_environment
-            .as_ref()
-            .and_then(|environment| environment.get("prod"))
-            .and_then(|environment| environment.get("serviceUri"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or(Error::Invalid("missing gatherings discovery"))?;
-        validate_service_url(uri)?;
-        let base = Url::parse(uri).map_err(|_| Error::Invalid("gatherings URL"))?;
-        Ok(Gatherings {
-            minecraft: self,
-            base,
+        crate::http::call::run(async {
+            self.discover().await?;
+            let uri = self
+                .gatherings_environment
+                .as_ref()
+                .and_then(|environment| environment.get("prod"))
+                .and_then(|environment| environment.get("serviceUri"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or(Error::Invalid("missing gatherings discovery"))?;
+            validate_service_url(uri)?;
+            let base = Url::parse(uri).map_err(|_| Error::Invalid("gatherings URL"))?;
+            Ok(Gatherings {
+                minecraft: self,
+                base,
+            })
         })
+        .await
     }
 }
 
@@ -75,7 +78,13 @@ impl Gatherings<'_> {
         request
             .headers_mut()
             .insert("accept-language", HeaderValue::from_static("en-US"));
-        let response = self.send("search_items", request).await?;
+        let response = self
+            .send(
+                "search_items",
+                request,
+                crate::http::retry::Policy::Replayable,
+            )
+            .await?;
         #[derive(Deserialize)]
         struct Envelope {
             data: Object<SearchResult>,
@@ -121,7 +130,9 @@ impl Gatherings<'_> {
             .http
             .request(Method::GET, url.as_str())
             .build()?;
-        let response = self.send("player_counts", request).await?;
+        let response = self
+            .send("player_counts", request, crate::http::retry::Policy::Single)
+            .await?;
         #[derive(Deserialize)]
         struct Envelope {
             result: Vec<Box<RawValue>>,
@@ -153,7 +164,13 @@ impl Gatherings<'_> {
             .minecraft
             .http
             .post_json(url.as_str(), &serde_json::json!({"experienceId":id}))?;
-        let response = self.send("join_experience", request).await?;
+        let response = self
+            .send(
+                "join_experience",
+                request,
+                crate::http::retry::Policy::Single,
+            )
+            .await?;
         #[derive(Deserialize)]
         struct Envelope {
             result: Object<JoinAddress>,
@@ -163,46 +180,51 @@ impl Gatherings<'_> {
         Ok(address)
     }
 
-    /// Sends once with the exact current Minecraft issuance; rejection cannot evict a replacement.
+    /// Applies this operation's resend policy with the exact current Minecraft issuance.
     async fn send(
         &mut self,
         operation: &'static str,
         mut request: Request,
+        policy: crate::http::retry::Policy,
     ) -> Result<Response, Error> {
-        let token = self
-            .minecraft
-            .authorize()
-            .await
-            .inspect_err(|error| record_failure(operation, "authorization", error))?;
-        let authorization = token
-            .header_value()
-            .inspect_err(|error| record_failure(operation, "authorization", error))?;
-        request.headers_mut().insert("authorization", authorization);
-        request
-            .headers_mut()
-            .insert("accept", HeaderValue::from_static("application/json"));
-        let response = self
-            .minecraft
-            .http
-            .send_with_limit(request, crate::http::SERVICE_RESPONSE_LIMIT)
-            .await
-            .inspect_err(|error| record_failure(operation, "request", error))?;
-        if response.status == StatusCode::UNAUTHORIZED {
-            self.minecraft.reject(&token);
-        }
-        if response.status != StatusCode::OK {
-            response
-                .success()
+        crate::http::call::run(async {
+            let token = self
+                .minecraft
+                .authorize()
+                .await
+                .inspect_err(|error| record_failure(operation, "authorization", error))?;
+            let authorization = token
+                .header_value()
+                .inspect_err(|error| record_failure(operation, "authorization", error))?;
+            request.headers_mut().insert("authorization", authorization);
+            request
+                .headers_mut()
+                .insert("accept", HeaderValue::from_static("application/json"));
+            let response = self
+                .minecraft
+                .http
+                .send_retrying_with_limit(request, policy, crate::http::SERVICE_RESPONSE_LIMIT)
+                .await
                 .inspect_err(|error| record_failure(operation, "request", error))?;
-            return Err(Error::Invalid("gatherings response status"));
-        }
-        Ok(response)
+            if response.status == StatusCode::UNAUTHORIZED {
+                self.minecraft.reject(&token);
+            }
+            if response.status != StatusCode::OK {
+                response
+                    .success()
+                    .inspect_err(|error| record_failure(operation, "request", error))?;
+                return Err(Error::Invalid("gatherings response status"));
+            }
+            Ok(response)
+        })
+        .await
     }
 }
 
 /// Emits only finite caller/phase labels and safe error scalars, preserving the original error.
 fn record_failure(operation: &'static str, phase: &'static str, error: &Error) {
     let (class, http_status) = match error {
+        Error::DeadlineExceeded => ("deadline_exceeded", None),
         Error::Http(source) => ("http", source.status().map(|status| status.as_u16())),
         Error::Status { status, .. } => ("status", Some(status.as_u16())),
         Error::AccountCreationRequired(_) => ("account_creation_required", None),

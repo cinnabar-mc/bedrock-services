@@ -293,90 +293,99 @@ impl Minecraft {
     /// Borrows Realms services on the discovered retail endpoint using this account's XSTS cache.
     /// Missing or malformed Realms discovery fails here without affecting auth-only calls.
     pub async fn realms(&mut self) -> Result<realms::Realms<'_>, realms::Error> {
-        self.discover().await?;
-        let uri = self
-            .realms_environment
-            .as_ref()
-            .and_then(|environment| environment.get("prod"))
-            .and_then(|environment| environment.get("serviceUri"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or(Error::Invalid("missing Realms service discovery"))?;
-        validate_service_url(uri)?;
-        let base = Url::parse(uri).map_err(|_| Error::Invalid("Realms service URL"))?;
-        Ok(realms::Realms {
-            xbox: &mut self.xbox,
-            http: &mut self.http,
-            config: &self.config,
-            state: &mut self.realms_state,
-            base,
+        crate::http::call::run(async {
+            self.discover().await?;
+            let uri = self
+                .realms_environment
+                .as_ref()
+                .and_then(|environment| environment.get("prod"))
+                .and_then(|environment| environment.get("serviceUri"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or(Error::Invalid("missing Realms service discovery"))?;
+            validate_service_url(uri)?;
+            let base = Url::parse(uri).map_err(|_| Error::Invalid("Realms service URL"))?;
+            Ok(realms::Realms {
+                xbox: &mut self.xbox,
+                http: &mut self.http,
+                config: &self.config,
+                state: &mut self.realms_state,
+                base,
+            })
         })
+        .await
     }
 
     /// Acquires or reuses the PlayFab session for the discovered retail title.
     pub async fn playfab(&mut self) -> Result<Arc<playfab::Session>, Error> {
-        self.discover().await?;
-        if let Some(session) = self
-            .playfab
-            .as_ref()
-            .filter(|session| session.reusable(self.http.now()))
-        {
-            return Ok(Arc::clone(session));
-        }
-        let title = &self
-            .environment
-            .as_ref()
-            .ok_or(Error::Invalid("missing discovery"))?
-            .play_fab_title_id;
-        let session = Arc::new(playfab::login(&mut self.http, &mut self.xbox, title).await?);
-        self.entities.clear();
-        self.entities.insert(
-            playfab::EntityKind::TitlePlayerAccount,
-            Arc::clone(&session.entity),
-        );
-        self.playfab = Some(Arc::clone(&session));
-        Ok(session)
+        crate::http::call::run(async {
+            self.discover().await?;
+            if let Some(session) = self
+                .playfab
+                .as_ref()
+                .filter(|session| session.reusable(self.http.now()))
+            {
+                return Ok(Arc::clone(session));
+            }
+            let title = &self
+                .environment
+                .as_ref()
+                .ok_or(Error::Invalid("missing discovery"))?
+                .play_fab_title_id;
+            let session = Arc::new(playfab::login(&mut self.http, &mut self.xbox, title).await?);
+            self.entities.clear();
+            self.entities.insert(
+                playfab::EntityKind::TitlePlayerAccount,
+                Arc::clone(&session.entity),
+            );
+            self.playfab = Some(Arc::clone(&session));
+            Ok(session)
+        })
+        .await
     }
 
     /// Reuses a current service credential or replaces it with a fresh session.
     pub async fn authorize(&mut self) -> Result<Arc<Authorization>, Error> {
-        if self.restored.is_some() && !self.resume_service_checkpoint() {
-            self.discover().await?;
-        }
-        if let Some(token) = self
-            .authorization
-            .as_ref()
-            .filter(|token| token.reusable(self.http.now()))
-        {
-            return Ok(Arc::clone(token));
-        }
-        let playfab = self.playfab().await?;
-        let environment = self
-            .environment
-            .as_ref()
-            .ok_or(Error::Invalid("missing discovery"))?;
-        let url = append(
-            &environment.service_uri,
-            &["api", "v1.0", "session", "start"],
-        )?;
-        let request = self.json(
-            &url,
-            &self
-                .config
-                .start(&environment.play_fab_title_id, &playfab.ticket),
-        )?;
-        let response = self
-            .http
-            .send_retrying(request, crate::http::retry::Policy::Credential)
-            .await?;
-        response.success()?;
-        let token = Arc::new(
-            response
-                .json::<ResultBody<token::TokenResponse>>()?
-                .result
-                .authorization(self.http.now())?,
-        );
-        self.authorization = Some(Arc::clone(&token));
-        Ok(token)
+        crate::http::call::run(async {
+            if self.restored.is_some() && !self.resume_service_checkpoint() {
+                self.discover().await?;
+            }
+            if let Some(token) = self
+                .authorization
+                .as_ref()
+                .filter(|token| token.reusable(self.http.now()))
+            {
+                return Ok(Arc::clone(token));
+            }
+            let playfab = self.playfab().await?;
+            let environment = self
+                .environment
+                .as_ref()
+                .ok_or(Error::Invalid("missing discovery"))?;
+            let url = append(
+                &environment.service_uri,
+                &["api", "v1.0", "session", "start"],
+            )?;
+            let request = self.json(
+                &url,
+                &self
+                    .config
+                    .start(&environment.play_fab_title_id, &playfab.ticket),
+            )?;
+            let response = self
+                .http
+                .send_retrying(request, crate::http::retry::Policy::Credential)
+                .await?;
+            response.success()?;
+            let token = Arc::new(
+                response
+                    .json::<ResultBody<token::TokenResponse>>()?
+                    .result
+                    .authorization(self.http.now())?,
+            );
+            self.authorization = Some(Arc::clone(&token));
+            Ok(token)
+        })
+        .await
     }
 
     /// Evicts only the credential still cached from this exact issuance.
@@ -398,48 +407,51 @@ impl Minecraft {
         &mut self,
         key: &VerifyingKey,
     ) -> Result<MultiplayerToken, Error> {
-        let der = key
-            .to_public_key_der()
-            .map_err(|_| Error::Invalid("connection public key"))?;
-        let public_key = der.as_bytes().to_vec();
-        let mut retried = false;
-        loop {
-            let authorization = self.authorize().await?;
-            let environment = self
-                .environment
-                .as_ref()
-                .ok_or(Error::Invalid("missing discovery"))?;
-            let url = append(
-                &environment.service_uri,
-                &["api", "v1.0", "multiplayer", "session", "start"],
-            )?;
-            let mut request = self.json(
-                &url,
-                &serde_json::json!({"publicKey": STANDARD.encode(&public_key)}),
-            )?;
-            request
-                .headers_mut()
-                .insert("authorization", authorization.header_value()?);
-            let response = self
-                .http
-                .send_retrying(request, crate::http::retry::Policy::Credential)
-                .await?;
-            if response.status == reqwest::StatusCode::UNAUTHORIZED {
-                self.reject(&authorization);
-                if !retried {
-                    retried = true;
-                    continue;
+        crate::http::call::run(async {
+            let der = key
+                .to_public_key_der()
+                .map_err(|_| Error::Invalid("connection public key"))?;
+            let public_key = der.as_bytes().to_vec();
+            let mut retried = false;
+            loop {
+                let authorization = self.authorize().await?;
+                let environment = self
+                    .environment
+                    .as_ref()
+                    .ok_or(Error::Invalid("missing discovery"))?;
+                let url = append(
+                    &environment.service_uri,
+                    &["api", "v1.0", "multiplayer", "session", "start"],
+                )?;
+                let mut request = self.json(
+                    &url,
+                    &serde_json::json!({"publicKey": STANDARD.encode(&public_key)}),
+                )?;
+                request
+                    .headers_mut()
+                    .insert("authorization", authorization.header_value()?);
+                let response = self
+                    .http
+                    .send_retrying(request, crate::http::retry::Policy::Credential)
+                    .await?;
+                if response.status == reqwest::StatusCode::UNAUTHORIZED {
+                    self.reject(&authorization);
+                    if !retried {
+                        retried = true;
+                        continue;
+                    }
                 }
+                response.success()?;
+                if self.restored_route {
+                    self.xbox.admit_service_clock(&self.http);
+                }
+                return response
+                    .json::<ResultBody<token::MintResponse>>()?
+                    .result
+                    .token(public_key, self.http.now());
             }
-            response.success()?;
-            if self.restored_route {
-                self.xbox.admit_service_clock(&self.http);
-            }
-            return response
-                .json::<ResultBody<token::MintResponse>>()?
-                .result
-                .token(public_key, self.http.now());
-        }
+        })
+        .await
     }
 
     /// Loads and validates public service routes for the configured game version.
@@ -454,55 +466,58 @@ impl Minecraft {
     /// # Errors
     /// Returns bounded HTTP/status/JSON or required service-route/title validation errors.
     pub async fn discover(&mut self) -> Result<(), Error> {
-        if self.environment.is_some() && !self.restored_route {
-            return Ok(());
-        }
-        let url = append(
-            &self.http.endpoints.discovery,
-            &[
-                "api",
-                "v1.0",
-                "discovery",
-                "MinecraftPE",
-                "builds",
-                &self.config.game_version,
-            ],
-        )?;
-        let request = self
-            .http
-            .request(Method::GET, url.as_str())
-            .header("content-type", "application/json")
-            .build()?;
-        let response = self
-            .http
-            .send_retrying(request, crate::http::retry::Policy::Discovery)
-            .await?;
-        response.success()?;
-        let discovery = response.json::<ResultBody<Discovery>>()?.result;
-        let environment = discovery.service_environments.auth.prod;
-        validate_service_url(&environment.service_uri)?;
-        playfab::login_url(&environment.play_fab_title_id)?;
-        if self.restored_route && self.environment.as_ref() != Some(&environment) {
-            self.authorization = None;
-            self.playfab = None;
-            self.entities.clear();
-        }
-        self.restored_route = false;
-        self.signaling_environment = discovery.service_environments.signaling_afd;
-        self.realms_environment = discovery
-            .service_environments
-            .realms_frontend_bedrock_legacy;
-        self.persona_environment = discovery.service_environments.persona;
-        self.messaging_environment = discovery.service_environments.messaging;
-        self.gatherings_environment = discovery.service_environments.gatherings;
-        self.environment = Some(environment);
-        let response_date = response
-            .headers
-            .get("date")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| httpdate::parse_http_date(value).ok());
-        self.admit_service_checkpoint(response_date);
-        Ok(())
+        crate::http::call::run(async {
+            if self.environment.is_some() && !self.restored_route {
+                return Ok(());
+            }
+            let url = append(
+                &self.http.endpoints.discovery,
+                &[
+                    "api",
+                    "v1.0",
+                    "discovery",
+                    "MinecraftPE",
+                    "builds",
+                    &self.config.game_version,
+                ],
+            )?;
+            let request = self
+                .http
+                .request(Method::GET, url.as_str())
+                .header("content-type", "application/json")
+                .build()?;
+            let response = self
+                .http
+                .send_retrying(request, crate::http::retry::Policy::Discovery)
+                .await?;
+            response.success()?;
+            let discovery = response.json::<ResultBody<Discovery>>()?.result;
+            let environment = discovery.service_environments.auth.prod;
+            validate_service_url(&environment.service_uri)?;
+            playfab::login_url(&environment.play_fab_title_id)?;
+            if self.restored_route && self.environment.as_ref() != Some(&environment) {
+                self.authorization = None;
+                self.playfab = None;
+                self.entities.clear();
+            }
+            self.restored_route = false;
+            self.signaling_environment = discovery.service_environments.signaling_afd;
+            self.realms_environment = discovery
+                .service_environments
+                .realms_frontend_bedrock_legacy;
+            self.persona_environment = discovery.service_environments.persona;
+            self.messaging_environment = discovery.service_environments.messaging;
+            self.gatherings_environment = discovery.service_environments.gatherings;
+            self.environment = Some(environment);
+            let response_date = response
+                .headers
+                .get("date")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| httpdate::parse_http_date(value).ok());
+            self.admit_service_checkpoint(response_date);
+            Ok(())
+        })
+        .await
     }
 
     /// Materializes the Minecraft headers before HTTP execution.

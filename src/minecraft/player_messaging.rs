@@ -3,7 +3,7 @@
 //! This account-borrowed service retains one distinct messaging session and its
 //! continuation. It does not receive Xbox game invitations, join worlds, fetch
 //! message artwork or follow links. Callers own polling, deadlines and reporting
-//! policy; requests have no implicit retry or background worker.
+//! policy; uncertain mutations are not replayed and there is no background worker.
 
 mod events;
 mod types;
@@ -109,45 +109,52 @@ impl PlayerMessaging<'_> {
         language: Option<HeaderValue>,
         body: &impl Serialize,
     ) -> Result<Response, Error> {
-        self.minecraft.discover().await?;
-        let uri = self
-            .minecraft
-            .messaging_environment
-            .as_ref()
-            .and_then(|environment| environment.get("prod"))
-            .and_then(|environment| environment.get("serviceUri"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or(Error::Invalid("missing player messaging discovery"))?;
-        validate_service_url(uri)?;
-        let url = append(uri, &["api", "v1.0", collection, action])?;
-        let token = self.minecraft.authorize().await?;
-        let mut request = self.minecraft.http.post_json(url.as_str(), body)?;
-        request
-            .headers_mut()
-            .insert("authorization", token.header_value()?);
-        request
-            .headers_mut()
-            .insert("accept", HeaderValue::from_static("application/json"));
-        request.headers_mut().insert(
-            "session-id",
-            HeaderValue::from_str(&self.session_id().to_string())
-                .map_err(|_| Error::Invalid("player messaging session"))?,
-        );
-        if let Some(language) = language {
-            request.headers_mut().insert("accept-language", language);
-        }
-        let response = self
-            .minecraft
-            .http
-            .send_with_limit(request, crate::http::SERVICE_RESPONSE_LIMIT)
-            .await?;
-        if response.status == StatusCode::UNAUTHORIZED {
-            self.minecraft.reject(&token);
-        }
-        if !response.status.is_success() {
-            response.success()?;
-        }
-        Ok(response)
+        crate::http::call::run(async {
+            self.minecraft.discover().await?;
+            let uri = self
+                .minecraft
+                .messaging_environment
+                .as_ref()
+                .and_then(|environment| environment.get("prod"))
+                .and_then(|environment| environment.get("serviceUri"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or(Error::Invalid("missing player messaging discovery"))?;
+            validate_service_url(uri)?;
+            let url = append(uri, &["api", "v1.0", collection, action])?;
+            let token = self.minecraft.authorize().await?;
+            let mut request = self.minecraft.http.post_json(url.as_str(), body)?;
+            request
+                .headers_mut()
+                .insert("authorization", token.header_value()?);
+            request
+                .headers_mut()
+                .insert("accept", HeaderValue::from_static("application/json"));
+            request.headers_mut().insert(
+                "session-id",
+                HeaderValue::from_str(&self.session_id().to_string())
+                    .map_err(|_| Error::Invalid("player messaging session"))?,
+            );
+            if let Some(language) = language {
+                request.headers_mut().insert("accept-language", language);
+            }
+            let response = self
+                .minecraft
+                .http
+                .send_retrying_with_limit(
+                    request,
+                    crate::http::retry::Policy::Service,
+                    crate::http::SERVICE_RESPONSE_LIMIT,
+                )
+                .await?;
+            if response.status == StatusCode::UNAUTHORIZED {
+                self.minecraft.reject(&token);
+            }
+            if !response.status.is_success() {
+                response.success()?;
+            }
+            Ok(response)
+        })
+        .await
     }
 }
 

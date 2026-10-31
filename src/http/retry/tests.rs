@@ -6,6 +6,86 @@ use std::{
     task::Poll,
 };
 
+/// Discovery retains five sends within its original budget, including a fifth-attempt recovery.
+#[tokio::test(start_paused = true)]
+async fn discovery_allows_five_attempts() {
+    let mut retry = Retry::new(Policy::Discovery);
+    let mut request = Request::new(
+        Method::GET,
+        "https://fixture.invalid/discovery".parse().unwrap(),
+    );
+    for attempt in 1..=5 {
+        retry.begin(&mut request);
+        assert_eq!(
+            retry
+                .wait(&Ok(unavailable("0")), SystemTime::UNIX_EPOCH)
+                .await,
+            attempt < 5
+        );
+    }
+}
+
+/// Unsafe POSTs require explicit refusal; reads and explicit replay contracts share retry statuses.
+#[tokio::test(start_paused = true)]
+async fn service_retries_respect_method_headers_and_refusal() {
+    for method in [
+        Method::GET,
+        Method::HEAD,
+        Method::OPTIONS,
+        Method::TRACE,
+        Method::PUT,
+        Method::DELETE,
+        Method::POST,
+        Method::PATCH,
+    ] {
+        for policy in [Policy::Service, Policy::Replayable, Policy::Single] {
+            for key in [None, Some("idempotency-key"), Some("x-idempotency-key")] {
+                for (status, retry_after) in [
+                    (408, None),
+                    (429, None),
+                    (500, None),
+                    (503, None),
+                    (503, Some("0")),
+                    (503, Some("40")),
+                    (999, None),
+                    (401, None),
+                ] {
+                    let mut request = Request::new(
+                        method.clone(),
+                        "https://fixture.invalid/service".parse().unwrap(),
+                    );
+                    if let Some(key) = key {
+                        request.headers_mut().insert(key, "key".parse().unwrap());
+                    }
+                    let mut retry = Retry::new(policy);
+                    retry.begin(&mut request);
+                    let mut response = unavailable("0");
+                    response.status = StatusCode::from_u16(status).unwrap();
+                    response.headers.clear();
+                    if let Some(delay) = retry_after {
+                        response
+                            .headers
+                            .insert("retry-after", delay.parse().unwrap());
+                    }
+                    let safe = method != Method::POST && method != Method::PATCH
+                        || key.is_some()
+                        || matches!(policy, Policy::Replayable);
+                    let refused = status == 429 || status == 503 && retry_after.is_some();
+                    let expected = !matches!(policy, Policy::Single)
+                        && status != 401
+                        && (safe || refused)
+                        && retry_after != Some("40");
+                    assert_eq!(
+                        retry.wait(&Ok(response), SystemTime::UNIX_EPOCH).await,
+                        expected,
+                        "{method} {status} {key:?} {retry_after:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Builds a bounded response at the retry decision boundary without a transport task.
 fn unavailable(delay: &'static str) -> Response {
     let mut headers = HeaderMap::new();

@@ -2,6 +2,45 @@ use super::*;
 use crate::http::retry::Policy;
 use serde_json::Value;
 
+/// Real response bodies use the remainder of the call budget rather than a fresh client timeout.
+#[tokio::test(start_paused = true)]
+async fn service_body_reads_keep_the_preparation_deadline() {
+    for (body_time, succeeds) in [(14, true), (16, false)] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (observed, observation) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            crate::xbox::test_support::read_request(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            observed.send(()).unwrap();
+            released.await.unwrap();
+            let _ = stream.write_all(b"x").await;
+        });
+        let mut http = Http::fixture(address);
+        let started = tokio::time::Instant::now();
+        let operation = crate::http::call::run(async {
+            tokio::time::advance(Duration::from_secs(25)).await;
+            let request = http
+                .request(Method::GET, &format!("http://{address}/body"))
+                .build()?;
+            http.send(request).await
+        });
+        let (result, ()) = tokio::join!(operation, async {
+            observation.await.unwrap();
+            tokio::time::advance(Duration::from_secs(body_time)).await;
+            release.send(()).unwrap();
+        });
+        server.await.unwrap();
+        assert_eq!(result.is_ok(), succeeds, "body_time={body_time}");
+        assert!(tokio::time::Instant::now() - started >= Duration::from_secs(25 + body_time));
+    }
+}
+
 /// A real acquisition returns its last response when the server's delay exceeds its total budget.
 #[tokio::test]
 async fn acquisition_keeps_retry_after_beyond_its_original_budget() {

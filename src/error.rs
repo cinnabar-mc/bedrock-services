@@ -3,6 +3,9 @@ use reqwest::StatusCode;
 /// An authentication failure containing no credential or response-body text.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The original service-call budget elapsed during preparation, sending or response reading.
+    #[error("service call deadline exceeded")]
+    DeadlineExceeded,
     /// HTTP transport failed; URLs are removed from the underlying error.
     #[error("authentication HTTP request failed")]
     Http(#[source] reqwest::Error),

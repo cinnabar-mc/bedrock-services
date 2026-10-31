@@ -79,18 +79,26 @@ impl Profile<'_> {
     /// # Errors
     /// Returns invalid identity/discovery, bounded acquisition/HTTP or redacted status failures.
     pub async fn image(&mut self, xuid: &str, kind: ImageKind) -> Result<ImageBody, Error> {
-        validate_xuid(xuid)?;
-        let url = self
-            .destination(&["api", "v1.0", "profile", "xuid", xuid, "image", kind.path()])
-            .await?;
-        let response = self
-            .read(url, "image/*", crate::http::SERVICE_RESPONSE_LIMIT)
-            .await?;
-        Ok(ImageBody {
-            content_type: header(&response, reqwest::header::CONTENT_TYPE),
-            etag: header(&response, reqwest::header::ETAG),
-            bytes: response.body,
+        crate::http::call::run(async {
+            validate_xuid(xuid)?;
+            let url = self
+                .destination(&["api", "v1.0", "profile", "xuid", xuid, "image", kind.path()])
+                .await?;
+            let response = self
+                .read(
+                    url,
+                    "image/*",
+                    crate::http::SERVICE_RESPONSE_LIMIT,
+                    crate::http::retry::Policy::Service,
+                )
+                .await?;
+            Ok(ImageBody {
+                content_type: header(&response, reqwest::header::CONTENT_TYPE),
+                etag: header(&response, reqwest::header::ETAG),
+                bytes: response.body,
+            })
         })
+        .await
     }
 
     /// Reads showcase metadata from the discovered persona origin without fetching its images.
@@ -99,50 +107,58 @@ impl Profile<'_> {
     /// # Errors
     /// Returns invalid identity/discovery, missing envelope, resource bounds or redacted HTTP failures.
     pub async fn gallery(&mut self, xuid: &str) -> Result<Gallery, Error> {
-        validate_xuid(xuid)?;
-        let url = self
-            .destination(&["api", "v1.0", "gallery", "xuid", xuid])
-            .await?;
-        let response = self
-            .read(url, "application/json", crate::http::RESPONSE_LIMIT)
-            .await?;
-        if response.status != StatusCode::OK {
-            return Err(Error::Status {
-                status: response.status,
-                xerr: None,
-            });
-        }
-        #[derive(Deserialize)]
-        struct Result {
-            #[serde(default, rename = "showcasedImages")]
-            images: Option<Vec<Value>>,
-        }
-        #[derive(Deserialize)]
-        struct Envelope {
-            result: Option<Result>,
-        }
-        let rows = response
-            .json::<Envelope>()?
-            .result
-            .ok_or(Error::Invalid("gallery result"))?
-            .images
-            .unwrap_or_default();
-        if rows.len() > MAX_SHOWCASED_IMAGES {
-            return Err(Error::Invalid("gallery image count"));
-        }
-        let mut gallery = Gallery {
-            images: Vec::new(),
-            malformed_items: 0,
-        };
-        for row in rows {
-            match serde_json::from_value::<ShowcasedImage>(row) {
-                Ok(image) if image.url.is_empty() || valid_image_url(&image.url) => {
-                    gallery.images.push(image)
-                }
-                _ => gallery.malformed_items += 1,
+        crate::http::call::run(async {
+            validate_xuid(xuid)?;
+            let url = self
+                .destination(&["api", "v1.0", "gallery", "xuid", xuid])
+                .await?;
+            let response = self
+                .read(
+                    url,
+                    "application/json",
+                    crate::http::RESPONSE_LIMIT,
+                    crate::http::retry::Policy::Single,
+                )
+                .await?;
+            if response.status != StatusCode::OK {
+                return Err(Error::Status {
+                    status: response.status,
+                    xerr: None,
+                });
             }
-        }
-        Ok(gallery)
+            #[derive(Deserialize)]
+            struct Result {
+                #[serde(default, rename = "showcasedImages")]
+                images: Option<Vec<Value>>,
+            }
+            #[derive(Deserialize)]
+            struct Envelope {
+                result: Option<Result>,
+            }
+            let rows = response
+                .json::<Envelope>()?
+                .result
+                .ok_or(Error::Invalid("gallery result"))?
+                .images
+                .unwrap_or_default();
+            if rows.len() > MAX_SHOWCASED_IMAGES {
+                return Err(Error::Invalid("gallery image count"));
+            }
+            let mut gallery = Gallery {
+                images: Vec::new(),
+                malformed_items: 0,
+            };
+            for row in rows {
+                match serde_json::from_value::<ShowcasedImage>(row) {
+                    Ok(image) if image.url.is_empty() || valid_image_url(&image.url) => {
+                        gallery.images.push(image)
+                    }
+                    _ => gallery.malformed_items += 1,
+                }
+            }
+            Ok(gallery)
+        })
+        .await
     }
 
     /// Resolves only the optional discovered persona origin, preserving its path prefix.
@@ -160,13 +176,13 @@ impl Profile<'_> {
         append(uri, path)
     }
 
-    /// Sends one Minecraft-authorized GET, rejecting only its exact cached issuance on 401.
-    /// No retry, Xbox signature, response URL follow or separate credential state is introduced.
+    /// Applies the concrete read policy with the current issuance and never follows response URLs.
     async fn read(
         &mut self,
         url: Url,
         accept: &'static str,
         response_limit: usize,
+        policy: crate::http::retry::Policy,
     ) -> Result<Response, Error> {
         let token = self.minecraft.authorize().await?;
         let request = self
@@ -179,7 +195,7 @@ impl Profile<'_> {
         let response = self
             .minecraft
             .http
-            .send_with_limit(request, response_limit)
+            .send_retrying_with_limit(request, policy, response_limit)
             .await?;
         if response.status == StatusCode::UNAUTHORIZED {
             self.minecraft.reject(&token);

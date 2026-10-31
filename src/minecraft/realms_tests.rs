@@ -122,7 +122,7 @@ fn services(address: std::net::SocketAddr, version: &str, protocol: u32) -> Mine
 }
 
 /// Exercises shared XSTS, persistent version negotiation, explicit membership and all join variants.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
     let version = "1.26.60.2";
     let protocol = 1014;
@@ -132,7 +132,7 @@ async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
             assert!(headers.contains("x-clientplatform: android"));
             assert!(headers.contains(&format!("x-networkprotocolversion: {protocol}")));
             assert!(headers.contains(if step < 25 { "authorization: xbl3.0 x=synthetic;realms" } else { "authorization: xbl3.0 x=synthetic;realms2" }));
-            let expected = match step { 6 => version, 7 | 27 => "1.26.60", _ => "1.26.59" };
+            let expected = match step { 6 => version, 7 | 27..=29 => "1.26.60", _ => "1.26.59" };
             assert!(headers.contains(&format!("client-version: {expected}\r\n")));
         }
         match step {
@@ -151,7 +151,7 @@ async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
                 assert_eq!(serde_json::from_slice::<Value>(body).unwrap()["RelyingParty"],"https://pocket.realms.minecraft.net/");
                 Reply::json(200,token(if step == 5 {"realms"} else {"realms2"},true))
             }
-            6 | 26 | 28 => { assert_eq!(target,"/prefix/worlds"); Reply::json(400,json!({"reason":"unknown_client_version","secret":"SECRET"})) }
+            6 | 26 | 30 => { assert_eq!(target,"/prefix/worlds"); Reply::json(400,json!({"reason":"unknown_client_version","secret":"SECRET"})) }
             7 | 8 => {
                 assert_eq!(target,"/prefix/mco/client/compatible");
                 Reply::text(if step == 7 {"OUTDATED"} else {" compatible \n"})
@@ -181,10 +181,10 @@ async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
                 }
             }
             23 => { assert_eq!(target,"/prefix/worlds"); Reply::json(401,json!({"secret":"SECRET"})) }
-            27 => { assert_eq!(target,"/prefix/mco/client/compatible"); Reply::json(503,json!({"secret":"SECRET"})) }
+            27..=29 => { assert_eq!(target,"/prefix/mco/client/compatible"); Reply::json(503,json!({"secret":"SECRET"})) }
             _ => panic!("unexpected Realms request {step}: {target}"),
         }
-    },28).await;
+    },30).await;
     let mut minecraft = services(address, version, protocol);
     let id = NonZeroU64::new(7).unwrap();
     assert_eq!(

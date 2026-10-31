@@ -16,54 +16,57 @@ impl Minecraft {
         &mut self,
         kind: playfab::EntityKind,
     ) -> Result<Arc<playfab::Entity>, Error> {
-        for attempt in 0..2 {
-            let session = self.playfab().await?;
-            let now = self.http.now();
-            if let Some(entity) = self.entities.get(&kind).filter(|entity| entity.valid(now)) {
-                return Ok(Arc::clone(entity));
-            }
-            let source = self
-                .entities
-                .get(&kind)
-                .filter(|entity| entity.unexpired(now))
-                .or_else(|| {
-                    self.entities
-                        .get(&playfab::EntityKind::TitlePlayerAccount)
-                        .filter(|entity| entity.unexpired(now))
-                })
-                .unwrap_or(&session.entity);
-            if !source.unexpired(now) && attempt == 0 {
-                self.playfab = None;
-                self.entities.clear();
-                continue;
-            }
-            if !source.unexpired(now) {
-                return Err(Error::Invalid("expired PlayFab exchange source"));
-            }
-            let id = match kind {
-                playfab::EntityKind::TitlePlayerAccount => session.entity.id(),
-                playfab::EntityKind::MasterPlayerAccount => session.player_id(),
-            };
-            let title = &self
-                .environment
-                .as_ref()
-                .ok_or(Error::Invalid("missing discovery"))?
-                .play_fab_title_id;
-            match playfab::exchange(&mut self.http, title, source, kind, id).await {
-                Ok(entity) => {
-                    let entity = Arc::new(entity);
-                    self.entities.insert(kind, Arc::clone(&entity));
-                    return Ok(entity);
+        crate::http::call::run(async {
+            for attempt in 0..2 {
+                let session = self.playfab().await?;
+                let now = self.http.now();
+                if let Some(entity) = self.entities.get(&kind).filter(|entity| entity.valid(now)) {
+                    return Ok(Arc::clone(entity));
                 }
-                Err(Error::Status { status, .. })
-                    if status == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 =>
-                {
+                let source = self
+                    .entities
+                    .get(&kind)
+                    .filter(|entity| entity.unexpired(now))
+                    .or_else(|| {
+                        self.entities
+                            .get(&playfab::EntityKind::TitlePlayerAccount)
+                            .filter(|entity| entity.unexpired(now))
+                    })
+                    .unwrap_or(&session.entity);
+                if !source.unexpired(now) && attempt == 0 {
                     self.playfab = None;
                     self.entities.clear();
+                    continue;
                 }
-                Err(error) => return Err(error),
+                if !source.unexpired(now) {
+                    return Err(Error::Invalid("expired PlayFab exchange source"));
+                }
+                let id = match kind {
+                    playfab::EntityKind::TitlePlayerAccount => session.entity.id(),
+                    playfab::EntityKind::MasterPlayerAccount => session.player_id(),
+                };
+                let title = &self
+                    .environment
+                    .as_ref()
+                    .ok_or(Error::Invalid("missing discovery"))?
+                    .play_fab_title_id;
+                match playfab::exchange(&mut self.http, title, source, kind, id).await {
+                    Ok(entity) => {
+                        let entity = Arc::new(entity);
+                        self.entities.insert(kind, Arc::clone(&entity));
+                        return Ok(entity);
+                    }
+                    Err(Error::Status { status, .. })
+                        if status == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 =>
+                    {
+                        self.playfab = None;
+                        self.entities.clear();
+                    }
+                    Err(error) => return Err(error),
+                }
             }
-        }
-        Err(Error::Invalid("PlayFab entity acquisition exhausted"))
+            Err(Error::Invalid("PlayFab entity acquisition exhausted"))
+        })
+        .await
     }
 }

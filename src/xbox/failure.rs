@@ -36,6 +36,7 @@ impl Failure {
 /// Preserves service codes and actionable signup state without retaining transport URLs or bodies.
 fn replay(error: &Error) -> Error {
     match error {
+        Error::DeadlineExceeded => Error::DeadlineExceeded,
         Error::Status { status, xerr } => Error::Status {
             status: *status,
             xerr: *xerr,

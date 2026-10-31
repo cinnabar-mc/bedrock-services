@@ -2,7 +2,7 @@
 
 use super::{REQUEST_TIMEOUT, Response};
 use crate::Error;
-use reqwest::{Request, StatusCode};
+use reqwest::{Method, Request, StatusCode};
 use std::{error::Error as _, io, time::SystemTime};
 use tokio::time::{Duration, Instant};
 
@@ -12,13 +12,20 @@ pub(crate) enum Policy {
     Discovery,
     Credential,
     Presence,
+    Single,
+    Service,
+    Replayable,
 }
+
+pub(crate) const DEFAULT_ATTEMPTS: u8 = 3;
 
 /// Retains the first cutoff across attempts without spawning any work on cancellation.
 pub(crate) struct Retry {
     policy: Policy,
     deadline: Instant,
     attempts: u8,
+    replayable: bool,
+    repeatable: bool,
 }
 
 impl Retry {
@@ -26,27 +33,44 @@ impl Retry {
     pub(crate) fn new(policy: Policy) -> Self {
         Self {
             policy,
-            deadline: Instant::now() + REQUEST_TIMEOUT,
+            deadline: super::call::deadline().unwrap_or_else(|| Instant::now() + REQUEST_TIMEOUT),
             attempts: 0,
+            replayable: false,
+            repeatable: false,
         }
     }
 
     /// Charges one attempt and restricts its original request timeout to the remaining budget.
     pub(crate) fn begin(&mut self, request: &mut Request) {
         self.attempts += 1;
+        self.repeatable = request.try_clone().is_some();
+        self.replayable = matches!(self.policy, Policy::Credential | Policy::Replayable)
+            || matches!(
+                *request.method(),
+                Method::GET
+                    | Method::HEAD
+                    | Method::OPTIONS
+                    | Method::TRACE
+                    | Method::PUT
+                    | Method::DELETE
+            )
+            || request.headers().contains_key("idempotency-key")
+            || request.headers().contains_key("x-idempotency-key");
         let remaining = self.deadline.saturating_duration_since(Instant::now());
-        let timeout = request.timeout().copied().unwrap_or(REQUEST_TIMEOUT);
+        let timeout = request.timeout().copied().unwrap_or(remaining);
         *request.timeout_mut() = Some(timeout.min(remaining));
     }
 
     /// Waits only when the complete server-requested delay fits before the first cutoff.
     pub(crate) async fn wait(&self, result: &Result<Response, Error>, utc: SystemTime) -> bool {
         let maximum = match self.policy {
-            Policy::Discovery => 2,
+            Policy::Discovery => 5,
             Policy::Credential => 5,
             Policy::Presence => 3,
+            Policy::Single => 1,
+            Policy::Service | Policy::Replayable => DEFAULT_ATTEMPTS,
         };
-        if self.attempts == 0 || self.attempts >= maximum {
+        if !self.repeatable || self.attempts == 0 || self.attempts >= maximum {
             return false;
         }
         let retry_after = match result {
@@ -58,10 +82,16 @@ impl Retry {
                         StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
                     ),
                     _ => {
-                        status == StatusCode::REQUEST_TIMEOUT
-                            || status == StatusCode::TOO_MANY_REQUESTS
-                            || status.is_server_error()
-                            || status.as_u16() == 999
+                        status == StatusCode::TOO_MANY_REQUESTS
+                            || (status == StatusCode::SERVICE_UNAVAILABLE
+                                && response
+                                    .headers
+                                    .get("retry-after")
+                                    .is_some_and(|value| !value.is_empty()))
+                            || (self.replayable
+                                && (status == StatusCode::REQUEST_TIMEOUT
+                                    || status.is_server_error()
+                                    || status.as_u16() == 999))
                     }
                 };
                 if !retryable {
@@ -80,7 +110,8 @@ impl Retry {
                 }
             }
             Err(error) => {
-                if matches!(self.policy, Policy::Presence) || !transient(error) {
+                if matches!(self.policy, Policy::Presence) || !self.replayable || !transient(error)
+                {
                     return false;
                 }
                 None

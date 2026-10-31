@@ -56,7 +56,14 @@ impl Realms<'_> {
         struct Catalog {
             servers: Vec<Realm>,
         }
-        let response = self.request(Method::GET, &["worlds"], None).await?;
+        let response = self
+            .request(
+                Method::GET,
+                &["worlds"],
+                None,
+                crate::http::retry::Policy::Service,
+            )
+            .await?;
         success(&response)?;
         Ok(response.json::<Catalog>()?.servers)
     }
@@ -64,7 +71,12 @@ impl Realms<'_> {
     /// Fetches details and player metadata for a positive Realm identifier.
     pub async fn details(&mut self, id: NonZeroU64) -> Result<Realm, Error> {
         let response = self
-            .request(Method::GET, &["worlds", &id.to_string()], None)
+            .request(
+                Method::GET,
+                &["worlds", &id.to_string()],
+                None,
+                crate::http::retry::Policy::Service,
+            )
             .await?;
         success(&response)?;
         let realm = response.json::<Realm>()?;
@@ -79,7 +91,12 @@ impl Realms<'_> {
     pub async fn preview_invite(&mut self, code: &str) -> Result<Realm, Error> {
         validate_code(code)?;
         let response = self
-            .request(Method::GET, &["worlds", "v1", "link", code], None)
+            .request(
+                Method::GET,
+                &["worlds", "v1", "link", code],
+                None,
+                crate::http::retry::Policy::Service,
+            )
             .await?;
         success(&response)?;
         Ok(response.json()?)
@@ -94,6 +111,7 @@ impl Realms<'_> {
                 Method::POST,
                 &["invites", "v1", "link", "accept", code],
                 None,
+                crate::http::retry::Policy::Service,
             )
             .await?;
         success(&response)?;
@@ -103,7 +121,12 @@ impl Realms<'_> {
     /// Returns the nonnegative pending invitation count without echoing invalid body text.
     pub async fn pending_invites(&mut self) -> Result<u32, Error> {
         let response = self
-            .request(Method::GET, &["invites", "count", "pending"], None)
+            .request(
+                Method::GET,
+                &["invites", "count", "pending"],
+                None,
+                crate::http::retry::Policy::Service,
+            )
             .await?;
         success(&response)?;
         std::str::from_utf8(&response.body)
@@ -131,6 +154,7 @@ impl Realms<'_> {
                 Method::POST,
                 &["worlds", &id.to_string(), "join"],
                 Some(&body),
+                crate::http::retry::Policy::Single,
             )
             .await?;
         if matches!(response.status.as_u16(), 277 | 503)
@@ -147,52 +171,57 @@ impl Realms<'_> {
         Ok(Join::Ready(address))
     }
 
-    /// Retries only the specific version rejection after a bounded compatibility search.
+    /// Shares one call budget across safe resends and version compatibility negotiation.
     async fn request(
         &mut self,
         method: Method,
         path: &[&str],
         body: Option<&[u8]>,
+        policy: crate::http::retry::Policy,
     ) -> Result<Response, Error> {
-        let sent = self
-            .state
-            .accepted_version
-            .as_deref()
-            .unwrap_or(&self.config.game_version)
-            .to_owned();
-        let response = self.send(method.clone(), path, body, &sent).await?;
-        if !version::rejected(&response) || !self.state.may_search(self.http.now()) {
-            return Ok(response);
-        }
-        for candidate in version::candidates(&self.config.game_version) {
-            if candidate == sent {
-                continue;
-            }
-            let compatible = self
-                .send(
-                    Method::GET,
-                    &["mco", "client", "compatible"],
-                    None,
-                    &candidate,
-                )
-                .await;
-            let Ok(compatible) = compatible else {
-                self.state.failed(self.http.now());
-                return Ok(response);
-            };
-            if compatible.status != StatusCode::OK {
-                self.state.failed(self.http.now());
+        crate::http::call::run(async {
+            let sent = self
+                .state
+                .accepted_version
+                .as_deref()
+                .unwrap_or(&self.config.game_version)
+                .to_owned();
+            let response = self.send(method.clone(), path, body, &sent, policy).await?;
+            if !version::rejected(&response) || !self.state.may_search(self.http.now()) {
                 return Ok(response);
             }
-            if std::str::from_utf8(&compatible.body)
-                .is_ok_and(|value| value.trim().eq_ignore_ascii_case("COMPATIBLE"))
-            {
-                self.state.accepted(candidate.clone());
-                return self.send(method, path, body, &candidate).await;
+            for candidate in version::candidates(&self.config.game_version) {
+                if candidate == sent {
+                    continue;
+                }
+                let compatible = self
+                    .send(
+                        Method::GET,
+                        &["mco", "client", "compatible"],
+                        None,
+                        &candidate,
+                        crate::http::retry::Policy::Service,
+                    )
+                    .await;
+                let Ok(compatible) = compatible else {
+                    self.state.failed(self.http.now());
+                    return Ok(response);
+                };
+                if compatible.status != StatusCode::OK {
+                    self.state.failed(self.http.now());
+                    return Ok(response);
+                }
+                if std::str::from_utf8(&compatible.body)
+                    .is_ok_and(|value| value.trim().eq_ignore_ascii_case("COMPATIBLE"))
+                {
+                    self.state.accepted(candidate.clone());
+                    return self.send(method, path, body, &candidate, policy).await;
+                }
             }
-        }
-        self.state.failed(self.http.now());
-        Ok(response)
+            self.state.failed(self.http.now());
+            Ok(response)
+        })
+        .await
     }
 
     /// Builds one version-pinned request before execution and invalidates an unauthorized issuance.
@@ -202,6 +231,7 @@ impl Realms<'_> {
         path: &[&str],
         body: Option<&[u8]>,
         version: &str,
+        policy: crate::http::retry::Policy,
     ) -> Result<Response, Error> {
         let mut url = self.base.clone();
         url.path_segments_mut()
@@ -226,7 +256,7 @@ impl Realms<'_> {
         }
         let response = self
             .http
-            .send(request.build().map_err(crate::Error::from)?)
+            .send_retrying(request.build().map_err(crate::Error::from)?, policy)
             .await?;
         if response.status == StatusCode::UNAUTHORIZED {
             self.xbox.reject(&token);

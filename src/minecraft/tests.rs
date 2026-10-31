@@ -77,7 +77,7 @@ async fn explicit_discovery_reuses_one_request_without_authorization_or_multipla
 }
 
 /// Failed discovery never installs a poisoned cache entry or forces a replacement account owner.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn explicit_discovery_failure_is_retryable_without_minting() {
     let mut step = 0;
     let (address, server) = fixture_headers(move |target, headers, body| {
@@ -86,11 +86,11 @@ async fn explicit_discovery_failure_is_retryable_without_minting() {
         assert!(headers.to_ascii_lowercase().starts_with("get "));
         assert!(!headers.to_ascii_lowercase().contains("authorization:"));
         assert!(body.is_empty());
-        if step <= 2 { return (503, Vec::new(), json!({"error":"synthetic unavailable"})); }
+        if step <= 5 { return (503, Vec::new(), json!({"error":"synthetic unavailable"})); }
         (200, Vec::new(), json!({"result":{"serviceEnvironments":{"auth":{"prod":{
             "serviceUri":"https://synthetic-service.invalid/", "playFabTitleId":"AB12", "issuer":"https://synthetic-issuer.invalid/"
         }}}}}))
-    }, 3).await;
+    }, 6).await;
     let mut minecraft = discovery_owner(address);
     let session = minecraft.session_id();
     assert!(matches!(

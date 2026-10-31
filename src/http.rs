@@ -1,5 +1,6 @@
 //! Bounded, unauthenticated HTTP acquisition and response-clock correction.
 
+pub(crate) mod call;
 pub(crate) mod retry;
 
 use crate::Error;
@@ -237,16 +238,30 @@ impl Http {
         request: Request,
         policy: retry::Policy,
     ) -> Result<Response, Error> {
+        self.send_retrying_with_limit(request, policy, RESPONSE_LIMIT)
+            .await
+    }
+
+    /// Applies the owner's resend policy without changing its response byte limit.
+    pub(crate) async fn send_retrying_with_limit(
+        &mut self,
+        request: Request,
+        policy: retry::Policy,
+        response_limit: usize,
+    ) -> Result<Response, Error> {
         let mut retry = retry::Retry::new(policy);
+        let template = request.try_clone();
+        let mut attempt = request;
         loop {
-            let mut attempt = request
-                .try_clone()
-                .ok_or(Error::Invalid("non-replayable acquisition request"))?;
             retry.begin(&mut attempt);
-            let result = self.send(attempt).await;
+            let result = self.send_with_limit(attempt, response_limit).await;
             if !retry.wait(&result, self.now()).await {
                 return result;
             }
+            let Some(next) = template.as_ref().and_then(Request::try_clone) else {
+                return result;
+            };
+            attempt = next;
         }
     }
 
@@ -273,6 +288,16 @@ impl Http {
             None => request,
         };
         let mut request = request;
+        if let Some(deadline) = call::deadline() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            *request.timeout_mut() = Some(
+                request
+                    .timeout()
+                    .copied()
+                    .unwrap_or(remaining)
+                    .min(remaining),
+            );
+        }
         let mut hosts = request.headers().get_all(HOST).iter();
         let redundant_host = hosts.next().is_some_and(|host| {
             host.as_bytes()
