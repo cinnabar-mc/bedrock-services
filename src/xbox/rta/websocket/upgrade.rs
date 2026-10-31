@@ -99,13 +99,19 @@ fn validate_response(bytes: &[u8], request: &ConnectionRequest) -> Result<(), So
     hash.update(key.as_bytes());
     hash.update(ACCEPT_GUID);
     let accept = STANDARD.encode(hash.finish().as_ref());
-    let connection = std::str::from_utf8(single(response.headers, "connection")?)
-        .map_err(|_| SocketError::Protocol)?;
+    let connected = response
+        .headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case("connection"))
+        .filter_map(|header| std::str::from_utf8(header.value).ok())
+        .any(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+        });
     if response.version != Some(1)
         || !single(response.headers, "upgrade")?.eq_ignore_ascii_case(b"websocket")
-        || !connection
-            .split(',')
-            .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+        || !connected
         || single(response.headers, "sec-websocket-accept")? != accept.as_bytes()
         || single(response.headers, "sec-websocket-protocol")? != request.subprotocol().as_bytes()
         || response.headers.iter().any(|h| {

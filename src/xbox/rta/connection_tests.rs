@@ -24,6 +24,25 @@ const SIGNED: &[&str] = &[
     "accept",
 ];
 
+/// Upgrade acquisition accepts token lists and repeated fields without replacing signed bytes.
+#[test]
+fn connection_tokens_regression() {
+    for value in ["keep-alive, Upgrade", "upgrade, keep-alive"] {
+        let mut fields = headers();
+        fields.insert("connection", HeaderValue::from_static(value));
+        assert!(validate_upgrade(&fields).is_ok());
+        assert_eq!(fields["connection"], value);
+    }
+    let mut fields = headers();
+    fields.insert("connection", HeaderValue::from_static("keep-alive"));
+    fields.append("connection", HeaderValue::from_static("UpGrAdE"));
+    assert!(validate_upgrade(&fields).is_ok());
+    for value in ["keep-alive", "notupgrade"] {
+        fields.insert("connection", HeaderValue::from_static(value));
+        assert!(validate_upgrade(&fields).is_err());
+    }
+}
+
 /// Builds complete original synthetic transport upgrade headers before account signing.
 fn headers() -> HeaderMap {
     let mut headers = HeaderMap::new();

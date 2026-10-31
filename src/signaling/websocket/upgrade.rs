@@ -40,9 +40,10 @@ pub(super) fn validate_upgrade(
         .get(UPGRADE)
         .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
     let connected = headers
-        .get(CONNECTION)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| {
             value
                 .split(',')
                 .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))

@@ -21,6 +21,36 @@ use super::test_support::pair_with_initial;
 
 const TEST_NETWORK_ID: u64 = 7;
 
+/// Equivalent combined and repeated Connection token lists permit the same negotiated upgrade.
+#[test]
+fn repeated_upgrade_connection_regression() {
+    for repeated in [false, true] {
+        let mut response = http::Response::builder()
+            .status(101)
+            .header("upgrade", "websocket")
+            .body(())
+            .unwrap();
+        response.headers_mut().insert(
+            "connection",
+            HeaderValue::from_static(if repeated {
+                "keep-alive"
+            } else {
+                "keep-alive, Upgrade"
+            }),
+        );
+        if repeated {
+            response
+                .headers_mut()
+                .append("connection", HeaderValue::from_static("UpGrAdE"));
+        }
+        assert!(upgrade::validate_upgrade(&response).is_ok());
+        response
+            .headers_mut()
+            .insert("connection", HeaderValue::from_static("notupgrade"));
+        assert!(upgrade::validate_upgrade(&response).is_err());
+    }
+}
+
 /// Extracts one JSON message while ignoring no application frames accidentally.
 async fn read_json(server: &mut WebSocketStream<TcpStream>) -> Value {
     let message = server.next().await.unwrap().unwrap();

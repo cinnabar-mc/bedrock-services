@@ -24,6 +24,29 @@ fn response(request: &ConnectionRequest, status: u16, extra: &str) -> Vec<u8> {
     format!("HTTP/1.1 {status} Fixture\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: {}\r\n{extra}\r\n", request.subprotocol()).into_bytes()
 }
 
+/// Repeated Connection fields carry the same token list as the combined representation.
+#[tokio::test]
+async fn repeated_connection_regression() {
+    let (_, request) = request().await;
+    let valid = String::from_utf8(response(&request, 101, "")).unwrap();
+    for connection in [
+        "Connection: keep-alive\r\nConnection: UpGrAdE",
+        "Connection: keep-alive, Upgrade",
+    ] {
+        let bytes = valid.replace("Connection: keep-alive, Upgrade", connection);
+        assert!(validate_response(bytes.as_bytes(), &request).is_ok());
+    }
+    assert!(
+        validate_response(
+            valid
+                .replace("keep-alive, Upgrade", "notupgrade")
+                .as_bytes(),
+            &request
+        )
+        .is_err()
+    );
+}
+
 /// Sends actual TLS HTTP bytes to the production bounded parser, without starting an RTA epoch on rejection.
 async fn exchange(request: &ConnectionRequest, response: Vec<u8>) -> Result<Socket, SocketError> {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

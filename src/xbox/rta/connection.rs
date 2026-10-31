@@ -179,7 +179,6 @@ fn validate_upgrade(headers: &HeaderMap) -> Result<(), Error> {
     let authority = &endpoint[url::Position::BeforeHost..url::Position::AfterPort];
     for (name, expected) in [
         ("host", authority),
-        ("connection", "Upgrade"),
         ("upgrade", "websocket"),
         ("sec-websocket-version", "13"),
         ("sec-websocket-protocol", SUBPROTOCOL),
@@ -195,6 +194,18 @@ fn validate_upgrade(headers: &HeaderMap) -> Result<(), Error> {
         {
             return Err(Error::Invalid("upgrade headers"));
         }
+    }
+    if !headers
+        .get_all("connection")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+        })
+    {
+        return Err(Error::Invalid("upgrade headers"));
     }
     let key = headers
         .get("sec-websocket-key")
