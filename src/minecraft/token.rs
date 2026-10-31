@@ -27,6 +27,7 @@ pub struct Configuration {
 pub struct Authorization {
     header: Zeroizing<String>,
     expires: OffsetDateTime,
+    claims_expiry: Option<i64>,
     messaging_id: Uuid,
     treatments: Vec<String>,
     configurations: HashMap<String, Configuration>,
@@ -64,7 +65,11 @@ impl Authorization {
 
     /// Reserves the service's one-minute refresh margin using caller time.
     pub(crate) fn reusable(&self, now: SystemTime) -> bool {
-        OffsetDateTime::from(now) < self.expires - time::Duration::minutes(1)
+        let now = OffsetDateTime::from(now);
+        now < self.expires - time::Duration::minutes(1)
+            && self.claims_expiry.is_none_or(|expiry| {
+                now.unix_timestamp() <= expiry.saturating_add(CLAIMS_LEEWAY_SECONDS)
+            })
     }
 }
 
@@ -129,6 +134,7 @@ impl TokenResponse {
         let authorization = Authorization {
             header: Zeroizing::new(self.authorization_header),
             expires,
+            claims_expiry: claims.exp,
             messaging_id: claims.pmid,
             treatments: self.treatments,
             configurations: self.configurations,
@@ -198,5 +204,34 @@ impl MintResponse {
             public_key,
             expires,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    /// Reuse honors both the JWT leeway and the response refresh cutoff using caller time.
+    #[test]
+    fn credential_claim_expiry_regression() {
+        let payload =
+            URL_SAFE_NO_PAD.encode(json!({"pmid":Uuid::from_u128(7),"exp":600}).to_string());
+        let response: TokenResponse = serde_json::from_value(json!({
+            "authorizationHeader":format!("MCToken synthetic.{payload}.signature"),
+            "validUntil":"1970-01-01T01:00:00Z"
+        }))
+        .unwrap();
+        let credential = response.authorization(UNIX_EPOCH).unwrap();
+        assert!(credential.reusable(UNIX_EPOCH + Duration::from_secs(900)));
+        assert!(!credential.reusable(UNIX_EPOCH + Duration::from_secs(901)));
+        assert!(!credential.reusable(UNIX_EPOCH + Duration::from_secs(1200)));
+        assert!(
+            credential
+                .snapshot()
+                .restore(UNIX_EPOCH + Duration::from_secs(901))
+                .is_err()
+        );
     }
 }
