@@ -122,8 +122,9 @@ fn services(address: std::net::SocketAddr, version: &str, protocol: u32) -> Mine
 }
 
 /// Exercises shared XSTS, persistent version negotiation, explicit membership and all join variants.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
+    crate::http::retry::with_virtual_retry_time(async {
     let version = "1.26.60.2";
     let protocol = 1014;
     let (address, server) = fixture(move |step, target, headers, body, address| {
@@ -253,6 +254,7 @@ async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
         .await
         .unwrap()
         .unwrap();
+    }).await
 }
 
 /// Malformed optional Realms discovery cannot redirect credentials or break auth discovery.

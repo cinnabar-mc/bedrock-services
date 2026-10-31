@@ -19,6 +19,17 @@ pub(crate) enum Policy {
 
 pub(crate) const DEFAULT_ATTEMPTS: u8 = 3;
 
+#[cfg(test)]
+tokio::task_local! { static VIRTUAL_WAITS: (); }
+
+/// Keeps fixture I/O on the real clock while advancing only admitted retry waits.
+#[cfg(test)]
+pub(crate) fn with_virtual_retry_time<T>(
+    operation: impl std::future::Future<Output = T>,
+) -> impl std::future::Future<Output = T> {
+    VIRTUAL_WAITS.scope((), Box::pin(operation))
+}
+
 /// Retains the first cutoff across attempts without spawning any work on cancellation.
 pub(crate) struct Retry {
     policy: Policy,
@@ -126,6 +137,13 @@ impl Retry {
         };
         if next >= self.deadline {
             return false;
+        }
+        #[cfg(test)]
+        if VIRTUAL_WAITS.try_with(|_| ()).is_ok() {
+            tokio::time::pause();
+            tokio::time::advance(next.saturating_duration_since(Instant::now())).await;
+            tokio::time::resume();
+            return Instant::now() < self.deadline;
         }
         tokio::time::sleep_until(next).await;
         Instant::now() < self.deadline

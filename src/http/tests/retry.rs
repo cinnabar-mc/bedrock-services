@@ -3,7 +3,7 @@ use crate::http::retry::Policy;
 use serde_json::Value;
 
 /// Real response bodies use the remainder of the call budget rather than a fresh client timeout.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn service_body_reads_keep_the_preparation_deadline() {
     for (body_time, succeeds) in [(14, true), (16, false)] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -24,7 +24,9 @@ async fn service_body_reads_keep_the_preparation_deadline() {
         let mut http = Http::fixture(address);
         let started = tokio::time::Instant::now();
         let operation = crate::http::call::run(async {
+            tokio::time::pause();
             tokio::time::advance(Duration::from_secs(25)).await;
+            tokio::time::resume();
             let request = http
                 .request(Method::GET, &format!("http://{address}/body"))
                 .build()?;
@@ -32,7 +34,9 @@ async fn service_body_reads_keep_the_preparation_deadline() {
         });
         let (result, ()) = tokio::join!(operation, async {
             observation.await.unwrap();
+            tokio::time::pause();
             tokio::time::advance(Duration::from_secs(body_time)).await;
+            tokio::time::resume();
             release.send(()).unwrap();
         });
         server.await.unwrap();

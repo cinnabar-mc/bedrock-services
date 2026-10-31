@@ -77,8 +77,9 @@ async fn explicit_discovery_reuses_one_request_without_authorization_or_multipla
 }
 
 /// Failed discovery never installs a poisoned cache entry or forces a replacement account owner.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn explicit_discovery_failure_is_retryable_without_minting() {
+    crate::http::retry::with_virtual_retry_time(async {
     let mut step = 0;
     let (address, server) = fixture_headers(move |target, headers, body| {
         step += 1;
@@ -109,6 +110,7 @@ async fn explicit_discovery_failure_is_retryable_without_minting() {
         "https://synthetic-issuer.invalid/"
     );
     assert_eq!(minecraft.session_id(), session);
+    }).await
 }
 
 /// Drives discovery and actual HTTP through Xbox, title NSAL, PlayFab and key-bound mint.

@@ -17,44 +17,47 @@ use tokio::{
 const EXPERIENCE: Uuid = Uuid::from_u128(17);
 
 /// The catalog's read-only POST can recover without changing its body or credential.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn catalog_search_retries_the_same_read_only_post() {
-    let mut step = 0;
-    let (address, server) = fixture_bytes(
-        move |path, headers, body| {
-            step += 1;
-            if step == 1 {
-                return (200, vec![], discovery(headers, None));
-            }
-            assert_eq!(path, "/gatherings-prefix/api/v2.0/discovery/blob/client");
-            assert_eq!(body, b"{}\n");
-            assert!(
-                headers
-                    .to_ascii_lowercase()
-                    .contains("authorization: mctoken original.")
-            );
-            if step == 2 {
-                (503, vec![], Vec::new())
-            } else {
-                (200, vec![], br#"{"data":{"Items":[]}}"#.to_vec())
-            }
-        },
-        3,
-    )
-    .await;
-    let mut services = services(address);
-    let result = services
-        .gatherings()
-        .await
-        .unwrap()
-        .search_items(&SearchFilter::default())
+    crate::http::retry::with_virtual_retry_time(async {
+        let mut step = 0;
+        let (address, server) = fixture_bytes(
+            move |path, headers, body| {
+                step += 1;
+                if step == 1 {
+                    return (200, vec![], discovery(headers, None));
+                }
+                assert_eq!(path, "/gatherings-prefix/api/v2.0/discovery/blob/client");
+                assert_eq!(body, b"{}\n");
+                assert!(
+                    headers
+                        .to_ascii_lowercase()
+                        .contains("authorization: mctoken original.")
+                );
+                if step == 2 {
+                    (503, vec![], Vec::new())
+                } else {
+                    (200, vec![], br#"{"data":{"Items":[]}}"#.to_vec())
+                }
+            },
+            3,
+        )
         .await;
-    if result.is_err() {
-        server.abort();
-    }
-    let served = server.await;
-    assert!(result.unwrap().items.is_empty());
-    served.unwrap();
+        let mut services = services(address);
+        let result = services
+            .gatherings()
+            .await
+            .unwrap()
+            .search_items(&SearchFilter::default())
+            .await;
+        if result.is_err() {
+            server.abort();
+        }
+        let served = server.await;
+        assert!(result.unwrap().items.is_empty());
+        served.unwrap();
+    })
+    .await
 }
 
 /// Supplies only public synthetic discovery, retaining the actual fixture host/path prefix.
