@@ -80,14 +80,15 @@ const DIVERGENCES: &[Divergence] = &[
     },
 ];
 
-/// Spawned peer; closing its stdin on drop ends the process.
+/// Spawned peer whose owner closes stdin and reaps it on drop.
 struct Oracle {
-    _child: Child,
-    input: ChildStdin,
+    child: Child,
+    input: Option<ChildStdin>,
     output: ChildStdout,
 }
 
 impl Oracle {
+    /// Starts one owned peer with explicit pipes.
     fn spawn(path: &std::ffi::OsStr) -> Self {
         let mut child = Command::new(path)
             .arg("serve")
@@ -98,20 +99,39 @@ impl Oracle {
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         Self {
-            _child: child,
-            input,
+            child,
+            input: Some(input),
             output,
         }
+    }
+
+    /// Closes stdin, reaps graceful exit, and terminates only this owned child after a finite grace.
+    fn shutdown(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.input.take();
+        let until = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= until {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let _ = self.child.kill();
+        self.child.wait()
     }
 
     /// Sends one length-prefixed JSON request and returns its reply.
     fn call(&mut self, request: Value) -> Value {
         let bytes = serde_json::to_vec(&request).unwrap();
         self.input
+            .as_mut()
+            .unwrap()
             .write_all(&u32::try_from(bytes.len()).unwrap().to_be_bytes())
             .unwrap();
-        self.input.write_all(&bytes).unwrap();
-        self.input.flush().unwrap();
+        self.input.as_mut().unwrap().write_all(&bytes).unwrap();
+        self.input.as_mut().unwrap().flush().unwrap();
         let mut length = [0; 4];
         self.output.read_exact(&mut length).unwrap();
         let mut reply = vec![0; u32::from_be_bytes(length) as usize];
@@ -119,6 +139,72 @@ impl Oracle {
         let reply: Value = serde_json::from_slice(&reply).unwrap();
         assert!(reply.get("error").is_none(), "oracle: {reply}");
         reply
+    }
+}
+
+impl Drop for Oracle {
+    /// Collects the exit status of the exact child started by this owner.
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+/// Supplies an EOF-driven child process without requiring an external oracle executable.
+#[test]
+fn oracle_eof_child_fixture() {
+    if std::env::var_os("BEDROCK_SERVICES_EOF_CHILD").is_some() {
+        std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
+    }
+}
+
+/// Starts an owned EOF-driven fixture using the current portable test executable.
+fn eof_oracle() -> Oracle {
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "minecraft::trace_tests::oracle_eof_child_fixture",
+        ])
+        .env("BEDROCK_SERVICES_EOF_CHILD", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    Oracle {
+        input: child.stdin.take(),
+        output: child.stdout.take().unwrap(),
+        child,
+    }
+}
+
+/// Explicit shutdown waits for the owned EOF-driven peer and collects its successful status.
+#[test]
+fn oracle_shutdown_reaps_the_child() {
+    let mut oracle = eof_oracle();
+    assert!(oracle.shutdown().unwrap().success());
+    assert!(oracle.child.try_wait().unwrap().unwrap().success());
+}
+
+/// Dropping the owner removes its exact child from the operating system's process table.
+#[cfg(unix)]
+#[test]
+fn oracle_drop_reaps_the_child_regression() {
+    let oracle = eof_oracle();
+    let pid = oracle.child.id().to_string();
+    drop(oracle);
+    let until = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid])
+            .output()
+            .unwrap();
+        if output.stdout.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "owned child was not reaped"
+        );
+        std::thread::yield_now();
     }
 }
 
