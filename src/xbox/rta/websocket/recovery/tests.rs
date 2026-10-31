@@ -2,6 +2,9 @@ use super::*;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 
+/// Discards events in tests that only exercise recovery admission.
+fn ignore_event(_: Event) {}
+
 /// Uses real original upgrade credentials and transport, then retires only that socket.
 async fn disconnected(desired: usize) -> (Account, RtaSocket) {
     let (account, mut request) = super::super::test_support::request().await;
@@ -28,7 +31,11 @@ async fn canceled_recovery_retains_desires_and_backoff() {
     let until = tokio::time::Instant::now() + Duration::from_secs(60);
     socket.recovery.next = Some(until);
     {
-        let recovery = socket.recover(&mut account, Instant::now() + Duration::from_secs(120));
+        let recovery = socket.recover(
+            &mut account,
+            Instant::now() + Duration::from_secs(120),
+            ignore_event,
+        );
         tokio::pin!(recovery);
         poll_fn(|cx| {
             assert!(recovery.as_mut().poll(cx).is_pending());
@@ -41,7 +48,11 @@ async fn canceled_recovery_retains_desires_and_backoff() {
     assert_eq!(socket.recovery.next, Some(until));
     assert!(matches!(
         socket
-            .recover(&mut account, Instant::now() - Duration::from_secs(1))
+            .recover(
+                &mut account,
+                Instant::now() - Duration::from_secs(1),
+                ignore_event
+            )
             .await,
         Err(RecoveryError::Deadline)
     ));
@@ -55,16 +66,23 @@ async fn empty_recovery_is_network_free_and_wrong_account_is_fenced() {
     let (mut other, _) = super::super::test_support::request().await;
     assert!(matches!(
         socket
-            .recover(&mut other, Instant::now() + Duration::from_secs(1))
+            .recover(
+                &mut other,
+                Instant::now() + Duration::from_secs(1),
+                ignore_event
+            )
             .await,
         Err(RecoveryError::State(Error::WrongAccount))
     ));
     assert!(
         socket
-            .recover(&mut account, Instant::now() + Duration::from_secs(1))
+            .recover(
+                &mut account,
+                Instant::now() + Duration::from_secs(1),
+                ignore_event
+            )
             .await
-            .unwrap()
-            .is_empty()
+            .is_ok()
     );
 }
 
@@ -83,7 +101,11 @@ async fn terminal_sign_in_failure_survives_recovery() {
     account.authorizations.clear();
     tokio::time::pause();
     let result = socket
-        .recover(&mut account, Instant::now() + Duration::from_secs(60))
+        .recover(
+            &mut account,
+            Instant::now() + Duration::from_secs(60),
+            ignore_event,
+        )
         .await;
     assert!(matches!(
         result,
@@ -198,8 +220,9 @@ async fn replacement(
 async fn malformed_restoration_is_terminal() {
     let (mut account, socket) = disconnected(1).await;
     let (mut socket, mut peer, _) = replacement(&mut account, socket).await;
+    let mut on_event = ignore_event;
     let (result, ()) = tokio::join!(
-        socket.restore_subscriptions(Instant::now() + Duration::from_secs(15)),
+        socket.restore_subscriptions(Instant::now() + Duration::from_secs(15), &mut on_event),
         async {
             peer.next().await.unwrap().unwrap();
             peer.send(Message::text("invalid-json")).await.unwrap();
@@ -233,14 +256,17 @@ async fn rejected_completion_survives_cancellation_of_sibling_restore() {
         cancel_rx.await.unwrap();
     });
     let sequence;
+    let mut delivered = Vec::new();
+    let mut on_event = |event| delivered.push(event);
     {
         let guard = Guard {
             socket: &mut socket,
             complete: false,
+            on_event: &mut on_event,
         };
         let restoring = guard
             .socket
-            .restore_subscriptions(Instant::now() + Duration::from_secs(15));
+            .restore_subscriptions(Instant::now() + Duration::from_secs(15), guard.on_event);
         tokio::pin!(restoring);
         sequence = tokio::select! {
             result=&mut restoring => { drop(result); panic!("held sibling completed before cancellation"); },
@@ -253,24 +279,30 @@ async fn rejected_completion_survives_cancellation_of_sibling_restore() {
         socket.state.subscriptions().collect::<Vec<_>>(),
         vec![handles[1]]
     );
-    let mut failures = 0;
+    assert_eq!(
+        delivered
+            .iter()
+            .filter(|event| matches!(event, Event::Failed { .. }))
+            .count(),
+        1
+    );
+    assert!(delivered.iter().any(|event| matches!(event, Event::Failed {request, subscription, cause: crate::xbox::rta::Failure::Status(1)}
+        if *subscription == handles[0] && *request == RequestId { epoch, sequence })));
+    assert!(matches!(delivered.last(), Some(Event::Disconnected)));
     while let Ok(event) = socket.drive().await {
-        if let Event::Failed {
-            request,
-            subscription,
-            cause: crate::xbox::rta::Failure::Status(status),
-        } = event
-        {
-            assert_eq!(status, 1);
-            assert_eq!(subscription, handles[0]);
-            assert_eq!(request, RequestId { epoch, sequence });
-            failures += 1;
-        }
+        assert!(!matches!(
+            event,
+            Event::Failed {
+                cause: crate::xbox::rta::Failure::Status(_),
+                ..
+            }
+        ));
     }
-    assert_eq!(failures, 1);
     let (mut socket, mut peer, _) = replacement(&mut account, socket).await;
-    let (events, peer) = tokio::join!(
-        socket.restore_subscriptions(Instant::now() + Duration::from_secs(15)),
+    let mut events = Vec::new();
+    let mut on_event = |event| events.push(event);
+    let (restored, peer) = tokio::join!(
+        socket.restore_subscriptions(Instant::now() + Duration::from_secs(15), &mut on_event),
         async move {
             let message = peer.next().await.unwrap().unwrap();
             let request: Value = serde_json::from_slice(message.as_payload()).unwrap();
@@ -282,10 +314,9 @@ async fn rejected_completion_survives_cancellation_of_sibling_restore() {
             peer
         }
     );
-    let events = events.unwrap().unwrap();
+    assert!(restored.unwrap());
     assert_eq!(events.len(), 1);
     assert!(matches!(&events[0],Event::Subscribed{subscription,..} if *subscription==handles[1]));
-    assert!(socket.recovery_events.is_empty());
     drop(peer);
 }
 
@@ -302,4 +333,65 @@ async fn recovery_backoff_is_capped_and_retains_its_deadline() {
     let now = tokio::time::Instant::now();
     backoff.failed(now, 1.0);
     assert_eq!(backoff.next, Some(now + Duration::from_secs(90)));
+}
+
+/// Changes for one restored resource stay ordered while a sibling is still restoring.
+#[tokio::test]
+async fn restoration_event_delivery_regression() {
+    let (mut account, mut request) = super::super::test_support::request().await;
+    let (transport, peer) = super::super::test_support::transport(&request, None).await;
+    let state = request.start().unwrap();
+    let mut socket = RtaSocket::from_socket(transport, state, Options::default());
+    for _ in 0..2 {
+        socket
+            .subscribe(
+                socket.connection().social_resource(),
+                Instant::now() + Duration::from_secs(15),
+            )
+            .unwrap();
+    }
+    socket.abort();
+    drop(peer);
+    let handles = socket.state.subscriptions().collect::<Vec<_>>();
+    let (mut socket, mut peer, _) = replacement(&mut account, socket).await;
+    let count = MAX_QUEUED_EVENTS + 10;
+    let mut events = Vec::new();
+    let mut on_event = |event| events.push(event);
+    let (restored, ()) = tokio::join!(
+        socket.restore_subscriptions(Instant::now() + Duration::from_secs(15), &mut on_event),
+        async {
+            let first = peer.next().await.unwrap().unwrap();
+            let first: Value = serde_json::from_slice(first.as_payload()).unwrap();
+            peer.send(Message::text(
+                json!([1,first[1],0,800,{"version":0}]).to_string(),
+            ))
+            .await
+            .unwrap();
+            let second = peer.next().await.unwrap().unwrap();
+            let second: Value = serde_json::from_slice(second.as_payload()).unwrap();
+            for version in 1..=count {
+                peer.send(Message::text(
+                    json!([3,800,{"version":version}]).to_string(),
+                ))
+                .await
+                .unwrap();
+            }
+            peer.send(Message::text(
+                json!([1,second[1],0,801,{"version":0}]).to_string(),
+            ))
+            .await
+            .unwrap();
+        }
+    );
+    assert!(restored.unwrap());
+    assert_eq!(events.len(), count + 2);
+    assert!(matches!(events[0],Event::Subscribed{subscription,..} if subscription == handles[0]));
+    for (index, event) in events[1..=count].iter().enumerate() {
+        assert!(
+            matches!(event,Event::Changed{subscription,data} if *subscription == handles[0] && data["version"] == index + 1)
+        );
+    }
+    assert!(
+        matches!(events[count+1],Event::Subscribed{subscription,..} if subscription == handles[1])
+    );
 }

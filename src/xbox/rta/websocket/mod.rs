@@ -5,7 +5,7 @@
 //! poll [`RtaSocket::drive`] to process messages, automatic Pongs and deadlines.
 //! There is no spawned task, internal runtime, heartbeat policy or automatic retry.
 //! After disconnection, [`RtaSocket::recover`] can reacquire and restore desired
-//! subscriptions with backoff inside the caller's deadline. Apply its returned snapshots
+//! subscriptions with backoff inside the caller's deadline. Apply callback snapshots
 //! before processing later changes and rebind any affected MPSD memberships.
 //! Dropping drive preserves partial writes; dropping this owner drops the socket.
 //! Cancellation/expiry retires the whole socket as required by the pure owner.
@@ -160,7 +160,6 @@ pub struct RtaSocket {
     terminal: SocketError,
     timer: Pin<Box<Sleep>>,
     recovery: recovery::Backoff,
-    recovery_events: VecDeque<Event>,
 }
 
 impl RtaSocket {
@@ -196,7 +195,6 @@ impl RtaSocket {
             terminal: SocketError::Closed,
             timer: Box::pin(tokio::time::sleep(Duration::ZERO)),
             recovery: recovery::Backoff::default(),
-            recovery_events: VecDeque::new(),
         }
     }
 
@@ -346,9 +344,6 @@ impl RtaSocket {
     /// # Errors
     /// Returns the same redacted terminal cause after retained events/completions drain.
     pub async fn drive(&mut self) -> Result<Event, SocketError> {
-        if let Some(event) = self.recovery_events.pop_front() {
-            return Ok(event);
-        }
         poll_fn(|cx| self.poll_drive(cx)).await
     }
 

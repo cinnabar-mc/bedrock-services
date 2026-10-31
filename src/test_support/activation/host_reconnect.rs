@@ -185,7 +185,8 @@ mod tests {
             directory.publish_activity(&session).await.unwrap();
             recovery.disconnect_ready(&mut socket).await;
             assert!(matches!(socket.drive().await, Ok(rta::Event::Disconnected)));
-            let events = account.recover_rta(&mut socket, deadline).await.unwrap();
+            let mut events = Vec::new();
+            account.recover_rta(&mut socket, deadline, |event| events.push(event)).await.unwrap();
             assert!(events.iter().any(|event| matches!(event, rta::Event::Subscribed { subscription: got, .. } if *got == subscription)));
             let replacement = socket.connection().directory_binding(subscription, stable).unwrap();
             let mut directory = account.mpsd();

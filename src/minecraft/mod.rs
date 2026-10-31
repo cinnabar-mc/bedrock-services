@@ -245,7 +245,7 @@ impl Minecraft {
     }
 
     /// Recovers this account's disconnected RTA socket within the caller's original deadline.
-    /// Apply returned subscription snapshots in order and rebind affected MPSD memberships.
+    /// Apply callback subscription snapshots in order and rebind affected MPSD memberships.
     /// Cancellation retains desired handles and retry backoff while dropping partial transport work.
     ///
     /// # Errors
@@ -255,8 +255,9 @@ impl Minecraft {
         &mut self,
         socket: &mut xbox::rta::websocket::RtaSocket,
         deadline: std::time::Instant,
-    ) -> Result<Vec<xbox::rta::Event>, xbox::rta::websocket::RecoveryError> {
-        socket.recover(&mut self.xbox, deadline).await
+        on_event: impl FnMut(xbox::rta::Event),
+    ) -> Result<(), xbox::rta::websocket::RecoveryError> {
+        socket.recover(&mut self.xbox, deadline, on_event).await
     }
 
     /// Returns the game-session identifier shared by credential exchange and every mint.

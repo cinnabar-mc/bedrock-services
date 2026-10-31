@@ -69,7 +69,8 @@ async fn hosted_fixture_cancels_one_applied_properties_response_before_rebind_an
             let mut binding = original;
             let mut rebound = !recover;
             if recover {
-                let events = account.recover_rta(&mut socket, deadline).await.unwrap();
+                let mut events = Vec::new();
+            account.recover_rta(&mut socket, deadline, |event| events.push(event)).await.unwrap();
                 assert!(events.iter().any(|event| matches!(event, rta::Event::Subscribed { subscription: got, .. } if *got == subscription)));
                 binding = socket.connection().directory_binding(subscription, stable).unwrap();
                 let mut directory = account.mpsd();

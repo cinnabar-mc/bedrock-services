@@ -68,11 +68,63 @@ pub(super) async fn run(
                 _ => {}
             }
         }
-        let events = owner
-            .recover_rta(socket, Instant::now() + Duration::from_secs(15))
+        let mut events = Vec::new();
+        owner
+            .recover_rta(socket, Instant::now() + Duration::from_secs(15), |event| {
+                if matches!(event, Event::Disconnected) {
+                    events.retain(|event| {
+                        matches!(
+                            event,
+                            Event::Failed {
+                                cause: rta::Failure::Status(_),
+                                ..
+                            }
+                        )
+                    });
+                }
+                events.push(event)
+            })
             .await
             .map_err(|_| Error::Invalid("trace RTA recovery"))?;
-        assert!(events.iter().any(|event|matches!(event,Event::Subscribed{subscription,..} if peer.rta.subscriptions.contains(subscription))));
+        let restored = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Subscribed { subscription, .. } => Some(*subscription),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let rejected = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Failed {
+                    subscription,
+                    cause,
+                    ..
+                } => {
+                    assert_eq!(*cause, rta::Failure::Status(1));
+                    Some(*subscription)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let active = socket.connection().subscriptions().collect::<Vec<_>>();
+        assert!(complete_restoration(
+            &peer.rta.subscriptions,
+            &restored,
+            &rejected,
+            &active
+        ));
+        for subscription in &restored {
+            assert!(
+                socket
+                    .connection()
+                    .directory_binding(*subscription, uuid::Uuid::from_u128(11))
+                    .is_ok()
+            );
+        }
+        if !rejected.is_empty() {
+            return Err(Error::Invalid("trace RTA resource rejection"));
+        }
         if let Some(session) = peer.rta.membership.as_mut() {
             let binding = socket
                 .connection()
@@ -84,25 +136,6 @@ pub(super) async fn run(
             ) {
                 return Err(Error::Invalid("trace membership rebind"));
             }
-        }
-        let failures = events
-            .iter()
-            .filter(|event| matches!(event, Event::Failed { .. }))
-            .collect::<Vec<_>>();
-        if !failures.is_empty() {
-            assert_eq!(failures.len(), 1, "a rejection must be delivered once");
-            match failures[0] {
-                Event::Failed {
-                    subscription,
-                    cause,
-                    ..
-                } => {
-                    assert_eq!(*subscription, peer.rta.subscriptions[0]);
-                    assert_eq!(*cause, rta::Failure::Status(1));
-                }
-                _ => unreachable!(),
-            }
-            return Err(Error::Invalid("trace RTA resource rejection"));
         }
         return Ok(());
     }
@@ -173,4 +206,41 @@ pub(super) async fn run(
             _ => return Err(Error::Invalid("trace join exhausted")),
         }
     }
+}
+
+/// Requires exactly one outcome per original handle and the corresponding active resource set.
+fn complete_restoration<T: Eq>(
+    expected: &[T],
+    restored: &[T],
+    rejected: &[T],
+    active: &[T],
+) -> bool {
+    rejected.len() <= 1
+        && rejected
+            .first()
+            .is_none_or(|id| Some(id) == expected.first())
+        && restored.len() + rejected.len() == expected.len()
+        && expected.iter().all(|id| {
+            restored
+                .iter()
+                .chain(rejected)
+                .filter(|got| *got == id)
+                .count()
+                == 1
+        })
+        && active.len() == restored.len()
+        && restored
+            .iter()
+            .all(|id| active.iter().filter(|got| *got == id).count() == 1)
+}
+
+/// A missing sibling or repeated completion cannot pass a recovery trace.
+#[test]
+fn recovery_outcomes_cover_every_original_subscription() {
+    assert!(!complete_restoration(&[1, 2], &[1], &[], &[1]));
+    assert!(!complete_restoration(&[1, 2], &[1, 1], &[], &[1]));
+    assert!(!complete_restoration(&[1, 2], &[1, 2], &[], &[1]));
+    assert!(complete_restoration(&[1, 2], &[1, 2], &[], &[1, 2]));
+    assert!(complete_restoration(&[1, 2], &[2], &[1], &[2]));
+    assert!(!complete_restoration(&[1, 2], &[1], &[2], &[1]));
 }

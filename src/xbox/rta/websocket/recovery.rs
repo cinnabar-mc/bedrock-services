@@ -33,28 +33,29 @@ impl Backoff {
     }
 }
 
-struct Guard<'a> {
+struct Guard<'a, F: FnMut(Event)> {
     socket: &'a mut RtaSocket,
     complete: bool,
+    on_event: &'a mut F,
 }
 
-impl Drop for Guard<'_> {
+impl<F: FnMut(Event)> Drop for Guard<'_, F> {
     /// Cancels partial handshakes on their physical socket while retaining desired local handles.
     fn drop(&mut self) {
         if !self.complete {
             self.socket.interrupt_recovery();
+            (self.on_event)(Event::Disconnected);
         }
     }
 }
 
 impl RtaSocket {
-    /// Recovers a disconnected socket and restores its desired subscriptions before returning snapshots.
-    /// Drain the old socket's pending completions before calling. This method creates no task.
-    /// Keep driving the socket afterward and apply returned events in order,
-    /// including rebinding MPSD memberships from each new directory snapshot. Cancellation drops partial
-    /// transport work; desired handles and any scheduled backoff survive a later call.
-    /// An explicit service rejection returns a Failed event and retires only that desired resource.
-    /// Rejections survive interruption; drive can deliver them if recovery is canceled.
+    /// Recovers a disconnected socket and delivers restoration events as they arrive.
+    /// Drain pending completions first. Apply each snapshot before subsequent changes and rebind
+    /// affected MPSD memberships. The synchronous callback must consume events promptly.
+    /// Cancellation or a retried transport emits Disconnected, invalidating that epoch's snapshots;
+    /// desired handles and scheduled backoff survive. Rejections are delivered once and remove
+    /// only their desired resource. No event history or background task is retained.
     ///
     /// # Errors
     /// Returns terminal authentication, account/lifecycle or socket failures, or the caller's deadline.
@@ -63,7 +64,8 @@ impl RtaSocket {
         &mut self,
         account: &mut Account,
         deadline: Instant,
-    ) -> Result<Vec<Event>, RecoveryError> {
+        mut on_event: impl FnMut(Event),
+    ) -> Result<(), RecoveryError> {
         if Instant::now() >= deadline {
             return Err(RecoveryError::Deadline);
         }
@@ -73,18 +75,15 @@ impl RtaSocket {
         if self.state.scope.proof != *account.key.verifying_key() {
             return Err(Error::WrongAccount.into());
         }
-        let desired = self.state.subscriptions().count();
-        if self.recovery_events.len() + desired > MAX_QUEUED_EVENTS {
-            return Err(Error::Limit.into());
-        }
         if self.state.subscriptions().next().is_none() {
             self.abort();
             self.recovery = Backoff::default();
-            return Ok(self.recovery_events.drain(..).collect());
+            return Ok(());
         }
         let mut guard = Guard {
             socket: self,
             complete: false,
+            on_event: &mut on_event,
         };
         let result = tokio::time::timeout_at(deadline.into(), async {
             loop {
@@ -118,11 +117,13 @@ impl RtaSocket {
                             .await
                         {
                             Ok(()) => {
-                                if let Some(events) =
-                                    guard.socket.restore_subscriptions(deadline).await?
+                                if guard
+                                    .socket
+                                    .restore_subscriptions(deadline, guard.on_event)
+                                    .await?
                                 {
                                     guard.socket.recovery = Backoff::default();
-                                    return Ok(events);
+                                    return Ok(());
                                 }
                             }
                             Err(SocketError::UpgradeStatus(401)) => {
@@ -134,6 +135,7 @@ impl RtaSocket {
                     }
                 }
                 guard.socket.interrupt_recovery();
+                (guard.on_event)(Event::Disconnected);
                 guard
                     .socket
                     .recovery
@@ -146,17 +148,8 @@ impl RtaSocket {
         result
     }
 
-    /// Drops epoch-dependent snapshots while preserving terminal rejections until the caller receives them.
+    /// Retires epoch-dependent transport state while preserving desired local handles.
     fn interrupt_recovery(&mut self) {
-        self.recovery_events.retain(|event| {
-            matches!(
-                event,
-                Event::Failed {
-                    cause: crate::xbox::rta::Failure::Status(_),
-                    ..
-                }
-            )
-        });
         self.abort();
     }
 
@@ -164,17 +157,17 @@ impl RtaSocket {
     async fn restore_subscriptions(
         &mut self,
         deadline: Instant,
-    ) -> Result<Option<Vec<Event>>, RecoveryError> {
+        on_event: &mut impl FnMut(Event),
+    ) -> Result<bool, RecoveryError> {
         let subscriptions = self.state.subscriptions().collect::<Vec<_>>();
-        let count = subscriptions.len();
-        for (index, subscription) in subscriptions.into_iter().enumerate() {
+        for subscription in subscriptions {
             let until = deadline.min(Instant::now() + Duration::from_secs(15));
             let request = self.resubscribe(subscription, until)?;
             loop {
                 let event = match poll_fn(|cx| self.poll_drive(cx)).await {
-                    Ok(Event::Disconnected) if retryable_socket(self.terminal) => return Ok(None),
+                    Ok(Event::Disconnected) if retryable_socket(self.terminal) => return Ok(false),
                     Ok(Event::Disconnected) => return Err(self.terminal.into()),
-                    Err(error) if retryable_socket(error) => return Ok(None),
+                    Err(error) if retryable_socket(error) => return Ok(false),
                     Err(error) => return Err(error.into()),
                     Ok(
                         event @ Event::Failed {
@@ -182,30 +175,27 @@ impl RtaSocket {
                             ..
                         },
                     ) => event,
-                    Ok(Event::Failed { .. }) if retryable_socket(self.terminal) => return Ok(None),
+                    Ok(Event::Failed { .. }) if retryable_socket(self.terminal) => {
+                        return Ok(false);
+                    }
                     Ok(Event::Failed { .. }) => return Err(self.terminal.into()),
                     Ok(event) => event,
                 };
                 let ready = matches!(&event,Event::Subscribed { request:received,.. } | Event::Failed {request:received,..} if *received == request);
-                // Reserve one terminal completion for every restore that has not yet finished.
-                let remaining = count - index - usize::from(ready);
-                if self.recovery_events.len() + 1 + remaining > MAX_QUEUED_EVENTS {
-                    return Err(Error::Limit.into());
-                }
                 let rejected = match &event {
                     Event::Failed { subscription, .. } => Some(*subscription),
                     _ => None,
                 };
-                self.recovery_events.push_back(event);
                 if let Some(rejected) = rejected {
                     self.state.remove_idle(rejected)?;
                 }
+                on_event(event);
                 if ready {
                     break;
                 }
             }
         }
-        Ok(Some(self.recovery_events.drain(..).collect()))
+        Ok(true)
     }
 }
 
