@@ -113,8 +113,9 @@ impl PlayerMessaging<'_> {
             self.minecraft.discover().await?;
             let uri = self
                 .minecraft
-                .messaging_environment
+                .environments
                 .as_ref()
+                .and_then(|environments| environments.messaging.as_ref())
                 .and_then(|environment| environment.get("prod"))
                 .and_then(|environment| environment.get("serviceUri"))
                 .and_then(serde_json::Value::as_str)

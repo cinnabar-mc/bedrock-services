@@ -20,14 +20,23 @@ pub(crate) enum Policy {
 pub(crate) const DEFAULT_ATTEMPTS: u8 = 3;
 
 #[cfg(test)]
-tokio::task_local! { static VIRTUAL_WAITS: (); }
+tokio::task_local! { static VIRTUAL_WAITS: bool; }
 
 /// Keeps fixture I/O on the real clock while advancing only admitted retry waits.
 #[cfg(test)]
 pub(crate) fn with_virtual_retry_time<T>(
     operation: impl std::future::Future<Output = T>,
 ) -> impl std::future::Future<Output = T> {
-    VIRTUAL_WAITS.scope((), Box::pin(operation))
+    VIRTUAL_WAITS.scope(true, Box::pin(operation))
+}
+
+/// Carries a fixture's explicit clock policy into its anonymous lookup task.
+#[cfg(test)]
+pub(crate) fn inherit_retry_clock<T>(
+    operation: impl std::future::Future<Output = T>,
+) -> impl std::future::Future<Output = T> {
+    let virtual_time = VIRTUAL_WAITS.try_with(|enabled| *enabled).unwrap_or(false);
+    VIRTUAL_WAITS.scope(virtual_time, Box::pin(operation))
 }
 
 /// Retains the first cutoff across attempts without spawning any work on cancellation.
@@ -139,7 +148,7 @@ impl Retry {
             return false;
         }
         #[cfg(test)]
-        if VIRTUAL_WAITS.try_with(|_| ()).is_ok() {
+        if VIRTUAL_WAITS.try_with(|enabled| *enabled).unwrap_or(false) {
             tokio::time::pause();
             tokio::time::advance(next.saturating_duration_since(Instant::now())).await;
             tokio::time::resume();
@@ -185,6 +194,9 @@ pub(crate) fn transient_poll(error: &Error) -> bool {
 
 /// Shares typed transport causes while retaining each owner's decode policy.
 fn transport_failure(error: &Error, inspect_decode: bool) -> bool {
+    if let Error::Shared(source) = error {
+        return transport_failure(source, inspect_decode);
+    }
     if let Error::Status { status, .. } = error {
         return matches!(status.as_u16(), 408 | 429 | 500..=599 | 999);
     }

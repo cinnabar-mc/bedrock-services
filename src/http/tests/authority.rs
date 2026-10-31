@@ -191,7 +191,8 @@ async fn exchange(host: Host) -> Exchange {
         .tls_certs_only([reqwest::Certificate::from_der(ROOT).unwrap()])
         .timeout(Duration::from_secs(5))
         .build()
-        .unwrap();
+        .unwrap()
+        .into();
     let (request, signature) = request(
         &http,
         &format!("https://{authority}/protected?operation=read"),

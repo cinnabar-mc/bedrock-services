@@ -45,8 +45,9 @@ fn services(address: std::net::SocketAddr) -> Minecraft {
         play_fab_title_id: "AB12".into(),
         issuer: String::new(),
     });
-    minecraft.signaling_environment =
-        Some(json!({"prod":{"serviceUri":format!("http://{address}/prefix")}}));
+    minecraft.set_fixture_environments(
+        json!({"signaling-afd":{"prod":{"serviceUri":format!("http://{address}/prefix")}}}),
+    );
     minecraft.authorization = Some(authorization("original"));
     minecraft
 }

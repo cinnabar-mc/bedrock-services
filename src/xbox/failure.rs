@@ -37,6 +37,7 @@ impl Failure {
 fn replay(error: &Error) -> Error {
     match error {
         Error::DeadlineExceeded => Error::DeadlineExceeded,
+        Error::Shared(source) => Error::Shared(std::sync::Arc::clone(source)),
         Error::Status { status, xerr } => Error::Status {
             status: *status,
             xerr: *xerr,

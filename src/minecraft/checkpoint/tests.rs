@@ -171,7 +171,14 @@ async fn checkpoint_cached_auth_does_not_hide_full_discovery() {
         restored.environment.unwrap().service_uri,
         "https://replacement.invalid/"
     );
-    assert!(restored.realms_environment.is_some());
+    assert!(
+        restored
+            .environments
+            .as_ref()
+            .unwrap()
+            .realms_frontend_bedrock_legacy
+            .is_some()
+    );
 }
 
 /// Simulates the actual discovery admission boundary with an explicit server Date.

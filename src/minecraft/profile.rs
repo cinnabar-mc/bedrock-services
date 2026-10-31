@@ -166,8 +166,9 @@ impl Profile<'_> {
         self.minecraft.discover().await?;
         let uri = self
             .minecraft
-            .persona_environment
+            .environments
             .as_ref()
+            .and_then(|environments| environments.persona.as_ref())
             .and_then(|environment| environment.get("prod"))
             .and_then(|environment| environment.get("serviceUri"))
             .and_then(Value::as_str)

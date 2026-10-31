@@ -9,7 +9,10 @@ use reqwest::{
     header::{ACCEPT, HOST, HeaderMap, HeaderValue},
 };
 use serde::de::DeserializeOwned;
-use std::time::{Duration, Instant, SystemTime};
+use std::{
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant, SystemTime},
+};
 use zeroize::Zeroizing;
 
 pub(crate) const RESPONSE_LIMIT: usize = 1024 * 1024;
@@ -51,7 +54,7 @@ impl Default for Endpoints {
 }
 
 pub(crate) struct Http {
-    client: Client,
+    client: Arc<Client>,
     user_agent: HeaderValue,
     pub endpoints: Endpoints,
     clock: Option<(SystemTime, Instant)>,
@@ -83,6 +86,51 @@ enum BodyPolicy {
 }
 
 impl Http {
+    /// Couples fixture owners to the same transport without sharing account clocks or credentials.
+    #[cfg(test)]
+    pub(crate) fn share_fixture_transport(&mut self, other: &Self) {
+        self.client = other.client.clone();
+    }
+
+    /// Identifies the plain HTTP transport; account authorization is always attached to a request.
+    pub(crate) fn transport(&self) -> &Arc<Client> {
+        &self.client
+    }
+
+    /// Creates an anonymous request owner without importing account clocks or restore admission rules.
+    pub(crate) fn detached(&self) -> Self {
+        Self {
+            client: Arc::clone(&self.client),
+            user_agent: self.user_agent.clone(),
+            endpoints: Endpoints::default(),
+            clock: None,
+            minimum_date: None,
+            #[cfg(test)]
+            elapsed: self.elapsed,
+            #[cfg(feature = "test-support")]
+            hosted_transport: self.hosted_transport.clone(),
+        }
+    }
+
+    /// Retains the original response observation when sharing a public lookup.
+    pub(crate) fn clock_sample(&self) -> Option<(SystemTime, Instant)> {
+        self.clock
+    }
+
+    /// Adopts a shared observation without reanchoring it or regressing this owner's newer clock.
+    pub(crate) fn apply_clock_sample(&mut self, sample: Option<(SystemTime, Instant)>) {
+        if let Some((date, observed)) = sample
+            && self.minimum_date.is_none_or(|floor| date >= floor)
+            && self.clock.is_none_or(|(_, current)| observed >= current)
+        {
+            self.clock = Some((date, observed));
+            #[cfg(test)]
+            {
+                self.elapsed.at_response = self.elapsed.total;
+            }
+        }
+    }
+
     /// Samples process-local retry time independently from service Date corrections.
     pub(crate) fn retry_time(&self) -> tokio::time::Instant {
         let now = tokio::time::Instant::now();
@@ -95,16 +143,24 @@ impl Http {
     pub fn new(user_agent: &str) -> Result<Self, Error> {
         let user_agent = HeaderValue::from_str(user_agent)
             .map_err(|_| Error::Invalid("acquisition user agent"))?;
-        let client = Client::builder()
-            .https_only(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_gzip()
-            .no_brotli()
-            .no_zstd()
-            .no_deflate()
-            .timeout(REQUEST_TIMEOUT)
-            .connect_timeout(Duration::from_secs(10))
-            .build()?;
+        static DEFAULT_CLIENT: OnceLock<Arc<Client>> = OnceLock::new();
+        let client = if let Some(client) = DEFAULT_CLIENT.get() {
+            Arc::clone(client)
+        } else {
+            let client = Arc::new(
+                Client::builder()
+                    .https_only(true)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .no_gzip()
+                    .no_brotli()
+                    .no_zstd()
+                    .no_deflate()
+                    .timeout(REQUEST_TIMEOUT)
+                    .connect_timeout(Duration::from_secs(10))
+                    .build()?,
+            );
+            Arc::clone(DEFAULT_CLIENT.get_or_init(|| client))
+        };
         Ok(Self {
             client,
             user_agent,
@@ -386,7 +442,7 @@ impl Http {
         &mut self,
         transport: std::sync::Arc<crate::test_support::activation::transport::Transport>,
     ) {
-        self.client = transport.client();
+        self.client = Arc::new(transport.client());
         self.hosted_transport = Some(transport);
     }
 
@@ -441,7 +497,7 @@ impl Http {
             .build()
             .unwrap();
         Self {
-            client,
+            client: Arc::new(client),
             user_agent: HeaderValue::from_str(user_agent).unwrap(),
             endpoints: Endpoints::default(),
             clock: None,
@@ -458,16 +514,18 @@ impl Http {
     pub fn fixture_agent(address: std::net::SocketAddr, user_agent: &str) -> Self {
         let base = format!("http://{address}");
         Self {
-            client: Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .no_gzip()
-                .no_brotli()
-                .no_zstd()
-                .no_deflate()
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap(),
+            client: Arc::new(
+                Client::builder()
+                    .no_proxy()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .no_gzip()
+                    .no_brotli()
+                    .no_zstd()
+                    .no_deflate()
+                    .timeout(Duration::from_secs(5))
+                    .build()
+                    .unwrap(),
+            ),
             user_agent: HeaderValue::from_str(user_agent).unwrap(),
             endpoints: Endpoints {
                 device_code: format!("{base}/device-code"),

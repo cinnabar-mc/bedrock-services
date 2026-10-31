@@ -3,12 +3,20 @@
 use super::{Config, Minecraft, USER_AGENT, token::TokenResponse};
 use crate::{http::Http, oauth::Credentials, xbox};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     sync::Arc,
     time::{Duration, UNIX_EPOCH},
 };
 use uuid::Uuid;
+
+impl Minecraft {
+    /// Installs synthetic optional discovery alongside this fixture's already acquired auth route.
+    pub(super) fn set_fixture_environments(&mut self, mut metadata: Value) {
+        metadata["auth"] = json!({"prod": self.environment.as_ref().unwrap()});
+        self.environments = Some(Arc::new(serde_json::from_value(metadata).unwrap()));
+    }
+}
 
 /// Creates an already acquired immutable service issuance without any real account material.
 pub(super) fn authorization(label: &str) -> Arc<crate::minecraft::Authorization> {

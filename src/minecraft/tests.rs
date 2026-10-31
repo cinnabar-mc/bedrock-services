@@ -76,6 +76,28 @@ async fn explicit_discovery_reuses_one_request_without_authorization_or_multipla
     );
 }
 
+/// Owners on one HTTP transport reuse public discovery after the original peer has closed.
+#[tokio::test(start_paused = true)]
+async fn discovery_is_shared_between_service_owners() {
+    let (address, server) = fixture_headers(|_, headers, body| {
+        assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+        assert!(body.is_empty());
+        (200, Vec::new(), json!({"result":{"serviceEnvironments":{"auth":{"prod":{
+            "serviceUri":"https://shared-service.invalid/", "playFabTitleId":"AB12", "issuer":"https://shared-issuer.invalid/"
+        }}}}}))
+    }, 1).await;
+    let mut first = discovery_owner(address);
+    let mut second = discovery_owner(address);
+    second.http.share_fixture_transport(&first.http);
+    first.discover().await.unwrap();
+    server.await.unwrap();
+    second.discover().await.unwrap();
+    assert_eq!(
+        first.authorization_issuer().unwrap(),
+        second.authorization_issuer().unwrap()
+    );
+}
+
 /// Failed discovery never installs a poisoned cache entry or forces a replacement account owner.
 #[tokio::test]
 async fn explicit_discovery_failure_is_retryable_without_minting() {

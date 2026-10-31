@@ -2,6 +2,7 @@
 
 mod checkpoint;
 mod config;
+mod discovery;
 mod entity;
 pub mod gatherings;
 pub mod player_messaging;
@@ -17,7 +18,7 @@ pub use token::{Authorization, Configuration, MultiplayerToken};
 use crate::{Error, http::Http, playfab, realms, xbox};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use p384::{ecdsa::VerifyingKey, pkcs8::EncodePublicKey};
-use reqwest::{Method, header::HeaderValue};
+use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc};
 use url::Url;
@@ -41,11 +42,7 @@ pub struct Minecraft {
     config: Config,
     session_id: uuid::Uuid,
     environment: Option<Environment>,
-    signaling_environment: Option<serde_json::Value>,
-    realms_environment: Option<serde_json::Value>,
-    persona_environment: Option<serde_json::Value>,
-    messaging_environment: Option<serde_json::Value>,
-    gatherings_environment: Option<serde_json::Value>,
+    environments: Option<Arc<Environments>>,
     gatherings_state: gatherings::State,
     messaging_state: player_messaging::State,
     realms_state: realms::State,
@@ -124,11 +121,7 @@ impl Minecraft {
             http: Http::new(USER_AGENT)?,
             config,
             environment: None,
-            signaling_environment: None,
-            realms_environment: None,
-            persona_environment: None,
-            messaging_environment: None,
-            gatherings_environment: None,
+            environments: None,
             gatherings_state: gatherings::State::default(),
             messaging_state: player_messaging::State::new(),
             realms_state: realms::State::default(),
@@ -296,8 +289,9 @@ impl Minecraft {
         crate::http::call::run(async {
             self.discover().await?;
             let uri = self
-                .realms_environment
+                .environments
                 .as_ref()
+                .and_then(|environments| environments.realms_frontend_bedrock_legacy.as_ref())
                 .and_then(|environment| environment.get("prod"))
                 .and_then(|environment| environment.get("serviceUri"))
                 .and_then(serde_json::Value::as_str)
@@ -462,6 +456,8 @@ impl Minecraft {
     /// service metadata is validated by its eventual consumer; use
     /// [`Self::authorization_issuer`] afterward for a validated provider issuer.
     /// This method performs no Xbox/PlayFab authorization or multiplayer mint.
+    /// Callers on the same HTTP transport share anonymous lookups. Cancellation
+    /// stops waiting; the bounded lookup may finish and cache its public metadata.
     ///
     /// # Errors
     /// Returns bounded HTTP/status/JSON or required service-route/title validation errors.
@@ -481,39 +477,18 @@ impl Minecraft {
                     &self.config.game_version,
                 ],
             )?;
-            let request = self
-                .http
-                .request(Method::GET, url.as_str())
-                .header("content-type", "application/json")
-                .build()?;
-            let response = self
-                .http
-                .send_retrying(request, crate::http::retry::Policy::Discovery)
-                .await?;
-            response.success()?;
-            let discovery = response.json::<ResultBody<Discovery>>()?.result;
-            let environment = discovery.service_environments.auth.prod;
-            validate_service_url(&environment.service_uri)?;
-            playfab::login_url(&environment.play_fab_title_id)?;
-            if self.restored_route && self.environment.as_ref() != Some(&environment) {
+            let acquired = discovery::resolve(&self.http, url).await?;
+            self.http.apply_clock_sample(acquired.clock);
+            let environment = &acquired.environments.auth.prod;
+            if self.restored_route && self.environment.as_ref() != Some(environment) {
                 self.authorization = None;
                 self.playfab = None;
                 self.entities.clear();
             }
             self.restored_route = false;
-            self.signaling_environment = discovery.service_environments.signaling_afd;
-            self.realms_environment = discovery
-                .service_environments
-                .realms_frontend_bedrock_legacy;
-            self.persona_environment = discovery.service_environments.persona;
-            self.messaging_environment = discovery.service_environments.messaging;
-            self.gatherings_environment = discovery.service_environments.gatherings;
-            self.environment = Some(environment);
-            let response_date = response
-                .headers
-                .get("date")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| httpdate::parse_http_date(value).ok());
+            self.environment = Some(environment.clone());
+            self.environments = Some(acquired.environments);
+            let response_date = acquired.date;
             self.admit_service_checkpoint(response_date);
             Ok(())
         })

@@ -43,8 +43,9 @@ impl Minecraft {
         crate::http::call::run(async {
             self.discover().await?;
             let uri = self
-                .gatherings_environment
+                .environments
                 .as_ref()
+                .and_then(|environments| environments.gatherings.as_ref())
                 .and_then(|environment| environment.get("prod"))
                 .and_then(|environment| environment.get("serviceUri"))
                 .and_then(serde_json::Value::as_str)
@@ -225,6 +226,7 @@ impl Gatherings<'_> {
 fn record_failure(operation: &'static str, phase: &'static str, error: &Error) {
     let (class, http_status) = match error {
         Error::DeadlineExceeded => ("deadline_exceeded", None),
+        Error::Shared(_) => ("shared_acquisition", None),
         Error::Http(source) => ("http", source.status().map(|status| status.as_u16())),
         Error::Status { status, .. } => ("status", Some(status.as_u16())),
         Error::AccountCreationRequired(_) => ("account_creation_required", None),

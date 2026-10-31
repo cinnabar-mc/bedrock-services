@@ -6,11 +6,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/sandertv/gophertunnel/minecraft/auth/authclient"
+	"github.com/sandertv/gophertunnel/minecraft/service"
+	"golang.org/x/oauth2"
 )
 
 // callTransport confines the oracle to synthetic service outcomes.
@@ -80,6 +83,49 @@ func TestServiceCallPreparationDeadline(t *testing.T) {
 		}, authclient.CallOptions{})
 		if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) != 40*time.Second {
 			t.Fatalf("elapsed=%v err=%v", time.Since(started), err)
+		}
+	})
+}
+
+// TestServiceDiscoveryWaiterCancellation pins the shared anonymous request's independent lifetime.
+func TestServiceDiscoveryWaiterCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		entered, release := make(chan struct{}), make(chan struct{})
+		client := &http.Client{Transport: callTransport(func(req *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				close(entered)
+			}
+			if req.Header.Get("Authorization") != "" {
+				t.Error("discovery carried authorization")
+			}
+			select {
+			case <-release:
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			}
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"result":{"serviceEnvironments":{}}}`))}, nil
+		})}
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
+		leader, cancel := context.WithCancel(ctx)
+		first, second := make(chan error, 1), make(chan error, 1)
+		go func() { _, err := service.Discover(leader, t.Name(), "synthetic"); first <- err }()
+		<-entered
+		go func() { _, err := service.Discover(ctx, t.Name(), "synthetic"); second <- err }()
+		synctest.Wait()
+		cancel()
+		if err := <-first; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled waiter: %v", err)
+		}
+		close(release)
+		if err := <-second; err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Discover(ctx, t.Name(), "synthetic"); err != nil {
+			t.Fatal(err)
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("discovery calls=%d", calls.Load())
 		}
 	})
 }

@@ -268,7 +268,7 @@ async fn join_preserves_authorization_and_request_failures_without_an_extra_disp
                 }
                 assert_eq!(step, 2);
                 if authorization_failure {
-                    assert_eq!(path, "/api/v1.0/discovery/MinecraftPE/builds/1.26.50");
+                    assert_eq!(path, "/api/v1.0/discovery/MinecraftPE/builds/1.26.60");
                     assert!(headers_lower.starts_with("get "));
                     assert!(!headers_lower.contains("authorization:"));
                     assert!(bytes.is_empty());
@@ -292,6 +292,7 @@ async fn join_preserves_authorization_and_request_failures_without_an_extra_disp
         if authorization_failure {
             api.minecraft.authorization = None;
             api.minecraft.environment = None;
+            api.minecraft.config.game_version = "1.26.60".into();
         }
         let error = api.join_experience(EXPERIENCE).await.err().unwrap();
         assert!(matches!(
@@ -388,8 +389,9 @@ async fn canceled_population_http_request_preserves_cache_and_allows_immediate_r
         play_fab_title_id: "AB12".into(),
         issuer: String::new(),
     });
-    services.gatherings_environment =
-        Some(json!({"prod":{"serviceUri":format!("http://{address}")}}));
+    services.set_fixture_environments(
+        json!({"gatherings":{"prod":{"serviceUri":format!("http://{address}")}}}),
+    );
     services.gatherings_state.counts = vec![ExperiencePlayerCount {
         experience_id: EXPERIENCE,
         player_count: Some(5),
@@ -612,8 +614,9 @@ async fn gatherings_catalog_uses_the_bounded_service_response_budget() {
         play_fab_title_id: "AB12".into(),
         issuer: String::new(),
     });
-    services.gatherings_environment =
-        Some(json!({"prod":{"serviceUri":format!("http://{address}")}}));
+    services.set_fixture_environments(
+        json!({"gatherings":{"prod":{"serviceUri":format!("http://{address}")}}}),
+    );
     let read = async {
         services
             .gatherings()

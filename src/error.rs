@@ -6,6 +6,9 @@ pub enum Error {
     /// The original service-call budget elapsed during preparation, sending or response reading.
     #[error("service call deadline exceeded")]
     DeadlineExceeded,
+    /// A shared anonymous acquisition failed; the original redacted typed cause is retained.
+    #[error("shared service acquisition failed")]
+    Shared(#[source] std::sync::Arc<Error>),
     /// HTTP transport failed; URLs are removed from the underlying error.
     #[error("authentication HTTP request failed")]
     Http(#[source] reqwest::Error),

@@ -20,8 +20,9 @@ impl Minecraft {
         crate::http::call::run(async {
             self.discover().await?;
             let uri = self
-                .signaling_environment
+                .environments
                 .as_ref()
+                .and_then(|environments| environments.signaling_afd.as_ref())
                 .and_then(|environment| environment.get("prod"))
                 .and_then(|environment| environment.get("serviceUri"))
                 .and_then(serde_json::Value::as_str)
