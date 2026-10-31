@@ -378,8 +378,8 @@ impl Messaging {
             }
             // Validate and build the response before any callback changes state.
             let reply = match frame.remove("id") {
-                Some(id) if !id.is_null() => {
-                    if !(id.is_number() || id.is_string()) {
+                Some(id) => {
+                    if !(id.is_null() || id.is_number() || id.is_string()) {
                         return Err(Error::Invalid("callback ID"));
                     }
                     Some(json!({"jsonrpc":"2.0","id":id,"result":null}))
@@ -609,9 +609,10 @@ fn validate_frame(frame: &Value) -> Result<(), Error> {
     {
         return Err(Error::Limit);
     }
-    if frame.get("id").is_some_and(|id| {
-        !(id.is_null() || id.is_string() || id.as_u64().is_some() || id.as_i64().is_some())
-    }) {
+    if frame
+        .get("id")
+        .is_some_and(|id| !(id.is_null() || id.is_string() || id.is_number()))
+    {
         return Err(Error::Invalid("JSON-RPC ID"));
     }
     Ok(())

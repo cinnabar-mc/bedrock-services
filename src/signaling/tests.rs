@@ -3,6 +3,43 @@ use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+/// Callback responses retain every permitted ID while notifications produce no reply.
+#[test]
+fn callback_ids_regression() {
+    for batch in [false, true] {
+        for id in [Value::Null, json!(1.5), json!(-2)] {
+            let mut state = Messaging::new(7);
+            let callback = json!({"jsonrpc":"2.0","id":id,"method":PONG});
+            let frame = if batch {
+                json!([callback, {"jsonrpc":"2.0","method":PONG}])
+            } else {
+                callback
+            };
+            let events = state
+                .receive(&serde_json::to_vec(&frame).unwrap(), Instant::now())
+                .unwrap();
+            let replies: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Reply(reply) => {
+                        Some(serde_json::from_slice::<Value>(reply.as_bytes()).unwrap())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let reply = json!({"jsonrpc":"2.0","id":id,"result":null});
+            assert_eq!(replies, vec![if batch { json!([reply]) } else { reply }]);
+        }
+    }
+    let events = Messaging::new(7)
+        .receive(
+            br#"{"jsonrpc":"2.0","method":"System_Pong_v1_0"}"#,
+            Instant::now(),
+        )
+        .unwrap();
+    assert!(!events.iter().any(|event| matches!(event, Event::Reply(_))));
+}
+
 /// Builds one original nested peer message in the service's single-envelope callback form.
 fn incoming(sender: Uuid, envelope: Uuid, method: &str, params: Value) -> Vec<u8> {
     serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":"callback", "method":RECEIVE,
