@@ -110,3 +110,169 @@ async fn receive(
         }
     }
 }
+
+/// Deterministically reports a write that cannot progress while preserving readable transport input.
+struct BlockWrites<S> {
+    inner: S,
+    blocked: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for BlockWrites<S> {
+    /// Reads the original stream independently of its blocked writer.
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buffer)
+    }
+}
+
+impl<S: Unpin> AsyncWrite for BlockWrites<S> {
+    /// Makes backpressure observable without filling operating-system buffers or sleeping.
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.blocked.notify_one();
+        Poll::Pending
+    }
+    /// Retains an unfinished flush on this physical writer.
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+    /// Retains an unfinished shutdown on this physical writer.
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+/// Actual codecs and an observable blocked writer for one original peer.
+type BlockedPair = (
+    WebSocketStream<tokio::io::DuplexStream>,
+    WebSocketStream<BlockWrites<tokio::io::DuplexStream>>,
+    std::sync::Arc<tokio::sync::Notify>,
+);
+
+/// Builds actual codecs around a deterministic backpressured transport.
+fn blocked_pair() -> BlockedPair {
+    let (client, server) = tokio::io::duplex(1024);
+    let blocked = std::sync::Arc::new(tokio::sync::Notify::new());
+    (
+        tokio_websockets::ClientBuilder::new().take_over(client),
+        tokio_websockets::ServerBuilder::new().serve(BlockWrites {
+            inner: server,
+            blocked: blocked.clone(),
+        }),
+        blocked,
+    )
+}
+
+/// A stalled host recipient cannot prevent another original guest's TURN or close exchange.
+#[tokio::test]
+async fn blocked_activation_recipient_regression() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let (host, relay_host, blocked) = blocked_pair();
+        let (mut first, mut first_peer) = super::super::pair(2).await;
+        let (mut second, mut second_peer) = super::super::pair(3).await;
+        first_peer
+            .socket
+            .as_mut()
+            .unwrap()
+            .get_mut()
+            .set_nodelay(true)
+            .unwrap();
+        second_peer
+            .socket
+            .as_mut()
+            .unwrap()
+            .get_mut()
+            .set_nodelay(true)
+            .unwrap();
+        let relay = activation(
+            relay_host,
+            Uuid::from_u128(1),
+            [first_peer, second_peer],
+            [Uuid::from_u128(2), Uuid::from_u128(3)],
+        );
+        let first_task = async {
+            for _ in 0..MAX_PENDING_REQUESTS + 4 {
+                let request = first
+                    .send_signal(
+                        Uuid::from_u128(1),
+                        Uuid::new_v4(),
+                        "offer",
+                        false,
+                        Instant::now() + Duration::from_secs(2),
+                    )
+                    .unwrap();
+                completed(&mut first, request).await.unwrap();
+            }
+            first.close();
+            assert_eq!(first.drive().await.err(), Some(SocketError::Closed));
+        };
+        let second_task = async {
+            blocked.notified().await;
+            let request = second
+                .request_credentials(Instant::now() + Duration::from_secs(2))
+                .unwrap();
+            completed(&mut second, request).await.unwrap();
+            second.close();
+            assert_eq!(second.drive().await.err(), Some(SocketError::Closed));
+        };
+        let application = async {
+            tokio::join!(first_task, second_task);
+            drop(host);
+        };
+        tokio::join!(relay, application);
+    })
+    .await
+    .expect("a blocked recipient stalled another activation socket");
+}
+
+/// Friend routing keeps processing the original sender while its recipient's writes are blocked.
+#[tokio::test]
+async fn blocked_friend_recipient_regression() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (visitor, relay_visitor, blocked) = blocked_pair();
+        let (mut host, host_peer) = super::super::pair(1).await;
+        let relay = friend::run(relay_visitor, host_peer, [Uuid::from_u128(2),Uuid::from_u128(1)]);
+        let application = async {
+            host.send_signal(Uuid::from_u128(2), Uuid::new_v4(), "offer", false, Instant::now()+Duration::from_secs(2)).unwrap();
+            tokio::select! {
+                _ = blocked.notified() => {},
+                result = host.drive() => { assert!(matches!(result, Ok(Event::Completed{..}))); blocked.notified().await; }
+            }
+            let turn = host.request_credentials(Instant::now()+Duration::from_secs(2)).unwrap();
+            loop {
+                if let Event::Completed {request, result} = host.drive().await.unwrap() {
+                    assert!(result.is_ok());
+                    if request == turn { break; }
+                }
+            }
+            host.close();
+            assert_eq!(host.drive().await.err(), Some(SocketError::Closed));
+            drop(visitor);
+        };
+        tokio::join!(relay, application);
+    }).await.expect("a blocked recipient stalled the original friend sender");
+}
+
+/// A permanently pending writer is retired within its own finite deadline.
+#[tokio::test(start_paused = true)]
+async fn blocked_writer_has_a_finite_retirement_deadline() {
+    let (_client, server, blocked) = blocked_pair();
+    let mut socket = RelaySocket::new(Some(server));
+    send(&mut socket, json!({"jsonrpc":"2.0","id":1,"result":null})).unwrap();
+    tokio::select! {
+        _ = blocked.notified() => {},
+        _ = read(&mut socket) => panic!("blocked writer completed without a deadline"),
+    }
+    tokio::time::advance(Duration::from_secs(5)).await;
+    assert!(matches!(
+        read(&mut socket).await,
+        Frame::Terminal(HostedSocketTerminal::Io(std::io::ErrorKind::TimedOut))
+    ));
+    assert!(socket.socket.is_none());
+}

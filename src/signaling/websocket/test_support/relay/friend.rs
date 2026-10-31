@@ -12,8 +12,8 @@ pub(crate) async fn run<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut visitor = Some(visitor);
-    let mut host = host_peer.socket.take();
+    let mut visitor = RelaySocket::new(Some(visitor));
+    let mut host = RelaySocket::new(host_peer.socket.take());
     let mut terminals = [None, None];
     let mut callbacks: [HashSet<Uuid>; 2] = std::array::from_fn(|_| HashSet::new());
     while terminals.iter().any(Option::is_none) {
@@ -23,31 +23,13 @@ where
         };
         let text = match frame {
             Frame::Text(text) => text,
-            Frame::Control => {
-                let result = if source == 0 {
-                    flush(&mut visitor).await
-                } else {
-                    flush(&mut host).await
-                };
-                if let Err(error) = result {
-                    terminals[source] = Some(error);
-                }
-                continue;
-            }
-            Frame::Close => {
-                terminals[source] = Some(if source == 0 {
-                    close(&mut visitor).await
-                } else {
-                    close(&mut host).await
-                });
-                continue;
-            }
+            Frame::Control => continue,
             Frame::Terminal(error) => {
                 terminals[source] = Some(error);
                 if source == 0 {
-                    visitor = None;
+                    visitor.socket = None;
                 } else {
-                    host = None;
+                    host.socket = None;
                 }
                 continue;
             }
@@ -86,15 +68,19 @@ where
                         parsed["method"].as_str(),
                         Some(wire::WEBRTC | wire::RECEIPT)
                     ));
-                    let active = if target == 0 {
-                        visitor.is_some()
+                    let callback = if target == 0 {
+                        callback(&mut visitor, &mut callbacks[target])
                     } else {
-                        host.is_some()
+                        callback(&mut host, &mut callbacks[target])
                     };
-                    if active {
-                        assert!(callbacks[target].len() < MAX_PENDING_REQUESTS);
-                        let callback = Uuid::new_v4();
-                        assert!(callbacks[target].insert(callback));
+                    let callback = match callback {
+                        Ok(callback) => callback,
+                        Err(terminal) => {
+                            terminals[target] = Some(terminal);
+                            None
+                        }
+                    };
+                    if let Some(callback) = callback {
                         send_to(
                             target,
                             json!({"jsonrpc":"2.0","id":callback,"method":wire::RECEIVE,
@@ -102,8 +88,7 @@ where
                             &mut visitor,
                             &mut host,
                             &mut terminals,
-                        )
-                        .await;
+                        );
                     }
                     Value::Null
                 }
@@ -115,9 +100,7 @@ where
                 &mut visitor,
                 &mut host,
                 &mut terminals,
-            )
-            .await
-            {
+            ) {
                 break;
             }
         }
@@ -127,28 +110,28 @@ where
 }
 
 /// Writes through the same actual selected socket and preserves its first physical failure.
-async fn send_to<S>(
+fn send_to<S>(
     target: usize,
     value: Value,
-    visitor: &mut Option<WebSocketStream<S>>,
-    host: &mut Option<WebSocketStream<TcpStream>>,
+    visitor: &mut RelaySocket<S>,
+    host: &mut RelaySocket<TcpStream>,
     terminals: &mut [Option<HostedSocketTerminal>; 2],
 ) -> bool
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let active = if target == 0 {
-        visitor.is_some()
+        visitor.socket.is_some()
     } else {
-        host.is_some()
+        host.socket.is_some()
     };
     if !active {
         return false;
     }
     let result = if target == 0 {
-        send(visitor, value).await
+        send(visitor, value)
     } else {
-        send(host, value).await
+        send(host, value)
     };
     match result {
         Ok(()) => true,
