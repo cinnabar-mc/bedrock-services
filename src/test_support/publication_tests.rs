@@ -8,7 +8,7 @@ async fn hosted_publication_transmits_capacity_and_route_before_activity_and_inv
         let cap = NonZeroU32::new(2).unwrap();
         let title = "42".to_owned();
         let properties = json!({"MaxMemberCount":cap.get(), "nonces":{}, "SupportedConnections":[{
-            "ConnectionType":3, "NetherNetId":9, "PmsgId":Uuid::from_u128(3),
+            "ConnectionType":7, "NetherNetId":9, "PmsgId":Uuid::from_u128(3),
         }]});
         let HostedAuthority {
             mut account,

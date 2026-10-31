@@ -42,7 +42,6 @@ pub struct Minecraft {
     session_id: uuid::Uuid,
     environment: Option<Environment>,
     signaling_environment: Option<serde_json::Value>,
-    legacy_signaling_environment: Option<serde_json::Value>,
     realms_environment: Option<serde_json::Value>,
     persona_environment: Option<serde_json::Value>,
     messaging_environment: Option<serde_json::Value>,
@@ -73,8 +72,6 @@ struct Environments {
     auth: Retail,
     #[serde(default, rename = "signaling-afd")]
     signaling_afd: Option<serde_json::Value>,
-    #[serde(default)]
-    signaling: Option<serde_json::Value>,
     #[serde(default)]
     realms_frontend_bedrock_legacy: Option<serde_json::Value>,
     #[serde(default)]
@@ -128,7 +125,6 @@ impl Minecraft {
             config,
             environment: None,
             signaling_environment: None,
-            legacy_signaling_environment: None,
             realms_environment: None,
             persona_environment: None,
             messaging_environment: None,
@@ -493,7 +489,6 @@ impl Minecraft {
         }
         self.restored_route = false;
         self.signaling_environment = discovery.service_environments.signaling_afd;
-        self.legacy_signaling_environment = discovery.service_environments.signaling;
         self.realms_environment = discovery
             .service_environments
             .realms_frontend_bedrock_legacy;

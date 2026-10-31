@@ -207,6 +207,7 @@ fn record_failure(operation: &'static str, phase: &'static str, error: &Error) {
         Error::Status { status, .. } => ("status", Some(status.as_u16())),
         Error::AccountCreationRequired(_) => ("account_creation_required", None),
         Error::Invalid(_) => ("invalid", None),
+        Error::UnsupportedNetworkProtocol => ("unsupported_network_protocol", None),
         Error::ResponseTooLarge => ("response_too_large", None),
         Error::TimeRange => ("time_range", None),
         Error::DeviceCodeExpired => ("device_code_expired", None),

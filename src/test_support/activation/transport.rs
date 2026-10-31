@@ -20,8 +20,6 @@ pub(crate) struct Transport {
     pub(super) http: SocketAddr,
     pub(super) rta: SocketAddr,
     pub(super) messaging: SocketAddr,
-    /// Only the fixed friend sibling accepts the canonical local-ID legacy upgrade path.
-    pub(super) friend_legacy: bool,
 }
 
 impl Transport {
@@ -36,7 +34,6 @@ impl Transport {
             http,
             rta,
             messaging,
-            friend_legacy: false,
         }
     }
 
@@ -102,20 +99,11 @@ impl Transport {
             SocketKind::Messaging => {
                 let mut expected = Url::parse(SIGNALING_ORIGIN).unwrap();
                 expected.set_scheme("wss").unwrap();
-                let local;
-                let path = if self.friend_legacy {
-                    local = super::friend::sockets::legacy_id(url)
-                        .ok_or(())?
-                        .to_string();
-                    ["ws", "v1.0", "signaling", local.as_str()]
-                } else {
-                    ["ws", "v1.0", "messaging", "connect"]
-                };
                 expected
                     .path_segments_mut()
                     .unwrap()
                     .pop_if_empty()
-                    .extend(path);
+                    .extend(["ws", "v1.0", "messaging", "connect"]);
                 (expected, self.messaging)
             }
         };

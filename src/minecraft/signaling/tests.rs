@@ -51,29 +51,6 @@ fn services(address: std::net::SocketAddr) -> Minecraft {
     minecraft
 }
 
-/// Legacy discovery creates its original path without an AFD HTTP request or replacement issuance.
-#[tokio::test]
-async fn legacy_discovery_reuses_exact_issuance_and_original_network_path() {
-    let mut minecraft = services(([127, 0, 0, 1], 9).into());
-    minecraft.legacy_signaling_environment =
-        Some(json!({"prod":{"serviceUri":"wss://legacy.invalid/region/"}}));
-    let original = minecraft.authorization.as_ref().unwrap().clone();
-    let request = minecraft.legacy_signaling_connection(42).await.unwrap();
-    assert!(Arc::ptr_eq(&request.authorization, &original));
-    assert_eq!(
-        request.url().as_str(),
-        "wss://legacy.invalid/region/ws/v1.0/signaling/42"
-    );
-    assert_eq!(request.legacy_network_id(), Some(42));
-    assert_eq!(request.ping_interval(), Duration::from_secs(15));
-    assert!(request.authorization().unwrap().is_sensitive());
-    minecraft.authorization = Some(authorization("replacement"));
-    assert!(!minecraft.reject_messaging(&request));
-    minecraft.legacy_signaling_environment =
-        Some(json!({"prod":{"serviceUri":"ws://legacy.invalid/region/"}}));
-    assert!(minecraft.legacy_signaling_connection(42).await.is_err());
-}
-
 /// Checks MCToken reuse, advertised paths, protected upgrade metadata and exact-issuance rejection.
 #[tokio::test]
 async fn configuration_reuses_service_identity_and_rejects_only_the_failed_issuance() {

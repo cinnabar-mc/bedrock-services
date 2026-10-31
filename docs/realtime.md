@@ -79,12 +79,6 @@ socket owner. Canceling a request can retract a frame that has not entered the
 sink, but it cannot undo bytes already sent. Do not automatically resend an
 ambiguous operation.
 
-A route that explicitly selects legacy signaling uses
-`services.legacy_signaling_connection(local_network_id)` and `send_legacy_signal`
-with a string recipient. Player Messaging and legacy use separate discovery
-endpoints and wire formats; the wrong send method fails before admission. A
-legacy completion confirms its flush/service outcome, rather than peer receipt.
-
 For immediate shutdown, drop or `abort` the socket. For a close handshake, call
 `close()` and keep driving through queued completions until `SocketError::Closed`.
 A newly connected socket starts with fresh request IDs and no old TURN cache.
@@ -152,10 +146,9 @@ admission and starts a bounded close handshake; keep driving to finish it.
 
 ## Supply your own WebSocket
 
-For signaling, `signaling::Messaging` and `Legacy` accept complete messages and
+For signaling, `signaling::Messaging` accepts complete messages and
 caller monotonic time. Send each returned `Outgoing` once, feed incoming messages
 in order, route callback replies, and call `expire(now)` at `next_deadline()`.
-Legacy additionally needs actual sink-flush completion through `flushed`.
 Close the state when its physical socket closes.
 
 For RTA, supply your transport's final upgrade headers to `rta_connection`, send

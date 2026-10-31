@@ -117,8 +117,6 @@ fn respond(target: &str, headers: &str, body: &[u8], state: &mut State, version:
             let environments = &mut reply.body["result"]["serviceEnvironments"];
             environments["realms_frontend_bedrock_legacy"] =
                 json!({"prod":{"serviceUri":AUTH_ORIGIN}});
-            environments["signaling"] =
-                json!({"prod":{"serviceUri":SIGNALING_ORIGIN.replace("https://", "wss://")}});
             reply
         }
         "/nsal-current" => original(5, target, headers, body, state, version),
@@ -184,13 +182,7 @@ fn respond(target: &str, headers: &str, body: &[u8], state: &mut State, version:
             );
             original(9, target, headers, body, state, version)
         }
-        "/api/v1.0/configuration" => {
-            assert_eq!(
-                state.friend.as_ref().unwrap().dialect,
-                HostedFriendDialect::Messaging
-            );
-            original(10, target, headers, body, state, version)
-        }
+        "/api/v1.0/configuration" => original(10, target, headers, body, state, version),
         _ => directory::respond(target, headers, body, state),
     }
 }

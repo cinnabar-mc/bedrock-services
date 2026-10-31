@@ -2,15 +2,14 @@ use super::*;
 use crate::signaling::{Event, RequestId, websocket::SocketError};
 use p384::ecdsa::SigningKey;
 
-/// Exercises both actual signaling dialects after decoded catalogue, bound join and host nonce.
+/// Exercises Player Messaging after decoded catalogue, bound join and host nonce.
 #[tokio::test]
-async fn friend_fixture_routes_both_original_dialects_and_conditional_leave() {
-    for dialect in [HostedFriendDialect::Messaging, HostedFriendDialect::Legacy] {
-        tokio::time::timeout(Duration::from_secs(15), async {
+async fn friend_fixture_routes_messaging_and_conditional_leave() {
+    tokio::time::timeout(Duration::from_secs(15), async {
             let deadline = Instant::now() + Duration::from_secs(10);
             let HostedFriend { authority: HostedAuthority { mut account, identity, peer }, mut host, mut membership } =
                 HostedAuthority::acquire_friend(xbox::Config::default(),
-                    minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)), dialect,
+                    minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
                     "fixture-audience".into(), deadline).await;
             let host_observed = Instant::now();
             let host_service_time = account.service_time();
@@ -33,13 +32,10 @@ async fn friend_fixture_routes_both_original_dialects_and_conditional_leave() {
             let host_mint_time = host_service_time.checked_add(host_observed.elapsed()).unwrap();
             let mint_expires = minted.expires_at();
             let local = 77;
-            let request = match dialect {
-                HostedFriendDialect::Messaging => account.messaging_connection().await.unwrap(),
-                HostedFriendDialect::Legacy => account.legacy_signaling_connection(local).await.unwrap(),
-            };
+            let request = account.messaging_connection().await.unwrap();
             let mut visitor = MessagingSocket::connect(&request, local, Default::default()).await.unwrap();
             let (visitor_ice, host_ice) = tokio::join!(credentials(&mut visitor, deadline), credentials(host.socket.as_mut().unwrap(), deadline));
-            exchange(&mut visitor, host.socket.as_mut().unwrap(), dialect, deadline).await;
+            exchange(&mut visitor, host.socket.as_mut().unwrap(), deadline).await;
             let left = account.mpsd().leave_bound(&mut session, binding).await;
             let member_retired = !host.member_admitted(identity.xuid(), &actual_nonce);
             socket.abort();
@@ -62,7 +58,6 @@ async fn friend_fixture_routes_both_original_dialects_and_conditional_leave() {
                 assert!(matches!(terminal, Some(HostedSocketTerminal::Close | HostedSocketTerminal::Eof)));
             }
         }).await.expect("finite original friend fixture");
-    }
 }
 
 /// Leaving the real member while admission is held never needs a mint, socket upgrade or invented Ready.
@@ -79,7 +74,6 @@ async fn friend_fixture_held_membership_leaves_without_nonce_or_transport() {
         } = HostedAuthority::acquire_friend(
             xbox::Config::default(),
             minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
-            HostedFriendDialect::Messaging,
             "fixture-audience".into(),
             deadline,
         )
@@ -178,27 +172,11 @@ async fn completed(socket: &mut MessagingSocket, request: RequestId) {
 }
 
 /// Requires the fixed host to receive the actual original opaque signal on its own socket.
-async fn exchange(
-    visitor: &mut MessagingSocket,
-    host: &mut MessagingSocket,
-    dialect: HostedFriendDialect,
-    deadline: Instant,
-) {
+async fn exchange(visitor: &mut MessagingSocket, host: &mut MessagingSocket, deadline: Instant) {
     let id = Uuid::from_u128(0x7450);
-    let request = match dialect {
-        HostedFriendDialect::Messaging => visitor
-            .send_signal(HOST_MESSAGING, id, "original-offer", false, deadline)
-            .unwrap(),
-        HostedFriendDialect::Legacy => visitor
-            .send_legacy_signal(
-                &HOST_NETWORK.to_string(),
-                id,
-                "original-offer",
-                true,
-                deadline,
-            )
-            .unwrap(),
-    };
+    let request = visitor
+        .send_signal(HOST_MESSAGING, id, "original-offer", false, deadline)
+        .unwrap();
     let ((), received) = tokio::join!(completed(visitor, request), host.drive());
     match received.unwrap() {
         Event::Signal(signal) => {
@@ -209,10 +187,6 @@ async fn exchange(
                 .acknowledge(&signal, Uuid::from_u128(0x7451), deadline)
                 .unwrap();
             completed(host, receipt).await;
-        }
-        Event::LegacySignal(signal) => {
-            assert_eq!(signal.sender(), "77");
-            assert_eq!(signal.signal(), "original-offer");
         }
         _ => panic!("original friend signal was not delivered"),
     }
@@ -235,7 +209,7 @@ async fn friend_fixture_reconnects_one_original_acknowledged_membership() {
         let deadline = Instant::now() + Duration::from_secs(10);
         let HostedFriend { authority: HostedAuthority { mut account, mut peer, .. }, mut host, mut membership } =
             HostedAuthority::acquire_friend(xbox::Config::default(),
-                minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)), HostedFriendDialect::Messaging,
+                minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
                 "fixture-audience".into(), deadline).await;
         let mut recovery = peer.hold_rta_reconnect();
         let (mut socket, mut session, original, subscription) = listed_join(&mut account, deadline).await;
@@ -289,7 +263,6 @@ async fn friend_fixture_stop_retains_accepted_replacement_until_physical_retirem
         } = HostedAuthority::acquire_friend(
             xbox::Config::default(),
             minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
-            HostedFriendDialect::Messaging,
             "fixture-audience".into(),
             deadline,
         )

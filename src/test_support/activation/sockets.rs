@@ -168,26 +168,7 @@ pub(super) async fn messaging(
         .accept(stream)
         .await
         .unwrap();
-    let legacy = friend
-        .as_ref()
-        .is_some_and(super::friend::Services::is_legacy);
-    let local = if legacy {
-        let original = url::Url::parse(&format!(
-            "{}{}",
-            SIGNALING_ORIGIN.replace("https://", "wss://"),
-            request.uri().path().trim_start_matches('/')
-        ))
-        .unwrap();
-        super::friend::sockets::legacy_id(&original).unwrap()
-    } else {
-        0
-    };
-    let expected = if legacy {
-        format!("/ws/v1.0/signaling/{local}")
-    } else {
-        "/ws/v1.0/messaging/connect".to_owned()
-    };
-    assert_eq!(request.uri().path(), expected);
+    assert_eq!(request.uri().path(), "/ws/v1.0/messaging/connect");
     assert_eq!(
         request.headers()[reqwest::header::AUTHORIZATION]
             .to_str()
@@ -196,7 +177,7 @@ pub(super) async fn messaging(
     );
     if let Some(friend) = friend {
         assert!(request.uri().query().is_none());
-        return friend.run(socket, state, local).await;
+        return friend.run(socket, state).await;
     }
     if let Some(visitors) = visitors {
         return visitors.run(socket, state).await;

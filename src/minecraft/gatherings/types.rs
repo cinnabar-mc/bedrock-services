@@ -167,35 +167,22 @@ pub struct ExperiencePlayerCount {
 pub struct JoinAddress {
     /// Original service transport, including unknown variants for caller refusal.
     pub network_protocol: NetworkProtocol,
-    /// Direct UDP server host, only for the default transport.
-    #[serde(rename = "ipV4Address", deserialize_with = "null_default")]
-    pub ip_v4_address: String,
-    /// Original NetherNet routing identity; callers apply the selected signaling dialect.
+    /// Original NetherNet routing identity for Player Messaging.
     #[serde(rename = "netherNetId", deserialize_with = "null_default")]
     pub nethernet_id: String,
-    /// Direct UDP port, only for the default transport.
-    #[serde(deserialize_with = "null_default")]
-    pub port: u16,
     /// Original destination metadata, not a replacement account or proof.
     #[serde(deserialize_with = "null_object")]
     pub destination_info: DestinationInfo,
 }
 
 impl JoinAddress {
-    /// Validates required fields for known transports without treating an unknown protocol as UDP.
+    /// Refuses unsupported protocols before validating the JSON-RPC routing identity.
     pub(super) fn validate(&self) -> Result<(), Error> {
-        let valid = match self.network_protocol {
-            NetworkProtocol::Default => !self.ip_v4_address.trim().is_empty() && self.port != 0,
-            NetworkProtocol::NetherNet | NetworkProtocol::NetherNetJsonRpc => {
-                !self.nethernet_id.trim().is_empty()
-            }
-            _ => true,
-        };
-        if valid {
-            Ok(())
-        } else {
-            Err(Error::Invalid("gatherings join address"))
+        self.network_protocol.validate()?;
+        if self.nethernet_id.trim().is_empty() {
+            return Err(Error::Invalid("gatherings join address"));
         }
+        Ok(())
     }
 }
 

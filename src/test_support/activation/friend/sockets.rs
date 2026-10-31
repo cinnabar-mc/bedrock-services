@@ -1,28 +1,9 @@
-//! Original verified RTA socket and exact canonical legacy upgrade metadata.
+//! Original verified RTA socket and membership admission.
 
 use super::*;
 use futures_util::SinkExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_websockets::{Message, WebSocketStream};
-
-/// Reads only one canonical nonzero local ID on the exact fixed signaling origin/path.
-/// The original ConnectionRequest and MessagingSocket independently bind that ID to their caller.
-pub(in super::super) fn legacy_id(url: &url::Url) -> Option<u64> {
-    let mut expected = url::Url::parse(SIGNALING_ORIGIN).unwrap();
-    expected.set_scheme("wss").ok()?;
-    if url.scheme() != "wss"
-        || url.origin() != expected.origin()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return None;
-    }
-    let value = url.path().strip_prefix("/ws/v1.0/signaling/")?;
-    let id = value.parse::<u64>().ok().filter(|id| *id != 0)?;
-    (id.to_string() == value).then_some(id)
-}
 
 /// Acknowledges the real original subscription, then publishes at most one actual shoulder tap.
 pub(in super::super) async fn rta<S>(

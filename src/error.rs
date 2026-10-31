@@ -20,6 +20,9 @@ pub enum Error {
     /// An encoded or decoded value violates the service contract.
     #[error("invalid authentication data: {0}")]
     Invalid(&'static str),
+    /// A join response requires a network other than Player Messaging JSON-RPC.
+    #[error("unsupported network protocol; NETHERNET_JSONRPC is required")]
+    UnsupportedNetworkProtocol,
     /// A response exceeded its acquisition or concrete service byte budget.
     #[error("authentication response exceeds the byte limit")]
     ResponseTooLarge,

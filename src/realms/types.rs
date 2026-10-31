@@ -86,18 +86,30 @@ pub struct PingResult {
 }
 
 /// A transport advertised by Realms; unknown values are preserved for explicit rejection.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NetworkProtocol {
-    /// UDP RakNet, also used for an absent or empty protocol field.
-    #[default]
-    Default,
-    /// NetherNet with WebSocket signaling.
-    NetherNet,
     /// NetherNet with JSON-RPC signaling.
     NetherNetJsonRpc,
-    /// A newer or unsupported service protocol, never treated as RakNet.
+    /// An unsupported service protocol, retained without enabling a join.
     Unknown(String),
+}
+
+impl Default for NetworkProtocol {
+    /// Treats an absent protocol as unsupported rather than selecting a transport.
+    fn default() -> Self {
+        Self::Unknown(String::new())
+    }
+}
+
+impl NetworkProtocol {
+    /// Requires the same supported signaling protocol for every service join.
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
+        match self {
+            Self::NetherNetJsonRpc => Ok(()),
+            Self::Unknown(_) => Err(crate::Error::UnsupportedNetworkProtocol),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for NetworkProtocol {
@@ -106,8 +118,6 @@ impl<'de> Deserialize<'de> for NetworkProtocol {
         let protocol = Option::<String>::deserialize(deserializer)?.unwrap_or_default();
         let protocol = protocol.trim();
         Ok(match protocol.to_ascii_uppercase().as_str() {
-            "" | "DEFAULT" => Self::Default,
-            "NETHERNET" => Self::NetherNet,
             "NETHERNET_JSONRPC" => Self::NetherNetJsonRpc,
             _ => Self::Unknown(protocol.to_owned()),
         })
@@ -119,7 +129,7 @@ impl<'de> Deserialize<'de> for NetworkProtocol {
 #[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub struct RealmAddress {
-    /// RakNet host/port or NetherNet network identity, retained without IPv6 rewriting.
+    /// NetherNet network identity returned by the service.
     pub address: String,
     /// Transport and signaling selection returned by the service.
     #[serde(default)]
@@ -156,4 +166,47 @@ pub enum Join {
         /// Service-provided Retry-After delay, including a possible zero delay.
         retry_after: Duration,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Unsupported protocol names remain readable but cannot become joinable addresses.
+    #[test]
+    fn only_jsonrpc_assignments_pass_join_validation() {
+        for protocol in [
+            None,
+            Some(""),
+            Some("DEFAULT"),
+            Some("NETHERNET"),
+            Some("FUTURE"),
+        ] {
+            let mut value = json!({"address":"42"});
+            if let Some(protocol) = protocol {
+                value["networkProtocol"] = json!(protocol);
+            }
+            let address: RealmAddress = serde_json::from_value(value.clone()).unwrap();
+            assert!(matches!(
+                address.network_protocol,
+                NetworkProtocol::Unknown(_)
+            ));
+            assert!(matches!(
+                address.network_protocol.validate(),
+                Err(crate::Error::UnsupportedNetworkProtocol)
+            ));
+            let assignment: crate::minecraft::gatherings::JoinAddress =
+                serde_json::from_value(value).unwrap();
+            assert_eq!(assignment.network_protocol, address.network_protocol);
+        }
+        for protocol in ["NETHERNET_JSONRPC", " nethernet_jsonrpc "] {
+            let address: RealmAddress = serde_json::from_value(json!({
+                "address":"42", "networkProtocol":protocol
+            }))
+            .unwrap();
+            assert_eq!(address.network_protocol, NetworkProtocol::NetherNetJsonRpc);
+            address.network_protocol.validate().unwrap();
+        }
+    }
 }

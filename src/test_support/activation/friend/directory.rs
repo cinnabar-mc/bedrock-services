@@ -12,14 +12,7 @@ pub(super) fn reference() -> mpsd::Reference {
 /// Produces a complete title document; only the same service's own admission changes its nonce map.
 pub(super) fn properties(state: &State) -> Value {
     let friend = state.friend.as_ref().unwrap();
-    let connection = match friend.dialect {
-        HostedFriendDialect::Messaging => {
-            json!({"ConnectionType":7,"NetherNetId":HOST_NETWORK,"PmsgId":HOST_MESSAGING})
-        }
-        HostedFriendDialect::Legacy => {
-            json!({"ConnectionType":3,"RakNetGUID":HOST_NETWORK.to_string()})
-        }
-    };
+    let connection = json!({"ConnectionType":7,"NetherNetId":HOST_NETWORK,"PmsgId":HOST_MESSAGING});
     let mut properties = json!({"ownerId":HOST_XUID,"hostName":"Controlled host",
         "worldName":"Controlled friend world","MemberCount":1 + u32::from(friend.joins != 0),"MaxMemberCount":state.max_members.get(),
         "RealmId":0,"ExperienceId":Uuid::nil(),"ExperienceWorldId":Uuid::nil(),

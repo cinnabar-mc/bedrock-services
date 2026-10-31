@@ -297,14 +297,11 @@ async fn acquire_inner(
     let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let rta = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let messaging = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut transport = Transport::new(
+    let transport = Transport::new(
         http.local_addr().unwrap(),
         rta.local_addr().unwrap(),
         messaging.local_addr().unwrap(),
     );
-    if let Some(friend) = &friend {
-        transport.friend_legacy = friend.is_legacy();
-    }
     let transport = Arc::new(transport);
     let issuer = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
     let public_key = issuer.public_key().as_ref().to_vec();

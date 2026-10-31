@@ -42,19 +42,6 @@ pub async fn pair(network_id: u64) -> (MessagingSocket, Peer) {
     )
 }
 
-/// Opens the same finite loopback transport using the explicit legacy wire core and upgrade path.
-/// This supplies framing only; no retail credential, TLS trust or peer authority is created.
-pub async fn pair_legacy(network_id: u64) -> (MessagingSocket, Peer) {
-    let (socket, peer) = pair_with_dialect(network_id, None, true).await;
-    (
-        socket,
-        Peer {
-            socket: Some(peer),
-            close_deadline: None,
-        },
-    )
-}
-
 impl Peer {
     /// Sends and flushes one bounded text frame through the real service socket.
     /// A canceled wait leaves any accepted partial frame in the existing codec.
@@ -119,29 +106,14 @@ pub(super) async fn pair_with_initial(
     network_id: u64,
     initial: Option<Message>,
 ) -> (MessagingSocket, WebSocketStream<TcpStream>) {
-    pair_with_dialect(network_id, initial, false).await
-}
-
-/// Shares the original actual bounded upgrade/peer without substituting a pre-negotiated socket.
-async fn pair_with_dialect(
-    network_id: u64,
-    initial: Option<Message>,
-    legacy: bool,
-) -> (MessagingSocket, WebSocketStream<TcpStream>) {
     tokio::time::timeout(Options::default().connect_timeout, async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let tcp = TcpStream::connect(listener.local_addr().unwrap())
             .await
             .unwrap();
         let (server, _) = listener.accept().await.unwrap();
-        let url = if legacy {
-            url::Url::parse(&format!(
-                "wss://messaging.invalid/prefix/ws/v1.0/signaling/{network_id}"
-            ))
-            .unwrap()
-        } else {
-            url::Url::parse("wss://messaging.invalid/prefix/ws/v1.0/messaging/connect").unwrap()
-        };
+        let url =
+            url::Url::parse("wss://messaging.invalid/prefix/ws/v1.0/messaging/connect").unwrap();
         let builder =
             upgrade::builder(&url, HeaderValue::from_static("MCToken synthetic-only")).unwrap();
         let server_builder = ServerBuilder::new()
@@ -174,21 +146,12 @@ async fn pair_with_dialect(
             request.headers()[reqwest::header::AUTHORIZATION],
             "MCToken synthetic-only"
         );
-        let client = if legacy {
-            MessagingSocket::from_legacy_socket(
-                socket,
-                network_id,
-                Duration::from_secs(3600),
-                Options::default(),
-            )
-        } else {
-            MessagingSocket::from_socket(
-                socket,
-                network_id,
-                Duration::from_secs(3600),
-                Options::default(),
-            )
-        }
+        let client = MessagingSocket::from_socket(
+            socket,
+            network_id,
+            Duration::from_secs(3600),
+            Options::default(),
+        )
         .unwrap();
         (client, server)
     })

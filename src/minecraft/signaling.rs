@@ -56,40 +56,6 @@ impl Minecraft {
             url,
             authorization,
             ping_interval,
-            legacy_network_id: None,
-            #[cfg(feature = "test-support")]
-            hosted_transport: self.http.hosted_transport(),
-        })
-    }
-
-    /// Acquires the original legacy WebSocket route on this account's current service issuance.
-    /// Unlike Player Messaging, its discovered endpoint needs no configuration HTTP request.
-    ///
-    /// # Errors
-    /// Rejects missing/unsafe legacy discovery and original authentication failures before an upgrade.
-    pub async fn legacy_signaling_connection(
-        &mut self,
-        network_id: u64,
-    ) -> Result<ConnectionRequest, Error> {
-        self.discover().await?;
-        let uri = self
-            .legacy_signaling_environment
-            .as_ref()
-            .and_then(|environment| environment.get("prod"))
-            .and_then(|environment| environment.get("serviceUri"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or(Error::Invalid("missing legacy signaling discovery"))?;
-        let mut url = connection::websocket_url(uri)?;
-        url.path_segments_mut()
-            .map_err(|_| Error::Invalid("legacy WebSocket path"))?
-            .pop_if_empty()
-            .extend(["ws", "v1.0", "signaling", &network_id.to_string()]);
-        let authorization = self.authorize().await?;
-        Ok(ConnectionRequest {
-            url,
-            authorization,
-            ping_interval: connection::ping_interval(None)?,
-            legacy_network_id: Some(network_id),
             #[cfg(feature = "test-support")]
             hosted_transport: self.http.hosted_transport(),
         })

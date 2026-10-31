@@ -7,9 +7,8 @@ use std::panic::AssertUnwindSafe;
 /// An uncached read recovers the same applied member before its original conditional removal.
 #[tokio::test]
 async fn friend_fixture_uncached_read_preserves_original_member_and_conditional_leave() {
-    let mut outcomes = Vec::new();
-    for dialect in [HostedFriendDialect::Messaging, HostedFriendDialect::Legacy] {
-        let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+    let (read, bound, left, normal, panicked) =
+        tokio::time::timeout(Duration::from_secs(15), async {
             let deadline = Instant::now() + Duration::from_secs(10);
             let HostedFriend {
                 authority:
@@ -21,7 +20,6 @@ async fn friend_fixture_uncached_read_preserves_original_member_and_conditional_
             } = HostedAuthority::acquire_friend(
                 xbox::Config::default(),
                 minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
-                dialect,
                 "fixture-audience".into(),
                 deadline,
             )
@@ -72,17 +70,13 @@ async fn friend_fixture_uncached_read_preserves_original_member_and_conditional_
         })
         .await
         .expect("finite uncached original member read and retirement");
-        outcomes.push(outcome);
-    }
     assert!(
-        outcomes.iter().all(|(read, _, _, _, _)| *read),
-        "uncached original member read failed after owner cleanup: {outcomes:?}"
+        read,
+        "uncached original member read failed after owner cleanup"
     );
     assert!(
-        outcomes
-            .iter()
-            .all(|(_, bound, left, normal, panicked)| { *bound && *left && *normal && !*panicked }),
-        "recovered membership lost its original binding, conditional leave or retirement: {outcomes:?}"
+        bound && left && normal && !panicked,
+        "recovered membership lost its original binding, conditional leave or retirement"
     );
 }
 
@@ -102,7 +96,6 @@ async fn abort_original(admitted: bool) -> (HostedRtaReconnectObservation, bool)
         } = HostedAuthority::acquire_friend(
             xbox::Config::default(),
             minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
-            HostedFriendDialect::Messaging,
             "fixture-audience".into(),
             deadline,
         )
@@ -185,7 +178,7 @@ async fn friend_fixture_post_ack_bind_precedes_observation_accounting() {
         } = HostedAuthority::acquire_friend(
             xbox::Config::default(),
             minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
-            HostedFriendDialect::Messaging, "fixture-audience".into(), deadline,
+            "fixture-audience".into(), deadline,
         ).await;
         let mut recovery = peer.hold_rta_reconnect();
         let mut accounting = peer.hold_replacement_ack_accounting();

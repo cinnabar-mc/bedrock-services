@@ -14,7 +14,7 @@ async fn friend_fixture_canceled_rebind_reconciles_applied_and_late_original_wri
             } = HostedAuthority::acquire_friend(
                 xbox::Config::default(),
                 minecraft::Config::desktop("1.0.0", 1, Uuid::from_u128(1)),
-                HostedFriendDialect::Messaging, "fixture-audience".into(), deadline,
+                "fixture-audience".into(), deadline,
             ).await;
             let mut recovery = peer.hold_rta_reconnect();
             let mut hold = if applied {

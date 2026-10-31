@@ -44,6 +44,7 @@ fn replay(error: &Error) -> Error {
             Error::AccountCreationRequired(challenge.duplicate())
         }
         Error::Invalid(reason) => Error::Invalid(reason),
+        Error::UnsupportedNetworkProtocol => Error::UnsupportedNetworkProtocol,
         Error::ResponseTooLarge => Error::ResponseTooLarge,
         Error::TimeRange => Error::TimeRange,
         Error::DeviceCodeExpired => Error::DeviceCodeExpired,

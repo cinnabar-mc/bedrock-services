@@ -140,6 +140,7 @@ impl Realms<'_> {
         }
         success(&response)?;
         let address = response.json::<RealmAddress>()?;
+        address.network_protocol.validate()?;
         if address.address.trim().is_empty() {
             return Err(crate::Error::Invalid("Realm join address").into());
         }

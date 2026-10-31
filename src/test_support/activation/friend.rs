@@ -19,15 +19,6 @@ const NONCE: &str = "fixed-friend-member-nonce";
 const TEMPLATE: &str = "MinecraftLobby";
 const NAME: &str = "ControlledFriend";
 
-/// Fixed wire dialect exercised through the original account's protected signaling upgrade.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostedFriendDialect {
-    /// UUID-routed Player Messaging with original receipt callbacks.
-    Messaging,
-    /// String-routed signaling with original pushed TURN credentials.
-    Legacy,
-}
-
 /// A genuinely acquired synthetic account and its fixed service/host observation owners.
 /// This supplies no game session, opaque application selection or membership approval.
 pub struct HostedFriend {
@@ -46,7 +37,7 @@ pub struct HostedFriendHost {
     pub socket: Option<MessagingSocket>,
     /// Network identity used by this same socket and the complete directory response.
     pub network_id: u64,
-    /// UUID route for Messaging; Legacy uses the same network_id's decimal spelling.
+    /// Player Messaging UUID route.
     pub messaging_id: Uuid,
     state: Shared,
 }
@@ -119,7 +110,6 @@ pub struct HostedFriendObservation {
 }
 
 pub(super) struct Observed {
-    dialect: HostedFriendDialect,
     protocol: u32,
     joined: Option<oneshot::Sender<()>>,
     admit: Option<oneshot::Receiver<()>>,
@@ -147,7 +137,6 @@ impl Observed {
 }
 
 pub(super) struct Services {
-    dialect: HostedFriendDialect,
     host: messaging::Peer,
     joined: Option<oneshot::Sender<()>>,
     admit: Option<oneshot::Receiver<()>>,
@@ -158,7 +147,6 @@ impl Services {
     /// Copies only fixed metadata into the original shared scenario, moving barrier handles once.
     pub(super) fn observed(&mut self, protocol: u32) -> Observed {
         Observed {
-            dialect: self.dialect,
             protocol,
             joined: self.joined.take(),
             admit: self.admit.take(),
@@ -174,17 +162,11 @@ impl Services {
         }
     }
 
-    /// Selects only the fixed legacy sibling; its original caller still chooses the local network ID.
-    pub(super) fn is_legacy(&self) -> bool {
-        self.dialect == HostedFriendDialect::Legacy
-    }
-
     /// Routes actual frames using the original codec; this service acceptance is not game admission.
     pub(super) async fn run<S>(
         self,
         socket: tokio_websockets::WebSocketStream<S>,
         state: Shared,
-        local: u64,
     ) -> HostedSocketTerminal
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -198,13 +180,7 @@ impl Services {
             .signaling_open = true;
         let (visitor, host) = tokio::time::timeout_at(
             self.deadline.into(),
-            messaging::relay::friend::run(
-                socket,
-                self.host,
-                self.dialect,
-                [MESSAGING_ID, HOST_MESSAGING],
-                [local, HOST_NETWORK],
-            ),
+            messaging::relay::friend::run(socket, self.host, [MESSAGING_ID, HOST_MESSAGING]),
         )
         .await
         .expect("finite original friend signaling relay");
@@ -220,16 +196,12 @@ impl HostedAuthority {
     pub async fn acquire_friend(
         auth: xbox::Config,
         minecraft: minecraft::Config,
-        dialect: HostedFriendDialect,
         audience: String,
         deadline: Instant,
     ) -> HostedFriend {
         assert!(deadline > Instant::now());
         tokio::time::timeout_at(deadline.into(), async {
-            let (socket, host) = match dialect {
-                HostedFriendDialect::Messaging => messaging::pair(HOST_NETWORK).await,
-                HostedFriendDialect::Legacy => messaging::pair_legacy(HOST_NETWORK).await,
-            };
+            let (socket, host) = messaging::pair(HOST_NETWORK).await;
             let (joined, observed) = oneshot::channel();
             let (admit, released) = oneshot::channel();
             let authority = acquire_inner(
@@ -239,7 +211,6 @@ impl HostedAuthority {
                 "1".into(),
                 audience,
                 Scenario::Friend(Box::new(Services {
-                    dialect,
                     host,
                     joined: Some(joined),
                     admit: Some(released),

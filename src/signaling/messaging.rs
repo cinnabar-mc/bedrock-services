@@ -44,8 +44,6 @@ pub enum Event {
     },
     /// The caller must explicitly acknowledge this after its transport accepts the signal.
     Signal(ReceivedSignal),
-    /// A legacy service signal, routed by its actual network string without a peer receipt callback.
-    LegacySignal(super::ReceivedLegacySignal),
     /// A required response to a server callback; send it even when its events are ignored.
     Reply(Outgoing),
     /// A well-formed unsupported or uncorrelated message was skipped; no raw text is retained.

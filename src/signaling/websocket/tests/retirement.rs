@@ -21,7 +21,7 @@ async fn written(client: &mut MessagingSocket, server: &mut WebSocketStream<TcpS
 
 /// Exact retirement drops a batched cached result before its queued completion can be exposed.
 #[tokio::test]
-async fn retires_actual_batched_turn_cache_and_preserves_successor_and_legacy_wait() {
+async fn retires_actual_batched_turn_cache_and_preserves_successor() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let (mut client, mut server) = pair_with_initial(TEST_NETWORK_ID, None).await;
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -59,19 +59,12 @@ async fn retires_actual_batched_turn_cache_and_preserves_successor_and_legacy_wa
         let stale = client.retire_credentials(original);
         let owner = client.take_credentials().unwrap();
         let moved_once = client.take_credentials().is_none();
-        let mut legacy = State::Legacy(crate::signaling::Legacy::new());
-        let CredentialRequest::Wait(legacy_request) = legacy.request_credentials(deadline).unwrap()
-        else {
-            panic!("legacy must retain its original pushed-credential wait");
-        };
-        let legacy_refused = !legacy.retire_credentials(legacy_request);
-        let legacy_preserved = legacy.next_deadline() == Some(deadline);
         client.close();
         let (closed, peer_closed) = tokio::join!(client.drive(), server.close());
         assert!(matches!(closed, Err(SocketError::Closed)) && peer_closed.is_ok());
         assert!(first_ignored && cached_before_completion && retired && cleared);
         assert!(!repeated && !stale);
-        assert!(successor_completed && moved_once && legacy_refused && legacy_preserved);
+        assert!(successor_completed && moved_once);
         assert_eq!(owner.servers()[0].username(), "successor");
     })
     .await

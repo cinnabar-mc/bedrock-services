@@ -175,17 +175,16 @@ async fn gatherings_requests_keep_catalog_metadata_counts_and_explicit_join_tran
         );
         counts[0].player_count = Some(999);
         assert_eq!(api.player_counts().await.unwrap()[0].player_count, Some(0));
-        for expected in [
-            NetworkProtocol::NetherNetJsonRpc,
-            NetworkProtocol::NetherNet,
-            NetworkProtocol::Default,
-            NetworkProtocol::Unknown("QUIC".into()),
-        ] {
-            let joined = api.join_experience(EXPERIENCE).await.unwrap();
-            assert_eq!(joined.network_protocol, expected);
-            assert_eq!(joined.destination_info.experience_id, EXPERIENCE);
-            assert_eq!(joined.destination_info.server_id, "original-server");
-            assert_eq!(joined.nethernet_id, "1234567");
+        let joined = api.join_experience(EXPERIENCE).await.unwrap();
+        assert_eq!(joined.network_protocol, NetworkProtocol::NetherNetJsonRpc);
+        assert_eq!(joined.destination_info.experience_id, EXPERIENCE);
+        assert_eq!(joined.destination_info.server_id, "original-server");
+        assert_eq!(joined.nethernet_id, "1234567");
+        for _ in 0..3 {
+            assert!(matches!(
+                api.join_experience(EXPERIENCE).await,
+                Err(crate::Error::UnsupportedNetworkProtocol)
+            ));
         }
         let error = api
             .search_items(&SearchFilter {
@@ -447,7 +446,7 @@ async fn gatherings_rejects_wrong_containers_null_results_and_invalid_join_field
         ),
         (
             true,
-            br#"{"result":{"networkProtocol":"NetherNet","netherNetId":""}}"#,
+            br#"{"result":{"networkProtocol":"NETHERNET_JSONRPC","netherNetId":""}}"#,
         ),
         (
             true,
@@ -455,7 +454,7 @@ async fn gatherings_rejects_wrong_containers_null_results_and_invalid_join_field
         ),
         (
             true,
-            br#"{"result":{"networkProtocol":"NetherNet","netherNetId":"1","destinationInfo":[]}}"#,
+            br#"{"result":{"networkProtocol":"NETHERNET_JSONRPC","netherNetId":"1","destinationInfo":[]}}"#,
         ),
     ];
     for (join, body) in replies {

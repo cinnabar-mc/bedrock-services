@@ -171,9 +171,9 @@ async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
                     14 => Reply { status:277, body:"SECRET".into(), retry_after:Some("0") },
                     15 => Reply { status:503, body:"SECRET".into(), retry_after:Some("malformed") },
                     16 => Reply::json(503,json!({"diagnostic":"SECRET"})),
-                    17 => Reply::json(200,json!({"address":"[2001:db8::1]:19132","pendingUpdate":true,"sessionRegionData":{"regionName":"fixture","serviceQuality":7}})),
+                    17 => Reply::json(200,json!({"address":"unsupported-host:19132"})),
                     18 => Reply::json(200,json!({"address":"42","networkProtocol":" nethernet "})),
-                    19 => Reply::json(200,json!({"address":"43","networkProtocol":"NETHERNET_JSONRPC"})),
+                    19 => Reply::json(200,json!({"address":"43","networkProtocol":"NETHERNET_JSONRPC","pendingUpdate":true,"sessionRegionData":{"regionName":"fixture","serviceQuality":7}})),
                     20 => Reply::json(200,json!({"address":"44","networkProtocol":"FUTURE"})),
                     21 => Reply::json(403,json!({"diagnostic":"SECRET"})),
                     22 => Reply::json(404,json!({"diagnostic":"SECRET"})),
@@ -203,33 +203,39 @@ async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
     }
     let failure = realms.join(id, &[]).await.err().unwrap();
     assert!(!format!("{failure} {failure:?}").contains("SECRET"));
-    let Join::Ready(address) = realms
-        .join(
-            id,
-            &[PingResult {
-                latency_ms: 17,
-                region: "fixture".into(),
-            }],
-        )
-        .await
-        .unwrap()
-    else {
+    assert!(matches!(
+        realms
+            .join(
+                id,
+                &[PingResult {
+                    latency_ms: 17,
+                    region: "fixture".into()
+                }]
+            )
+            .await,
+        Err(RealmsError::Service(
+            crate::Error::UnsupportedNetworkProtocol
+        ))
+    ));
+    assert!(matches!(
+        realms.join(id, &[]).await,
+        Err(RealmsError::Service(
+            crate::Error::UnsupportedNetworkProtocol
+        ))
+    ));
+    let Join::Ready(address) = realms.join(id, &[]).await.unwrap() else {
         panic!("expected ready Realm")
     };
-    assert_eq!(address.address, "[2001:db8::1]:19132");
-    assert_eq!(address.network_protocol, NetworkProtocol::Default);
+    assert_eq!(address.address, "43");
+    assert_eq!(address.network_protocol, NetworkProtocol::NetherNetJsonRpc);
     assert!(address.pending_update);
     assert_eq!(address.session_region.unwrap().region_name, "fixture");
-    for expected in [
-        NetworkProtocol::NetherNet,
-        NetworkProtocol::NetherNetJsonRpc,
-        NetworkProtocol::Unknown("FUTURE".into()),
-    ] {
-        let Join::Ready(address) = realms.join(id, &[]).await.unwrap() else {
-            panic!("expected ready Realm")
-        };
-        assert_eq!(address.network_protocol, expected);
-    }
+    assert!(matches!(
+        realms.join(id, &[]).await,
+        Err(RealmsError::Service(
+            crate::Error::UnsupportedNetworkProtocol
+        ))
+    ));
     assert!(matches!(
         realms.join(id, &[]).await,
         Err(RealmsError::NotMember)

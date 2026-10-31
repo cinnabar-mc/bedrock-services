@@ -81,7 +81,7 @@ Call `join` only for the Realm the user selected. One call makes one join attemp
 ```rust,no_run
 use bedrock_services::{
     minecraft::Minecraft,
-    realms::{self, Join, NetworkProtocol},
+    realms::{self, Join},
 };
 use std::num::NonZeroU64;
 
@@ -90,14 +90,7 @@ async fn resolve_realm(
     realm_id: NonZeroU64,
 ) -> Result<(), realms::Error> {
     match services.realms().await?.join(realm_id, &[]).await? {
-        Join::Ready(address) => match address.network_protocol {
-            NetworkProtocol::Default => println!("RakNet: {}", address.address),
-            NetworkProtocol::NetherNet => println!("NetherNet: {}", address.address),
-            NetworkProtocol::NetherNetJsonRpc => {
-                println!("NetherNet JSON-RPC: {}", address.address);
-            }
-            _ => eprintln!("unsupported Realm transport"),
-        },
+        Join::Ready(address) => println!("NetherNet JSON-RPC: {}", address.address),
         Join::Pending { retry_after } => {
             println!("retry this selected Realm after {retry_after:?}");
         }
@@ -109,8 +102,9 @@ async fn resolve_realm(
 
 Schedule `Pending` retries yourself, within your own overall deadline. Canceling
 a join future cancels its HTTP work. Supply measured `PingResult`s instead of
-`&[]` if your application measures region latency. Preserve the returned address
-text, including IPv6. Never treat an unknown transport as RakNet.
+`&[]` if your application measures region latency. Only `NETHERNET_JSONRPC`
+assignments are joinable; other protocols return an unsupported network error.
+The returned address is the NetherNet identity.
 
 The owner retains negotiated Realms version state between views; selected version
 rejections can trigger bounded version negotiation. Missing optional Realms
