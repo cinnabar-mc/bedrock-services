@@ -140,10 +140,6 @@ mod tests {
     /// and raw query ordering, duplicate/missing headers and partial body signing.
     #[test]
     fn signatures_match_the_public_go_acquisition_baseline() {
-        let Some(oracle) = std::env::var_os("BEDROCK_SERVICES_GO_ORACLE") else {
-            eprintln!("missing-fixture: BEDROCK_SERVICES_GO_ORACLE (build tools/go-oracle)");
-            return;
-        };
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/signature-requests.json"
@@ -151,53 +147,70 @@ mod tests {
         let fixture: Fixture =
             serde_json::from_str(include_str!("../tests/fixtures/signature-requests.json"))
                 .unwrap();
-        let output = Command::new(oracle).arg(path).output().unwrap();
-        assert!(output.status.success(), "Go signature oracle failed");
-        let reference: Vec<String> = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(reference.len(), fixture.requests.len());
-        let mut scalar = [0_u8; 32];
-        scalar[24..].copy_from_slice(&fixture.key_scalar.to_be_bytes());
-        let key = SigningKey::from_slice(&scalar).unwrap();
-        let now = UNIX_EPOCH + Duration::new(fixture.time_unix_seconds, fixture.subsecond_nanos);
-        for (input, reference) in fixture.requests.iter().zip(reference) {
-            let policy = SignaturePolicy {
-                version: 1,
-                max_body_bytes: input.limit,
-                extra_headers: input.headers.clone(),
-            };
-            let mut request = reqwest::Client::new()
-                .post(&input.url)
-                .body(input.body.clone())
-                .build()
-                .unwrap();
-            request.headers_mut().insert(
-                "authorization",
-                HeaderValue::from_static("synthetic-authorization"),
-            );
-            request
-                .headers_mut()
-                .append("x-extra", HeaderValue::from_static("first"));
-            request
-                .headers_mut()
-                .append("x-extra", HeaderValue::from_static("second"));
-            policy.sign(&mut request, &key, now).unwrap();
-            let digest = policy
-                .digest(&request, input.body.as_bytes(), filetime(now).unwrap())
-                .unwrap();
-            for value in [
-                reference.as_str(),
-                request.headers()["signature"].to_str().unwrap(),
-            ] {
-                let bytes = STANDARD.decode(value).unwrap();
-                assert_eq!(bytes.len(), 76);
-                assert_eq!(&bytes[..4], &policy.version.to_be_bytes());
-                assert_eq!(&bytes[4..12], &filetime(now).unwrap().to_be_bytes());
-                let signature = Signature::from_slice(&bytes[12..]).unwrap();
-                key.verifying_key()
-                    .verify_prehash(&digest, &signature)
+        let mut references = vec![
+            serde_json::from_str::<Vec<String>>(include_str!(
+                "../tests/fixtures/signature-reference.json"
+            ))
+            .unwrap(),
+        ];
+        if let Some(oracle) = std::env::var_os("BEDROCK_SERVICES_GO_ORACLE") {
+            let output = Command::new(oracle).arg(path).output().unwrap();
+            assert!(output.status.success(), "Go signature oracle failed");
+            references.push(serde_json::from_slice(&output.stdout).unwrap());
+        }
+        for reference in references {
+            assert_eq!(reference.len(), fixture.requests.len());
+            let mut scalar = [0_u8; 32];
+            scalar[24..].copy_from_slice(&fixture.key_scalar.to_be_bytes());
+            let key = SigningKey::from_slice(&scalar).unwrap();
+            let now =
+                UNIX_EPOCH + Duration::new(fixture.time_unix_seconds, fixture.subsecond_nanos);
+            for (input, reference) in fixture.requests.iter().zip(reference) {
+                let policy = SignaturePolicy {
+                    version: 1,
+                    max_body_bytes: input.limit,
+                    extra_headers: input.headers.clone(),
+                };
+                let mut request = reqwest::Client::new()
+                    .post(&input.url)
+                    .body(input.body.clone())
+                    .build()
                     .unwrap();
+                request.headers_mut().insert(
+                    "authorization",
+                    HeaderValue::from_static("synthetic-authorization"),
+                );
+                request
+                    .headers_mut()
+                    .append("x-extra", HeaderValue::from_static("first"));
+                request
+                    .headers_mut()
+                    .append("x-extra", HeaderValue::from_static("second"));
+                policy.sign(&mut request, &key, now).unwrap();
+                let digest = policy
+                    .digest(&request, input.body.as_bytes(), filetime(now).unwrap())
+                    .unwrap();
+                for value in [
+                    reference.as_str(),
+                    request.headers()["signature"].to_str().unwrap(),
+                ] {
+                    let bytes = STANDARD.decode(value).unwrap();
+                    assert_eq!(bytes.len(), 76);
+                    assert_eq!(&bytes[..4], &policy.version.to_be_bytes());
+                    assert_eq!(&bytes[4..12], &filetime(now).unwrap().to_be_bytes());
+                    let signature = Signature::from_slice(&bytes[12..]).unwrap();
+                    key.verifying_key()
+                        .verify_prehash(&digest, &signature)
+                        .unwrap();
+                }
             }
         }
+    }
+
+    /// Timestamp conversion checks its unsigned range independently of external fixtures.
+    #[test]
+    fn timestamp_boundaries() {
+        assert_eq!(filetime(UNIX_EPOCH).unwrap(), 116_444_736_000_000_000);
         if let Some(before_filetime) = UNIX_EPOCH.checked_sub(Duration::from_secs(11_644_473_601)) {
             assert!(filetime(before_filetime).is_err());
         }
