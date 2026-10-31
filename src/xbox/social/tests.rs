@@ -176,7 +176,7 @@ async fn social_reads_share_account_policy_and_preserve_unknown_presence_and_ses
                     16 => {
                         assert_eq!(target, format!("/users/me/people/batch/decoration/{DECORATIONS}"));
                         assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), json!({"xuids": ["321"]}));
-                        (200, json!({"people": [{"xuid": "321", "presenceState": "Online"}]}))
+                        (200, json!({"people": [{"xuid": "321", "presenceState": "Online", "isFriend":true, "isFriendRequestSent":false, "isFriendRequestReceived":true}]}))
                     }
                     17 => {
                         assert_eq!(target, format!("/users/me/people/xuids(123)/decoration/{DECORATIONS}"));
@@ -186,12 +186,22 @@ async fn social_reads_share_account_policy_and_preserve_unknown_presence_and_ses
                         assert_eq!(target, "/users/me?level=all");
                         (200, json!({"xuid": "123", "state": "Offline", "devices": null}))
                     }
+                    19..=21 => {
+                        assert_eq!(target, "/users/me/profile/settings/batch");
+                        let lower = header.to_ascii_lowercase();
+                        assert!(lower.starts_with("post "));
+                        assert!(lower.contains("x-xbl-contract-version: 3"));
+                        assert!(lower.contains("content-type: application/json"));
+                        assert!(lower.contains(&format!("accept-language: fr-FR, {DEFAULT_LANGUAGE}").to_ascii_lowercase()));
+                        assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), json!({"settings":[{"userSetting":{"id":"FutureSetting","value":"opaque"}}]}));
+                        (match step { 19 => 201, 20 => 503, _ => 200 }, json!({"error":"SENSITIVE-body"}))
+                    }
                     _ => panic!("unexpected social request"),
                 }
             }
         };
         (status, response_headers, value)
-    }, 18).await;
+    }, 21).await;
     let config = Config::default();
     let credentials = Credentials::from_tokens(
         config.client_id.clone(),
@@ -260,14 +270,82 @@ async fn social_reads_share_account_policy_and_preserve_unknown_presence_and_ses
             .as_deref(),
         Some("Away")
     );
-    assert!(social.profiles(&["321"]).await.unwrap()[0].is_online());
+    let batch = social.profiles(&["321"]).await.unwrap();
+    assert!(batch[0].is_online());
+    assert_eq!(batch[0].is_friend, Some(true));
+    assert_eq!(batch[0].is_friend_request_sent, Some(false));
+    assert_eq!(batch[0].is_friend_request_received, Some(true));
+    assert_eq!(users[0].is_friend, None);
     assert_eq!(social.current_profile().await.unwrap().xuid, "123");
     assert_eq!(
         social.current_presence().await.unwrap().state.as_deref(),
         Some("Offline")
     );
+    let mut settings = ProfileSettings::default();
+    settings.insert("FutureSetting".into(), "opaque".into());
+    social.update_profile_settings(&settings).await.unwrap();
+    for _ in 0..2 {
+        let error = social
+            .update_profile_settings(&settings)
+            .await
+            .err()
+            .unwrap();
+        assert!(!format!("{error:?} {error}").contains("SENSITIVE"));
+    }
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
         .unwrap();
+}
+/// The service envelope retains arbitrary setting IDs and last-write duplicate semantics.
+#[test]
+fn profile_settings_preserve_unknown_entries_and_wire_formats() {
+    let mut settings: ProfileSettings = serde_json::from_value(json!({"settings":[
+        {"userSetting":{"id":"Bio","value":"before"}},
+        {"userSetting":{"id":"FutureSetting","value":"opaque"}},
+        {"userSetting":{"id":"Bio","value":"after"}},
+        {"userSetting":{"id":"Location","value":""}}
+    ]}))
+    .unwrap();
+    assert_eq!(settings["Bio"], "after");
+    assert_eq!(settings["FutureSetting"], "opaque");
+    assert_eq!(settings["Location"], "");
+    settings = settings
+        .with_show_user_as_avatar(true)
+        .with_preferred_platforms(&["pc", "future"]);
+    assert!(settings.show_user_as_avatar());
+    assert_eq!(settings["ShowUserAsAvatar"], "1");
+    assert_eq!(settings.preferred_platforms(), ["pc", "future"]);
+    assert_eq!(settings["PreferredPlatforms"], "pc,future");
+    let decoded: ProfileSettings =
+        serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+    assert_eq!(decoded, settings);
+    let disabled = settings.with_show_user_as_avatar(false);
+    assert!(!disabled.show_user_as_avatar());
+    assert_eq!(disabled["ShowUserAsAvatar"], "0");
+    for value in [
+        json!(null),
+        json!({}),
+        json!({"settings":null}),
+        json!({"settings":[]}),
+    ] {
+        assert!(
+            serde_json::from_value::<ProfileSettings>(value)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(ProfileSettings::default()).unwrap(),
+        json!({"settings":[]})
+    );
+    for value in [
+        json!([]),
+        json!({"settings":{}}),
+        json!({"settings":[[]]}),
+        json!({"settings":[{"userSetting":[]}]}),
+        json!({"settings":[{"userSetting":{"id":7}}]}),
+    ] {
+        assert!(serde_json::from_value::<ProfileSettings>(value).is_err());
+    }
 }

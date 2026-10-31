@@ -1,9 +1,11 @@
-//! Account-borrowed PeopleHub, Presence and multiplayer activity reads.
+//! Account-borrowed profile settings, PeopleHub, Presence and multiplayer activity requests.
 //!
 //! Calls run once on the caller's async runtime. There is no poller, subscription,
 //! background refresh or inferred permission to join a reported session.
 
+pub mod profile;
 mod types;
+pub use profile::ProfileSettings;
 
 pub use types::{
     Activity, ActivityInfo, DevicePresence, LastSeen, PeopleList, Presence, ProfileDetail,
@@ -31,7 +33,7 @@ pub struct Social<'a> {
 }
 
 impl Account {
-    /// Borrows concrete social read services, retaining this account's acquisition state.
+    /// Borrows concrete social services, retaining this account's acquisition state.
     pub fn social(&mut self) -> Social<'_> {
         Social {
             account: self,
@@ -98,6 +100,28 @@ impl Social<'_> {
             return Err(Error::Invalid("unrequested Xbox profile"));
         }
         Ok(users)
+    }
+
+    /// Applies only the supplied profile keys in one signed batch update.
+    /// Unknown keys are forwarded unchanged; callers own the outcome of canceled writes.
+    pub async fn update_profile_settings(
+        &mut self,
+        settings: &ProfileSettings,
+    ) -> Result<(), Error> {
+        crate::http::call::run(async {
+            let url = self.destination(
+                Service::Profile,
+                &["users", "me", "profile", "settings", "batch"],
+            )?;
+            let body = serde_json::to_value(settings)
+                .map_err(|_| Error::Invalid("profile settings request"))?;
+            let response = self.send(Service::Profile, url, Some(body)).await?;
+            if response.status != StatusCode::CREATED {
+                return Err(Error::Invalid("profile settings response status"));
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Reads all reported devices and titles for the signed-in account.
@@ -257,6 +281,9 @@ impl Social<'_> {
                     .header("content-type", "application/json")
                     .header("accept-language", self.language.clone());
             }
+            Service::Profile => {
+                request = request.header("accept-language", self.language.clone());
+            }
             Service::Activities => {}
         }
         if let Some(body) = body {
@@ -279,6 +306,7 @@ impl Social<'_> {
 
 #[derive(Clone, Copy)]
 enum Service {
+    Profile,
     People,
     Presence,
     Activities,
@@ -288,6 +316,7 @@ impl Service {
     /// Keeps the service destinations in one exhaustive owner.
     fn base(self) -> &'static str {
         match self {
+            Self::Profile => "https://profile.xboxlive.com",
             Self::People => "https://peoplehub.xboxlive.com",
             Self::Presence => super::presence::ENDPOINT,
             Self::Activities => super::mpsd::ENDPOINT,
@@ -297,6 +326,7 @@ impl Service {
     /// Selects the inspected contract for each concrete API, including undecorated lists.
     fn contract(self) -> &'static str {
         match self {
+            Self::Profile => "3",
             Self::People => "7",
             Self::Presence => super::presence::CONTRACT,
             Self::Activities => super::mpsd::CONTRACT,
