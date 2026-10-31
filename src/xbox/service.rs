@@ -75,20 +75,74 @@ fn token_expired(response: &Response) -> bool {
             .iter()
             .any(|value| {
                 value.to_str().is_ok_and(|value| {
-                    value.split(',').any(|part| {
-                        let part = part.trim();
-                        let part = part
-                            .get(..6)
-                            .filter(|prefix| prefix.eq_ignore_ascii_case("token "))
-                            .map_or(part, |_| part[6..].trim());
-                        part.split_once('=').is_some_and(|(name, value)| {
-                            name.trim().eq_ignore_ascii_case("error")
-                                && value
-                                    .trim()
-                                    .trim_matches(['\"', '\''])
-                                    .eq_ignore_ascii_case("token_expired")
+                    let mut quoted = false;
+                    let mut escaped = false;
+                    value
+                        .split(|character| {
+                            if escaped {
+                                escaped = false;
+                                return false;
+                            }
+                            match character {
+                                '\\' if quoted => escaped = true,
+                                '"' => quoted = !quoted,
+                                ',' if !quoted => return true,
+                                _ => {}
+                            }
+                            false
                         })
-                    })
+                        .any(|part| {
+                            let part = part.trim();
+                            let part = part
+                                .get(..6)
+                                .filter(|prefix| prefix.eq_ignore_ascii_case("token "))
+                                .map_or(part, |_| part[6..].trim());
+                            part.split_once('=').is_some_and(|(name, value)| {
+                                name.trim().eq_ignore_ascii_case("error")
+                                    && value
+                                        .trim()
+                                        .trim_matches(['\"', '\''])
+                                        .eq_ignore_ascii_case("token_expired")
+                            })
+                        })
                 })
             })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Quoted commas and escaped quotes cannot introduce an authentication error parameter.
+    #[test]
+    fn challenge_parameters_regression() {
+        for (challenge, expired) in [
+            (
+                r#"Token error="insufficient_scope", error_description="denied,error=token_expired,contact support""#,
+                false,
+            ),
+            (
+                r#"Token error_description="denied,\"error=token_expired,contact support""#,
+                false,
+            ),
+            (r#"Token error="token_expired""#, true),
+            (
+                r#"Token error_description="a,b", error="token_expired""#,
+                true,
+            ),
+            (r#"Bearer realm="a,b", Token error="token_expired""#, true),
+        ] {
+            let mut response = Response {
+                status: StatusCode::UNAUTHORIZED,
+                headers: Default::default(),
+                body: Default::default(),
+            };
+            response
+                .headers
+                .insert("www-authenticate", challenge.parse().unwrap());
+            assert_eq!(token_expired(&response), expired, "{challenge}");
+            response.status = StatusCode::FORBIDDEN;
+            assert!(!token_expired(&response));
+        }
+    }
 }
