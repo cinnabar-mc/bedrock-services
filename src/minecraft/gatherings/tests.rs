@@ -89,6 +89,7 @@ async fn gatherings_requests_keep_catalog_metadata_counts_and_explicit_join_tran
             return (200, vec![], discovery(headers, None));
         }
         assert!(lower.contains("authorization: mctoken original."));
+        assert!(lower.contains("client-version: 1.26.50"));
         assert!(lower.contains("accept: application/json"));
         for absent in ["signature:", "x-entitytoken:", "session-id:", "x-xbl-contract-version:"] {
             assert!(!lower.contains(absent));
@@ -644,4 +645,94 @@ async fn gatherings_catalog_uses_the_bounded_service_response_budget() {
             .await
             .unwrap();
     assert!(matches!(result, Err(Error::ResponseTooLarge)));
+}
+/// Friend joins preserve optional selection data and never resend an ambiguous mutation.
+#[tokio::test]
+async fn friend_join_keeps_explicit_world_query_and_single_dispatch() {
+    for (world, friend, status) in [
+        (None, "", 200),
+        (Some(Uuid::nil()), "", 200),
+        (Some(Uuid::from_u128(22)), "friend?&/+ name", 200),
+        (None, "friend", 503),
+    ] {
+        let mut step = 0;
+        let (address, server) = fixture_bytes(move |path, headers, bytes| {
+            step += 1;
+            if step == 1 { return (200, vec![], discovery(headers, None)); }
+            assert_eq!(step, 2);
+            let url = Url::parse(&format!("https://fixture.invalid{path}")).unwrap();
+            assert_eq!(url.path(), "/gatherings-prefix/api/v2.0/join/world/client");
+            let pairs: Vec<_> = url.query_pairs().collect();
+            if friend.is_empty() { assert!(pairs.is_empty()); }
+            else { assert_eq!(pairs, [("friendId".into(), friend.into())]); }
+            let lower = headers.to_ascii_lowercase();
+            assert!(lower.starts_with("post "));
+            assert!(lower.contains("client-version: 1.26.50"));
+            assert!(lower.contains("authorization: mctoken original."));
+            let mut body = json!({"experienceId":EXPERIENCE});
+            if let Some(world) = world.filter(|id| !id.is_nil()) { body["worldId"] = json!(world); }
+            assert_eq!(serde_json::from_slice::<Value>(bytes).unwrap(), body);
+            if status == 200 {
+                (200, vec![], json!({"result":{"networkProtocol":"NETHERNET_JSONRPC","netherNetId":" opaque-id ","destinationInfo":{"worldId":Uuid::from_u128(22),"worldName":"Selected"}}}).to_string().into_bytes())
+            } else { (status, vec![], b"SENSITIVE".to_vec()) }
+        }, 2).await;
+        let mut services = services(address);
+        let mut api = services.gatherings().await.unwrap();
+        assert!(api.join_friend(Uuid::nil(), world, friend).await.is_err());
+        let result = api.join_friend(EXPERIENCE, world, friend).await;
+        if status == 200 {
+            let result = result.unwrap();
+            assert_eq!(result.target().unwrap().nethernet_id(), "opaque-id");
+            assert_eq!(result.destination_info.world_name, "Selected");
+        } else {
+            let error = result.err().unwrap();
+            assert!(matches!(
+                error,
+                Error::Status {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    ..
+                }
+            ));
+            assert!(!format!("{error:?} {error}").contains("SENSITIVE"));
+        }
+        server.await.unwrap();
+    }
+}
+
+/// Treatment metadata remains typed and ordered without filtering the original catalog entry.
+#[test]
+fn required_experiments_preserve_order_and_nullable_metadata() {
+    for (properties, expected) in [
+        (json!({}), vec![]),
+        (json!({"requiredExperiments":null}), vec![]),
+        (json!({"requiredExperiments":[]}), vec![]),
+        (
+            json!({"requiredExperiments":["future","known","future"]}),
+            vec!["future", "known", "future"],
+        ),
+    ] {
+        let item: CatalogItem =
+            serde_json::from_value(json!({"DisplayProperties":properties})).unwrap();
+        assert_eq!(item.properties().unwrap().required_experiments, expected);
+        assert_eq!(
+            serde_json::from_str::<Value>(item.display_properties.as_ref().unwrap().get()).unwrap(),
+            properties
+        );
+    }
+}
+
+/// An invalid selection cannot trigger discovery or credential acquisition.
+#[tokio::test]
+async fn nil_friend_experience_never_acquires_authorization() {
+    let mut minecraft = services("127.0.0.1:0".parse().unwrap());
+    minecraft.authorization = None;
+    minecraft.environment = None;
+    let mut api = Gatherings {
+        minecraft: &mut minecraft,
+        base: Url::parse("https://fixture.invalid").unwrap(),
+    };
+    assert!(matches!(
+        api.join_friend(Uuid::nil(), None, "friend").await,
+        Err(Error::Invalid("gatherings experience ID"))
+    ));
 }

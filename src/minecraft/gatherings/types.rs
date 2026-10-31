@@ -110,6 +110,9 @@ pub struct Image {
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DisplayProperties {
+    /// Ordered treatment requirements; the application decides how to interpret them.
+    #[serde(deserialize_with = "string_list")]
+    pub required_experiments: Vec<String>,
     /// Experience selection text; applications require a nonnil UUID before explicit join.
     #[serde(deserialize_with = "null_default")]
     pub experience_id: String,
@@ -239,6 +242,15 @@ fn null_default<'de, D: Deserializer<'de>, T: Deserialize<'de> + Default>(
     d: D,
 ) -> Result<T, D::Error> {
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
+/// Preserves null lists and null string entries as their service defaults.
+fn string_list<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(Option::<Vec<Option<String>>>::deserialize(d)?
+        .unwrap_or_default()
+        .into_iter()
+        .map(Option::unwrap_or_default)
+        .collect())
 }
 
 /// Matches null object fields while refusing positional-array struct decoding.

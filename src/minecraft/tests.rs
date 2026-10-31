@@ -77,7 +77,7 @@ async fn explicit_discovery_reuses_one_request_without_authorization_or_multipla
 }
 
 /// Owners on one HTTP transport reuse public discovery after the original peer has closed.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn discovery_is_shared_between_service_owners() {
     let (address, server) = fixture_headers(|_, headers, body| {
         assert!(!headers.to_ascii_lowercase().contains("authorization:"));

@@ -165,12 +165,46 @@ impl Gatherings<'_> {
             .minecraft
             .http
             .post_json(url.as_str(), &serde_json::json!({"experienceId":id}))?;
+        self.resolve_join("join_experience", request).await
+    }
+
+    /// Joins an explicitly selected friend's experience, optionally selecting its world.
+    /// Friend IDs are opaque query data; this operation dispatches once and never chooses a fallback.
+    ///
+    /// # Errors
+    /// Rejects nil experience IDs, unsupported assignments and bounded HTTP/auth failures.
+    pub async fn join_friend(
+        &mut self,
+        experience_id: Uuid,
+        world_id: Option<Uuid>,
+        friend_id: &str,
+    ) -> Result<JoinAddress, Error> {
+        if experience_id.is_nil() {
+            return Err(Error::Invalid("gatherings experience ID"));
+        }
+        let mut url = append(
+            self.base.as_str(),
+            &["api", "v2.0", "join", "world", "client"],
+        )?;
+        if !friend_id.is_empty() {
+            url.query_pairs_mut().append_pair("friendId", friend_id);
+        }
+        let mut body = serde_json::json!({"experienceId":experience_id});
+        if let Some(world_id) = world_id.filter(|id| !id.is_nil()) {
+            body["worldId"] = serde_json::json!(world_id);
+        }
+        let request = self.minecraft.http.post_json(url.as_str(), &body)?;
+        self.resolve_join("join_friend", request).await
+    }
+
+    /// Decodes every explicit join through one single-dispatch and target-validation contract.
+    async fn resolve_join(
+        &mut self,
+        operation: &'static str,
+        request: Request,
+    ) -> Result<JoinAddress, Error> {
         let response = self
-            .send(
-                "join_experience",
-                request,
-                crate::http::retry::Policy::Single,
-            )
+            .send(operation, request, crate::http::retry::Policy::Single)
             .await?;
         #[derive(Deserialize)]
         struct Envelope {
@@ -189,6 +223,9 @@ impl Gatherings<'_> {
         policy: crate::http::retry::Policy,
     ) -> Result<Response, Error> {
         crate::http::call::run(async {
+            let version = HeaderValue::from_str(&self.minecraft.config.game_version)
+                .map_err(|_| Error::Invalid("gatherings client version"))?;
+            request.headers_mut().insert("client-version", version);
             let token = self
                 .minecraft
                 .authorize()
