@@ -349,3 +349,22 @@ fn profile_settings_preserve_unknown_entries_and_wire_formats() {
         assert!(serde_json::from_value::<ProfileSettings>(value).is_err());
     }
 }
+/// Presence title IDs accept decimal strings and numbers in single and batch response shapes.
+#[test]
+fn presence_title_ids_regression() {
+    for id in [json!(123), json!("123")] {
+        let record =
+            json!({"xuid":"321","devices":[{"titles":[{"id":id}]}],"lastSeen":{"titleId":id}});
+        let single: Presence = serde_json::from_value(record.clone()).unwrap();
+        let batch: Vec<Presence> = serde_json::from_value(json!([record])).unwrap();
+        for presence in std::iter::once(single).chain(batch) {
+            assert_eq!(presence.devices[0].titles[0].id, Some(123));
+            assert_eq!(presence.last_seen.unwrap().title_id, Some(123));
+        }
+    }
+    for id in [json!("4294967296"), json!(-1), json!(1.5), json!("bad")] {
+        let record =
+            json!({"xuid":"321","devices":[{"titles":[{"id":id}]}],"lastSeen":{"titleId":id}});
+        assert!(serde_json::from_value::<Presence>(record).is_err());
+    }
+}

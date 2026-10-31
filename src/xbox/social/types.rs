@@ -160,6 +160,7 @@ pub struct DevicePresence {
 #[non_exhaustive]
 pub struct TitlePresence {
     /// Title identifier, when present.
+    #[serde(default, deserialize_with = "title_id")]
     pub id: Option<u32>,
     /// Localized title name.
     pub name: Option<String>,
@@ -175,11 +176,26 @@ pub struct LastSeen {
     /// Last reported device type.
     pub device_type: Option<String>,
     /// Last reported title identifier.
+    #[serde(default, deserialize_with = "title_id")]
     pub title_id: Option<u32>,
     /// Localized name of the title.
     pub title_name: Option<String>,
     /// Original service timestamp text.
     pub timestamp: Option<String>,
+}
+
+/// Accepts decimal title text or an integer, rejecting malformed and out-of-range identifiers.
+fn title_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    let value = Option::<Value>::deserialize(deserializer)?;
+    value
+        .map(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str()?.parse().ok())
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| serde::de::Error::custom("invalid title identifier"))
+        })
+        .transpose()
 }
 
 /// Multiplayer session locator retained for later joining or invitation operations.
