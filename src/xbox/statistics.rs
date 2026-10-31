@@ -80,7 +80,13 @@ impl Statistic {
             Cow::Borrowed(raw)
         };
         let number: f64 = text.parse().ok()?;
-        (number.is_finite() && number >= 0.0).then_some(text)
+        let negative = text.starts_with('-')
+            && text
+                .split(['e', 'E'])
+                .next()?
+                .bytes()
+                .any(|digit| matches!(digit, b'1'..=b'9'));
+        (number.is_finite() && number >= 0.0 && !negative).then_some(text)
     }
 }
 

@@ -165,3 +165,16 @@ fn statistics_numeric_text_is_not_rounded_by_json_decoding() {
         assert!(value.non_negative_number().is_none());
     }
 }
+
+/// A negative decimal cannot become nonnegative when floating conversion underflows.
+#[test]
+fn statistics_underflow_regression() {
+    for encoded in ["-1e-400", r#""-1e-400""#, r#""-0.0001e-999""#] {
+        let value: Statistic = serde_json::from_str(&format!("{{\"value\":{encoded}}}")).unwrap();
+        assert!(value.non_negative_number().is_none());
+    }
+    for encoded in ["1e-400", r#""1e-400""#, "-0", r#""-0.0e-999""#] {
+        let value: Statistic = serde_json::from_str(&format!("{{\"value\":{encoded}}}")).unwrap();
+        assert!(value.non_negative_number().is_some());
+    }
+}
