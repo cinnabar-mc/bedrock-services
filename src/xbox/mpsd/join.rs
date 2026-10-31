@@ -134,9 +134,9 @@ impl Directory<'_> {
             .ok_or(Error::Invalid("join Content-Location"))?;
         let reference = location_reference(location)?;
         let owner = attempt.owner.as_deref().ok_or(Error::JoinFinished)?;
-        Ok(JoinOutcome::Joined(Box::new(
-            self.session(reference, owner, response)?,
-        )))
+        let session = self.session(reference, owner, response)?;
+        attempt.may_have_applied = false;
+        Ok(JoinOutcome::Joined(Box::new(session)))
     }
 }
 

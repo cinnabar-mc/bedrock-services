@@ -352,6 +352,7 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
         panic!("join not completed")
     };
     assert_eq!(session.reference().name(), "Joined World");
+    assert!(!attempt.needs_reconciliation());
     assert!(matches!(
         directory.join(&mut attempt).await,
         Err(Error::JoinFinished)
@@ -386,6 +387,7 @@ async fn joins_bound_retries_and_never_follow_response_credential_destinations()
             Ok(_) => panic!("invalid join accepted"),
         };
         assert!(!format!("{error:?}").contains("SENSITIVE"));
+        assert!(rejected.needs_reconciliation());
         assert!(matches!(
             directory.join(&mut rejected).await,
             Err(Error::JoinFinished)
