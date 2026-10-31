@@ -176,13 +176,9 @@ pub struct JoinAddress {
 }
 
 impl JoinAddress {
-    /// Refuses unsupported protocols before validating the JSON-RPC routing identity.
-    pub(super) fn validate(&self) -> Result<(), Error> {
-        self.network_protocol.validate()?;
-        if self.nethernet_id.trim().is_empty() {
-            return Err(Error::Invalid("gatherings join address"));
-        }
-        Ok(())
+    /// Resolves the response through the same JSON-RPC target rules as Realms.
+    pub fn target(&self) -> Result<crate::realms::JoinTarget<'_>, Error> {
+        self.network_protocol.target(&self.nethernet_id)
     }
 }
 

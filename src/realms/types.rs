@@ -102,11 +102,30 @@ impl Default for NetworkProtocol {
     }
 }
 
+/// A validated service assignment reached through Player Messaging JSON-RPC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinTarget<'a> {
+    nethernet_id: &'a str,
+}
+
+impl<'a> JoinTarget<'a> {
+    /// Returns the trimmed service routing identity without imposing numeric or UUID syntax.
+    pub fn nethernet_id(self) -> &'a str {
+        self.nethernet_id
+    }
+}
+
 impl NetworkProtocol {
-    /// Requires the same supported signaling protocol for every service join.
-    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
+    /// Resolves both service address forms through one supported-protocol and identity rule.
+    pub(crate) fn target<'a>(&self, id: &'a str) -> Result<JoinTarget<'a>, crate::Error> {
         match self {
-            Self::NetherNetJsonRpc => Ok(()),
+            Self::NetherNetJsonRpc => {
+                let nethernet_id = id.trim();
+                if nethernet_id.is_empty() {
+                    return Err(crate::Error::Invalid("service join NetherNet ID"));
+                }
+                Ok(JoinTarget { nethernet_id })
+            }
             Self::Unknown(_) => Err(crate::Error::UnsupportedNetworkProtocol),
         }
     }
@@ -142,6 +161,18 @@ pub struct RealmAddress {
     pub session_region: Option<SessionRegion>,
 }
 
+impl RealmAddress {
+    /// Resolves the response's supported transport and trimmed routing identity.
+    pub fn target(&self) -> Result<JoinTarget<'_>, crate::Error> {
+        self.network_protocol.target(&self.address)
+    }
+
+    /// Returns the JSON-RPC routing identity, rejecting blank IDs and unsupported protocols.
+    pub fn nethernet_id(&self) -> Result<&str, crate::Error> {
+        Ok(self.target()?.nethernet_id())
+    }
+}
+
 /// Region information reported after the service chooses a Realm instance.
 #[derive(Clone, Debug, Deserialize)]
 #[non_exhaustive]
@@ -173,6 +204,52 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Both services resolve the same normalized identity and refuse every other protocol.
+    #[test]
+    fn service_targets_share_protocol_and_identity_rules() {
+        for protocol in [
+            serde_json::Value::Null,
+            json!(""),
+            json!("DEFAULT"),
+            json!("NETHERNET"),
+            json!("FUTURE"),
+            json!(" nethernet_jsonrpc "),
+        ] {
+            for id in [
+                "42",
+                " opaque:identifier ",
+                " e7032735-bd67-45b0-810e-c6760ec87b91 ",
+                " ",
+            ] {
+                let realm: RealmAddress =
+                    serde_json::from_value(json!({"address":id,"networkProtocol":protocol}))
+                        .unwrap();
+                let gathering: crate::minecraft::gatherings::JoinAddress =
+                    serde_json::from_value(json!({"netherNetId":id,"networkProtocol":protocol}))
+                        .unwrap();
+                let supported = protocol == json!(" nethernet_jsonrpc ");
+                let expected = supported && !id.trim().is_empty();
+                assert_eq!(realm.target().is_ok(), expected);
+                assert_eq!(gathering.target().is_ok(), expected);
+                assert_eq!(realm.nethernet_id().is_ok(), expected);
+                if expected {
+                    assert_eq!(realm.target().unwrap().nethernet_id(), id.trim());
+                    assert_eq!(gathering.target().unwrap().nethernet_id(), id.trim());
+                    assert_eq!(realm.nethernet_id().unwrap(), id.trim());
+                } else if !supported {
+                    assert!(matches!(
+                        realm.target(),
+                        Err(crate::Error::UnsupportedNetworkProtocol)
+                    ));
+                    assert!(matches!(
+                        gathering.target(),
+                        Err(crate::Error::UnsupportedNetworkProtocol)
+                    ));
+                }
+            }
+        }
+    }
+
     /// Unsupported protocol names remain readable but cannot become joinable addresses.
     #[test]
     fn only_jsonrpc_assignments_pass_join_validation() {
@@ -193,7 +270,7 @@ mod tests {
                 NetworkProtocol::Unknown(_)
             ));
             assert!(matches!(
-                address.network_protocol.validate(),
+                address.target(),
                 Err(crate::Error::UnsupportedNetworkProtocol)
             ));
             let assignment: crate::minecraft::gatherings::JoinAddress =
@@ -206,7 +283,7 @@ mod tests {
             }))
             .unwrap();
             assert_eq!(address.network_protocol, NetworkProtocol::NetherNetJsonRpc);
-            address.network_protocol.validate().unwrap();
+            address.target().unwrap();
         }
     }
 }

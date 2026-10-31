@@ -177,7 +177,7 @@ impl Gatherings<'_> {
             result: Object<JoinAddress>,
         }
         let address = response.json::<Object<Envelope>>()?.0.result.0;
-        address.validate()?;
+        address.target()?;
         Ok(address)
     }
 
