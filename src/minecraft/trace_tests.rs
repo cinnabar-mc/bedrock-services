@@ -41,6 +41,11 @@ struct Divergence {
 
 const DIVERGENCES: &[Divergence] = &[
     Divergence {
+        scenario: "session-start-401",
+        kind: Kind::Better,
+        why: "a rejected PlayFab ticket is renewed once, matching Lunar's service preflight recovery",
+    },
+    Divergence {
         scenario: "warm-restart-join",
         kind: Kind::Better,
         why: "the bound saved auth route avoids the Go libraries' discovery request before the mint",

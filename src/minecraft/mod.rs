@@ -337,7 +337,7 @@ impl Minecraft {
         .await
     }
 
-    /// Reuses a current service credential or replaces it with a fresh session.
+    /// Reuses a current credential and replaces a rejected PlayFab ticket at most once.
     pub async fn authorize(&mut self) -> Result<Arc<Authorization>, Error> {
         crate::http::call::run(async {
             if self.restored.is_some() && !self.resume_service_checkpoint() {
@@ -350,36 +350,63 @@ impl Minecraft {
             {
                 return Ok(Arc::clone(token));
             }
-            let playfab = self.playfab().await?;
-            let environment = self
-                .environment
-                .as_ref()
-                .ok_or(Error::Invalid("missing discovery"))?;
-            let url = append(
-                &environment.service_uri,
-                &["api", "v1.0", "session", "start"],
-            )?;
-            let request = self.json(
-                &url,
-                &self
-                    .config
-                    .start(&environment.play_fab_title_id, &playfab.ticket),
-            )?;
-            let response = self
-                .http
-                .send_retrying(request, crate::http::retry::Policy::Credential)
-                .await?;
-            response.success()?;
-            let token = Arc::new(
-                response
-                    .json::<ResultBody<token::TokenResponse>>()?
-                    .result
-                    .authorization(self.http.now())?,
-            );
-            self.authorization = Some(Arc::clone(&token));
-            Ok(token)
+            let mut replaced = false;
+            loop {
+                let playfab = self.playfab().await?;
+                let environment = self
+                    .environment
+                    .as_ref()
+                    .ok_or(Error::Invalid("missing discovery"))?;
+                let url = append(
+                    &environment.service_uri,
+                    &["api", "v1.0", "session", "start"],
+                )?;
+                let request = self.json(
+                    &url,
+                    &self
+                        .config
+                        .start(&environment.play_fab_title_id, &playfab.ticket),
+                )?;
+                let response = self
+                    .http
+                    .send_retrying(request, crate::http::retry::Policy::Credential)
+                    .await?;
+                if !replaced
+                    && response.status == reqwest::StatusCode::UNAUTHORIZED
+                    && self.reject_service_chain(&playfab)
+                {
+                    replaced = true;
+                    continue;
+                }
+                response.success()?;
+                let token = Arc::new(
+                    response
+                        .json::<ResultBody<token::TokenResponse>>()?
+                        .result
+                        .authorization(self.http.now())?,
+                );
+                self.authorization = Some(Arc::clone(&token));
+                return Ok(token);
+            }
         })
         .await
+    }
+
+    /// Retires PlayFab, entity and Minecraft credentials only while this exact login is current.
+    /// Retains the Xbox account, discovery and session identity; the next acquisition is caller-owned.
+    pub fn reject_service_chain(&mut self, rejected: &Arc<playfab::Session>) -> bool {
+        if !self
+            .playfab
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, rejected))
+        {
+            return false;
+        }
+        self.playfab = None;
+        self.entities.clear();
+        self.authorization = None;
+        self.restored = None;
+        true
     }
 
     /// Evicts only the credential still cached from this exact issuance.

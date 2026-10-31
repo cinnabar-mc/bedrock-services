@@ -569,3 +569,125 @@ async fn discovery_accepts_the_public_playfab_title_key_without_authorization() 
     );
     public.discover().await.unwrap();
 }
+/// Supplies a reusable saved ticket through the same pure restore validator as checkpoints.
+fn cached_playfab_ticket(now: SystemTime) -> Arc<playfab::Session> {
+    let data = json!({"ticket":"old-ticket","player_id":"player", "reusable_until":now + Duration::from_secs(86400),
+        "entity_id":"title-player","entity_kind":"title_player_account","entity_token":"old-entity",
+        "entity_expires":now + Duration::from_secs(86400)}).to_string();
+    Arc::new(
+        serde_json::from_str::<playfab::checkpoint::Snapshot<'_>>(&data)
+            .unwrap()
+            .restore(now)
+            .unwrap(),
+    )
+}
+
+/// A refused cached ticket gets exactly one fresh login under the original account and call budget.
+#[tokio::test]
+async fn rejected_session_ticket_is_replaced_once_without_interactive_signin() {
+    for refused_again in [false, true] {
+        let mut step = 0;
+        let (address, server) = fixture_headers(move |target, headers, body| {
+            step += 1;
+            let response = match step {
+                1 | 8 => {
+                    assert_eq!(target, "/prefix/api/v1.0/session/start");
+                    let body: Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["user"]["token"], if step == 1 { "old-ticket" } else { "fresh-ticket" });
+                    if step == 1 || refused_again { (401, json!({"error":"SENSITIVE"})) }
+                    else { (200, service_token("fresh")) }
+                }
+                2 => { assert_eq!(target, "/device-token"); (200, token("device", false)) }
+                3 => { assert_eq!(target, "/nsal"); (200, json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1","HostType":"fqdn","RelyingParty":"http://xboxlive.com"}]})) }
+                4 => { assert_eq!(target, "/sisu"); (200, json!({"TitleToken":token("title",false),"UserToken":token("user",true),"AuthorizationToken":token("xbox",true)})) }
+                5 => { assert_eq!(target, "/nsal-current"); (200, json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1","HostType":"fqdn","Path":"/Client/LoginWithXbox","RelyingParty":"rp://title-playfab"}]})) }
+                6 => { assert_eq!(target, "/xsts"); (200, token("playfab", true)) }
+                7 => {
+                    assert_eq!(target, "/Client/LoginWithXbox");
+                    assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+                    let body: Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["XboxToken"], "XBL3.0 x=synthetic;playfab");
+                    (200,json!({"data":{"SessionTicket":"fresh-ticket","PlayFabId":"player","EntityToken":{"EntityToken":"fresh-entity","TokenExpiration":"2099-01-01T00:00:00Z","Entity":{"Id":"title-player","Type":"title_player_account"}}}}))
+                }
+                _ => panic!("unexpected recovery request: {target}"),
+            };
+            (response.0, vec![], response.1)
+        }, 8).await;
+        let mut minecraft = discovery_owner(address);
+        minecraft.environment = Some(Environment {
+            service_uri: format!("http://{address}/prefix"),
+            play_fab_title_id: "AB12".into(),
+            issuer: "https://issuer.example/".into(),
+        });
+        let original = cached_playfab_ticket(minecraft.http.now());
+        minecraft.playfab = Some(Arc::clone(&original));
+        minecraft.entities.insert(
+            playfab::EntityKind::TitlePlayerAccount,
+            Arc::clone(&original.entity),
+        );
+        let session_id = minecraft.session_id();
+        let result = minecraft.authorize().await;
+        if refused_again {
+            let error = result.err().unwrap();
+            assert!(matches!(
+                error,
+                Error::Status {
+                    status: reqwest::StatusCode::UNAUTHORIZED,
+                    ..
+                }
+            ));
+            assert!(!format!("{error:?} {error}").contains("SENSITIVE"));
+            assert!(minecraft.authorization.is_none());
+        } else {
+            result.unwrap();
+        }
+        assert!(!Arc::ptr_eq(&original, minecraft.playfab.as_ref().unwrap()));
+        assert_eq!(minecraft.session_id(), session_id);
+        assert_eq!(
+            minecraft.authorization_issuer().unwrap(),
+            "https://issuer.example/"
+        );
+        server.await.unwrap();
+    }
+}
+
+/// A late failure cannot retire a replacement login or its dependent credentials.
+#[test]
+fn service_chain_rejection_is_bound_to_the_current_login() {
+    let mut minecraft = discovery_owner("127.0.0.1:0".parse().unwrap());
+    let now = minecraft.http.now();
+    let original = cached_playfab_ticket(now);
+    let replacement = cached_playfab_ticket(now);
+    let authorization = test_support::authorization("replacement");
+    minecraft.playfab = Some(Arc::clone(&replacement));
+    minecraft.entities.insert(
+        playfab::EntityKind::TitlePlayerAccount,
+        Arc::clone(&replacement.entity),
+    );
+    minecraft.authorization = Some(Arc::clone(&authorization));
+    minecraft.environment = Some(Environment {
+        service_uri: "https://service.invalid".into(),
+        play_fab_title_id: "AB12".into(),
+        issuer: "https://issuer.invalid".into(),
+    });
+    let identity = minecraft.xbox.checkpoint().unwrap();
+    let session = minecraft.session_id();
+    assert!(!minecraft.reject_service_chain(&original));
+    assert!(Arc::ptr_eq(
+        &replacement,
+        minecraft.playfab.as_ref().unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &authorization,
+        minecraft.authorization.as_ref().unwrap()
+    ));
+    assert!(!minecraft.entities.is_empty());
+    assert!(minecraft.reject_service_chain(&replacement));
+    assert!(!minecraft.reject_service_chain(&replacement));
+    assert!(minecraft.playfab.is_none());
+    assert!(minecraft.authorization.is_none());
+    assert!(minecraft.entities.is_empty());
+    assert_eq!(minecraft.session_id(), session);
+    assert!(minecraft.environment.is_some());
+    assert!(identity.as_bytes() == minecraft.xbox.checkpoint().unwrap().as_bytes());
+}
