@@ -207,6 +207,9 @@ impl Realms<'_> {
                     return Ok(response);
                 };
                 if compatible.status != StatusCode::OK {
+                    if version::rejected(&compatible) {
+                        continue;
+                    }
                     self.state.failed(self.http.now());
                     return Ok(response);
                 }

@@ -121,6 +121,57 @@ fn services(address: std::net::SocketAddr, version: &str, protocol: u32) -> Mine
     minecraft
 }
 
+/// Unknown probe builds do not prevent later compatible candidates from being used and cached.
+#[tokio::test]
+async fn unknown_compatibility_candidate_regression() {
+    let (address, server) = fixture(|step, path, headers, _, address| {
+        match step {
+            1 => return Reply::json(200, json!({"result":{"serviceEnvironments":{
+                "auth":{"prod":{"serviceUri":format!("http://{address}/auth"),"playFabTitleId":"AB12"}},
+                "realms_frontend_bedrock_legacy":{"prod":{"serviceUri":format!("http://{address}")}}
+            }}})),
+            2 => return Reply::json(200, token("device", false)),
+            3 => return Reply::json(200, json!({"EndPoints":[{"Protocol":"http","Host":"127.0.0.1","HostType":"fqdn","RelyingParty":"http://xboxlive.com"}]})),
+            4 => return Reply::json(200, json!({"TitleToken":token("title",false),"UserToken":token("user",true),"AuthorizationToken":token("xbox",true)})),
+            5 => return Reply::json(200, token("realms", true)),
+            _ => {}
+        }
+        assert!(headers.contains(match step {6 => "client-version: 1.26.60", 7 => "client-version: 1.26.59", _ => "client-version: 1.26.58"}));
+        assert_eq!(path, if matches!(step, 7 | 8) { "/mco/client/compatible" } else { "/worlds" });
+        match step {
+            6 | 7 => Reply::json(400, json!({"reason":"unknown_client_version"})),
+            8 => Reply::text("COMPATIBLE"),
+            _ => Reply::json(200, json!({"servers":[]})),
+        }
+    }, 10).await;
+    let mut owner = services(address, "1.26.60", 1014);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        assert!(
+            owner
+                .realms()
+                .await
+                .unwrap()
+                .list()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            owner
+                .realms()
+                .await
+                .unwrap()
+                .list()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        server.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 /// Exercises shared XSTS, persistent version negotiation, explicit membership and all join variants.
 #[tokio::test]
 async fn realms_requests_reuse_account_policy_and_preserve_join_outcomes() {
